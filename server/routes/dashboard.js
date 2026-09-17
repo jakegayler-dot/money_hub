@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { computeDSCR, liquidityFloor, reserveStatus } from '../lib/calculations.js';
 import { pool } from '../db.js';
+import { ah } from '../lib/asyncHandler.js';
 
 const router = Router();
 
-router.get('/', async (req, res) => {
+router.get('/', ah(async (req, res) => {
   const year = Number(req.query.year) || new Date().getFullYear();
 
   const [dscr, liquidity, reserve, upcomingPayments, drawTotal] = await Promise.all([
@@ -32,6 +33,6 @@ router.get('/', async (req, res) => {
     upcomingDebtService: upcomingPayments.rows,
     ownerDrawYTD: Number(drawTotal.rows[0].total),
   });
-});
+}));
 
 export default router;

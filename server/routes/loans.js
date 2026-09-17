@@ -1,20 +1,21 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
+import { ah } from '../lib/asyncHandler.js';
 
 const router = Router();
 
-router.get('/', async (req, res) => {
+router.get('/', ah(async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM loans ORDER BY start_date DESC');
   res.json(rows);
-});
+}));
 
-router.get('/:id/payments', async (req, res) => {
+router.get('/:id/payments', ah(async (req, res) => {
   const { rows } = await pool.query(
     'SELECT * FROM loan_payments WHERE loan_id = $1 ORDER BY due_date ASC',
     [req.params.id]
   );
   res.json(rows);
-});
+}));
 
 /** Standard fixed-rate amortization; produces one row per month. */
 function buildAmortizationSchedule({ principal, interest_rate_pct, term_months, start_date }) {
@@ -45,7 +46,7 @@ function buildAmortizationSchedule({ principal, interest_rate_pct, term_months, 
   return schedule;
 }
 
-router.post('/', async (req, res) => {
+router.post('/', ah(async (req, res) => {
   const {
     lender, purpose, linked_asset = null, principal, interest_rate_pct,
     rate_type = 'fixed', term_months, start_date, covenant_notes = null,
@@ -88,6 +89,6 @@ router.post('/', async (req, res) => {
   } finally {
     client.release();
   }
-});
+}));
 
 export default router;
