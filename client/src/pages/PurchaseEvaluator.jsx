@@ -12,7 +12,7 @@ export default function PurchaseEvaluator() {
   const [form, setForm] = useState(emptyForm);
   const [result, setResult] = useState(null);
 
-  const load = () => fetch('/api/purchase-evaluations').then((r) => r.json()).then(setHistory);
+  const load = () => { fetch('/api/purchase-evaluations').then((r) => r.json()).then(setHistory); };
   useEffect(load, []);
 
   const submit = async (e) => {

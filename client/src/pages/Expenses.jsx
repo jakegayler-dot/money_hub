@@ -14,7 +14,7 @@ export default function Expenses() {
   const [categories, setCategories] = useState([]);
   const [form, setForm] = useState(emptyForm);
 
-  const load = () => fetch('/api/expenses').then((r) => r.json()).then(setCategories);
+  const load = () => { fetch('/api/expenses').then((r) => r.json()).then(setCategories); };
   useEffect(load, []);
 
   const submit = async (e) => {

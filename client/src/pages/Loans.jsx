@@ -11,7 +11,7 @@ export default function Loans() {
   const [loans, setLoans] = useState([]);
   const [form, setForm] = useState(emptyForm);
 
-  const load = () => fetch('/api/loans').then((r) => r.json()).then(setLoans);
+  const load = () => { fetch('/api/loans').then((r) => r.json()).then(setLoans); };
   useEffect(load, []);
 
   const submit = async (e) => {
