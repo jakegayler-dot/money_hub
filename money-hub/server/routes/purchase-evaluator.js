@@ -1,15 +1,16 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { computeDSCR, liquidityFloor, opportunityCostUnits } from '../lib/calculations.js';
+import { ah } from '../lib/asyncHandler.js';
 
 const router = Router();
 
-router.get('/', async (req, res) => {
+router.get('/', ah(async (req, res) => {
   const { rows } = await pool.query(
     'SELECT * FROM purchase_evaluations ORDER BY evaluated_at DESC'
   );
   res.json(rows);
-});
+}));
 
 /**
  * Runs the purchase against the current business-ledger liquidity floor and
@@ -19,7 +20,7 @@ router.get('/', async (req, res) => {
  * supplied — this system is intentionally source-agnostic and doesn't
  * assume any one operator's asset).
  */
-router.post('/evaluate', async (req, res) => {
+router.post('/evaluate', ah(async (req, res) => {
   const {
     name, price, purchase_class, is_mixed_use = false, mixed_use_business_pct = null,
     unit_value = null, reversibility_score = null, added_monthly_debt_service = 0, notes = null,
@@ -60,6 +61,6 @@ router.post('/evaluate', async (req, res) => {
     result: rows[0],
     detail: { liquidity, dscr, projectedFloorAfterPurchase },
   });
-});
+}));
 
 export default router;

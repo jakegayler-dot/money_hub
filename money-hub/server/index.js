@@ -38,5 +38,17 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
+// Catches any error thrown/rejected inside a route (including async ones) and
+// returns it as JSON instead of letting Node crash the whole process on an
+// unhandled rejection — a single bad query should never take the app down.
+app.use((err, req, res, next) => {
+  console.error('Request error:', err);
+  res.status(500).json({ error: err.message || 'Internal server error' });
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection (recovered, not crashing):', reason);
+});
+
 const port = process.env.PORT || 4000;
 app.listen(port, () => console.log(`Money Hub listening on :${port}`));

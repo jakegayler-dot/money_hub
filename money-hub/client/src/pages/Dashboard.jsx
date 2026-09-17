@@ -8,12 +8,18 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetch('/api/dashboard')
-      .then((r) => r.json())
+      .then(async (r) => {
+        const body = await r.json().catch(() => null);
+        if (!r.ok || !body || !body.liquidity || !body.dscr || !body.reserve) {
+          throw new Error((body && body.error) || `Server returned ${r.status}`);
+        }
+        return body;
+      })
       .then(setData)
       .catch((e) => setError(e.message));
   }, []);
 
-  if (error) return <div className="empty-state">Could not load dashboard: {error}</div>;
+  if (error) return <div className="empty-state">Could not load dashboard: {error}. Try refreshing — if it persists, check the server's deploy logs.</div>;
   if (!data) return <div className="empty-state">Loading…</div>;
 
   const { dscr, liquidity, reserve, upcomingDebtService, ownerDrawYTD, year } = data;
