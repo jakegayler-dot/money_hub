@@ -14,8 +14,13 @@ INSERT INTO settings (key, value) VALUES
   ('reserve_target_months', '2')
 ON CONFLICT (key) DO NOTHING;
 
-CREATE TYPE ledger_type AS ENUM ('business', 'personal');
-CREATE TYPE account_type AS ENUM ('operating', 'draw', 'reserve', 'personal', 'investment');
+DO $$ BEGIN
+  CREATE TYPE ledger_type AS ENUM ('business', 'personal');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE TYPE account_type AS ENUM ('operating', 'draw', 'reserve', 'personal', 'investment');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS accounts (
   id              SERIAL PRIMARY KEY,
@@ -27,7 +32,9 @@ CREATE TABLE IF NOT EXISTS accounts (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TYPE expense_class AS ENUM ('fixed', 'variable_seasonal', 'capex', 'overhead');
+DO $$ BEGIN
+  CREATE TYPE expense_class AS ENUM ('fixed', 'variable_seasonal', 'capex', 'overhead');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS expense_categories (
   id           SERIAL PRIMARY KEY,
@@ -39,7 +46,9 @@ CREATE TABLE IF NOT EXISTS expense_categories (
   monthly_pct  JSONB NOT NULL DEFAULT '[0.0833,0.0833,0.0834,0.0833,0.0833,0.0834,0.0833,0.0833,0.0834,0.0833,0.0833,0.0834]'
 );
 
-CREATE TYPE purchase_class AS ENUM ('compounding', 'productive_tool', 'consumptive');
+DO $$ BEGIN
+  CREATE TYPE purchase_class AS ENUM ('compounding', 'productive_tool', 'consumptive');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS transactions (
   id                      SERIAL PRIMARY KEY,
@@ -57,7 +66,9 @@ CREATE TABLE IF NOT EXISTS transactions (
   created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TYPE loan_purpose AS ENUM ('operating', 'term', 'capital_asset');
+DO $$ BEGIN
+  CREATE TYPE loan_purpose AS ENUM ('operating', 'term', 'capital_asset');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS loans (
   id                SERIAL PRIMARY KEY,
@@ -94,7 +105,9 @@ CREATE TABLE IF NOT EXISTS owner_draws (
   note    TEXT
 );
 
-CREATE TYPE reserve_direction AS ENUM ('sweep_in', 'draw_out');
+DO $$ BEGIN
+  CREATE TYPE reserve_direction AS ENUM ('sweep_in', 'draw_out');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS reserve_transfers (
   id        SERIAL PRIMARY KEY,
@@ -104,7 +117,9 @@ CREATE TABLE IF NOT EXISTS reserve_transfers (
   note      TEXT
 );
 
-CREATE TYPE eval_decision AS ENUM ('pass', 'fail', 'pending');
+DO $$ BEGIN
+  CREATE TYPE eval_decision AS ENUM ('pass', 'fail', 'pending');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS purchase_evaluations (
   id                      SERIAL PRIMARY KEY,

@@ -1,11 +1,11 @@
-﻿import { readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { pool } from '../db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Postgres error codes that mean "this object already exists" -- safe to
+// Postgres error codes that mean "this object already exists" — safe to
 // treat as success, since it means the schema was already applied by an
 // earlier run. Anything else (bad connection, syntax error, etc.) is a
 // real failure and should still stop the deploy.
@@ -20,10 +20,10 @@ async function migrate() {
   console.log('Applying schema.sql ...');
   try {
     await pool.query(sql);
-    console.log('Done -- schema applied.');
+    console.log('Done — schema applied.');
   } catch (err) {
     if (ALREADY_APPLIED_CODES.has(err.code)) {
-      console.log(`Schema already applied (${err.code}: ${err.message}) -- continuing.`);
+      console.log(`Schema already applied (${err.code}: ${err.message}) — continuing.`);
     } else {
       throw err;
     }
