@@ -1,0 +1,1418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Money Hub</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=Playfair+Display:ital,wght@0,500;0,700;1,500&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #07090c; --panel: #10141b; --panel-hover: #161c26; --border: #232a36;
+  --border-dim: #181e28;
+  --text: #e7eaee; --text-muted: #7c8797; --text-faint: #4c5561;
+  --gold: #c9a227; --gold-dim: #8a7024; --gold-bright: #e4c34f;
+  --positive: #3ecf8e; --negative: #b7373d;
+  --font-ui: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --font-display: 'Playfair Display', Georgia, serif;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background:
+    radial-gradient(ellipse 1200px 800px at 15% 0%, rgba(201,162,39,0.05), transparent 60%),
+    radial-gradient(ellipse 900px 700px at 100% 100%, rgba(201,162,39,0.03), transparent 55%),
+    var(--bg);
+  color: var(--text); font-family: var(--font-ui); font-size: 14px; line-height: 1.5;
+}
+.app-shell { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; position: relative; }
+.app-shell::before {
+  /* faint diagonal scanline texture — dossier/blueprint feel, kept very low-contrast */
+  content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image: repeating-linear-gradient(115deg, rgba(255,255,255,0.008) 0px, rgba(255,255,255,0.008) 1px, transparent 1px, transparent 3px);
+}
+
+.sidebar { border-right: 1px solid var(--border); padding: 24px 0 20px; display: flex; flex-direction: column; position: relative; z-index: 1; }
+.brand { padding: 0 22px 18px; margin-bottom: 10px; position: relative; }
+.brand::after { content: ''; position: absolute; left: 22px; right: 22px; bottom: 0; height: 1px; background: linear-gradient(90deg, var(--gold) 0%, var(--border) 60%); }
+.brand-mark {
+  font-family: var(--font-display); font-style: italic; font-weight: 700; font-size: 21px;
+  letter-spacing: 0.01em; color: var(--gold-bright);
+  text-shadow: 0 0 18px rgba(228,195,79,0.18);
+}
+.brand-sub {
+  font-family: var(--font-mono); font-size: 9.5px; color: var(--text-faint);
+  margin-top: 5px; letter-spacing: 0.16em; text-transform: uppercase;
+}
+.nav-link {
+  display: flex; align-items: center; gap: 8px; padding: 10px 22px; color: var(--text-muted);
+  text-decoration: none; font-size: 12.5px; letter-spacing: 0.04em; border-left: 2px solid transparent;
+  cursor: pointer; background: none; border-top: none; border-right: none; border-bottom: none;
+  width: 100%; text-align: left; font-family: var(--font-ui);
+}
+.nav-link::before { content: ''; width: 4px; height: 4px; background: var(--text-faint); flex-shrink: 0; transform: rotate(45deg); }
+.nav-link:hover { color: var(--text); background: var(--panel-hover); }
+.nav-link.active { color: var(--gold-bright); border-left-color: var(--gold); background: var(--panel-hover); }
+.nav-link.active::before { background: var(--gold); box-shadow: 0 0 6px rgba(228,195,79,0.7); }
+
+main { padding: 32px 36px; max-width: 1320px; position: relative; z-index: 1; }
+.page-header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 28px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.page-title {
+  font-family: var(--font-display); font-style: italic; font-weight: 700; font-size: 26px;
+  margin: 0; color: var(--text); letter-spacing: 0.01em;
+}
+.page-meta {
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--gold-dim);
+  letter-spacing: 0.14em; text-transform: uppercase;
+}
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); margin-bottom: 24px; }
+.metric-card { background: var(--panel); padding: 18px 18px 16px; position: relative; overflow: hidden; }
+.metric-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, var(--gold), transparent 75%); opacity: 0.7; }
+.metric-label {
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-muted);
+  margin-bottom: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+}
+.metric-value { font-family: var(--font-mono); font-size: 25px; font-weight: 500; letter-spacing: -0.01em; }
+.metric-value.positive { color: var(--positive); }
+.metric-value.negative { color: var(--negative); }
+.metric-sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); margin-top: 8px; }
+
+.panel { background: var(--panel); border: 1px solid var(--border); margin-bottom: 24px; position: relative; }
+.panel-header {
+  padding: 12px 18px; border-bottom: 1px solid var(--border); font-family: var(--font-mono);
+  font-size: 11px; color: var(--gold-dim); letter-spacing: 0.1em; text-transform: uppercase;
+  display: flex; align-items: center; gap: 8px;
+}
+.panel-header::before { content: '§'; color: var(--gold); opacity: 0.7; }
+
+table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 13px; }
+th, td { text-align: left; padding: 10px 18px; border-bottom: 1px solid var(--border-dim); }
+th { color: var(--text-muted); font-weight: 500; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: rgba(201,162,39,0.02); }
+
+.badge {
+  display: inline-block; padding: 3px 9px; border-radius: 1px; font-family: var(--font-mono);
+  font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; border: 1px solid transparent;
+}
+.badge.pass { background: rgba(62,207,142,0.08); color: var(--positive); border-color: rgba(62,207,142,0.35); }
+.badge.fail { background: rgba(183,55,61,0.1); color: #e5747a; border-color: rgba(183,55,61,0.4); }
+
+form.form-panel { padding: 18px; display: grid; gap: 14px; max-width: 480px; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); letter-spacing: 0.04em; }
+.field input, .field select {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 9px 10px;
+  font-family: var(--font-mono); font-size: 13px;
+}
+.field input:focus, .field select:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold); }
+
+button {
+  position: relative; overflow: hidden; background: linear-gradient(180deg, var(--gold-bright), var(--gold));
+  color: #14110a; border: none; padding: 10px 18px; font-family: var(--font-ui); font-size: 12.5px;
+  font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; cursor: pointer; width: fit-content;
+}
+button:hover { filter: brightness(1.08); }
+button:active { filter: brightness(0.95); }
+
+.empty-state { padding: 32px 18px; color: var(--text-muted); font-size: 13px; font-style: italic; font-family: var(--font-display); }
+.notice {
+  padding: 10px 18px; background: rgba(201,162,39,0.06); border: 1px solid var(--border);
+  border-left: 2px solid var(--gold-dim); font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-muted); margin-bottom: 24px; letter-spacing: 0.02em;
+}
+</style>
+<style>
+/* corner-bracket accent on metric cards — HUD/reticle motif */
+.metric-card::after {
+  content: ''; position: absolute; bottom: 6px; right: 6px; width: 8px; height: 8px;
+  border-bottom: 1px solid var(--gold-dim); border-right: 1px solid var(--gold-dim); opacity: 0.5;
+}
+
+/* Hero band — headline number */
+.hero {
+  position: relative; border: 1px solid var(--border); margin-bottom: 24px;
+  background: linear-gradient(135deg, rgba(201,162,39,0.07), transparent 45%), var(--panel);
+  padding: 26px 28px 22px; display: flex; justify-content: space-between; align-items: flex-end;
+  flex-wrap: wrap; gap: 24px; overflow: hidden;
+}
+.hero::before { content: ''; position: absolute; top: 0; left: 0; width: 34%; height: 2px; background: linear-gradient(90deg, var(--gold-bright), transparent); }
+.hero-label { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--gold-dim); margin-bottom: 8px; }
+.hero-value { font-family: var(--font-display); font-style: italic; font-weight: 700; font-size: 54px; line-height: 1; color: var(--gold-bright); text-shadow: 0 0 28px rgba(228,195,79,0.22); }
+.hero-value.negative { color: var(--negative); text-shadow: 0 0 28px rgba(183,55,61,0.25); }
+.hero-side { display: flex; gap: 32px; flex-wrap: wrap; }
+.hero-stat .metric-label { margin-bottom: 4px; }
+.hero-stat .metric-value { font-size: 19px; }
+
+/* Chart tooltip */
+.chart-tooltip {
+  position: fixed; z-index: 100; display: none; pointer-events: none;
+  background: rgba(5,7,10,0.94); border: 1px solid var(--gold-dim); color: var(--text);
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.03em; padding: 6px 10px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.6);
+}
+svg [data-tip] { cursor: crosshair; }
+svg [data-tip]:hover { opacity: 1; filter: brightness(1.25); }
+
+/* Simulator */
+.sim-grid { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(260px, 1.4fr); gap: 24px; padding: 20px 18px; }
+.sim-controls { display: grid; gap: 20px; align-content: start; }
+.sim-readouts { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); align-self: start; }
+input[type=range] { width: 100%; accent-color: var(--gold); background: transparent; }
+.sim-value { font-family: var(--font-mono); font-size: 13px; color: var(--gold-bright); }
+@media (max-width: 900px) { .sim-grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">Money Hub</div>
+      <div class="brand-sub">Capital allocation system</div>
+    </div>
+    <nav id="nav"></nav>
+  </aside>
+  <main id="main"></main>
+</div>
+
+<script>
+// ---------- In-memory store (resets on reload — no backend in this build) ----------
+const store = {
+  settings: { liquidityBufferPct: 0.15, dscrThreshold: 1.25, reserveTargetMonths: 2 },
+  accounts: [
+    { id: 1, name: 'Farm Operating', ledger: 'business', type: 'operating', balance: 85000 },
+    { id: 2, name: 'Reserve', ledger: 'business', type: 'reserve', balance: 22000 },
+    { id: 3, name: 'Business Credit Card', ledger: 'business', type: 'credit', balance: -8200 },
+    { id: 4, name: 'Personal Chequing', ledger: 'personal', type: 'personal', balance: 6400 },
+    { id: 5, name: 'Personal Credit Card', ledger: 'personal', type: 'credit', balance: -1350 },
+  ],
+  transactions: [], // { id, accountId, ledger, date, amount, description, isMixedUse, mixedUsePct, isCapex }
+  loans: [],        // { id, lender, purpose, principal, ratePct, rateType, termMonths, startDate, payments: [{dueDate, principal, interest}] }
+  expenseCategories: [],
+  ownerDraws: [],
+  reserveTransfers: [], // { date, amount, direction: 'sweep_in' | 'draw_out' }
+  purchaseEvaluations: [],
+  assets: [],  // { id, name, category, value, linkedLoanId }
+  bills: [],   // { id, name, amount, frequency: 'monthly'|'quarterly', ledger, category, nextDueDate, paid }
+};
+let nextId = 100;
+
+// ---------- Persistence (per-browser, local only — nothing leaves this device) ----------
+const STORAGE_KEY = 'money-hub-data-v1';
+
+function saveStore() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ store, nextId })); }
+  catch (e) { /* storage unavailable — app still works, just won't persist this session */ }
+}
+
+function loadStore() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    Object.assign(store, parsed.store);
+    nextId = parsed.nextId || 100;
+    return true;
+  } catch (e) { return false; }
+}
+
+const hasSavedData = loadStore();
+
+// ---------- Sample data ----------
+// Illustrative only — a generic seasonal business (revenue concentrated in
+// two windows, expenses front-loaded before each). Only seeded on first
+// visit; once you have real entries, this is skipped.
+if (!hasSavedData) (function seedSampleData() {
+  const year = new Date().getFullYear();
+
+  const sampleTransactions = [
+    // Revenue events — two seasonal windows
+    { month: 6, amount: 95000, desc: 'Mid-year sale/settlement' },
+    { month: 10, amount: 140000, desc: 'Year-end sale/settlement' },
+    { month: 1, amount: 8000, desc: 'Misc. off-season income' },
+    // Recurring operating outflows, every month
+    ...Array.from({ length: 12 }, (_, i) => ({ month: i + 1, amount: -4200, desc: 'Fixed operating costs' })),
+    // Seasonal input costs — front-loaded before the main revenue events
+    { month: 3, amount: -22000, desc: 'Spring input costs' },
+    { month: 4, amount: -14000, desc: 'Spring input costs (cont.)' },
+    { month: 8, amount: -9000, desc: 'Pre-harvest costs' },
+    { month: 9, amount: -11000, desc: 'Harvest/labor costs' },
+    // Off-season trough month — deliberately lean
+    { month: 2, amount: -6000, desc: 'Off-season maintenance' },
+  ];
+  sampleTransactions.forEach(t => {
+    store.transactions.push({
+      id: nextId++, accountId: 1, ledger: 'business',
+      date: `${year}-${String(t.month).padStart(2, '0')}-15`,
+      amount: t.amount, description: t.desc, isMixedUse: false, mixedUsePct: null, isCapex: false,
+    });
+  });
+
+  // One mixed-use example (vehicle, 60/40 cost-basis split)
+  store.transactions.push({
+    id: nextId++, accountId: 1, ledger: 'business',
+    date: `${year}-05-01`, amount: -42000, description: 'Vehicle purchase (mixed-use)',
+    isMixedUse: true, mixedUsePct: 60, isCapex: true,
+  });
+
+  // A term loan with a generated amortization schedule
+  const loanPayments = buildAmortizationSchedule({
+    principal: 120000, ratePct: 6.5, termMonths: 60, startDate: `${year - 1}-09-01`,
+  });
+  store.loans.push({
+    id: nextId++, lender: 'Farm Credit Lender', purpose: 'term',
+    principal: 120000, ratePct: 6.5, rateType: 'fixed', termMonths: 60,
+    startDate: `${year - 1}-09-01`, payments: loanPayments,
+  });
+
+  // Expense categories across all four classes
+  store.expenseCategories.push(
+    { id: nextId++, name: 'Insurance', klass: 'fixed', ledger: 'business', annualTotal: 18000 },
+    { id: nextId++, name: 'Loan interest', klass: 'fixed', ledger: 'business', annualTotal: 7500 },
+    { id: nextId++, name: 'Crop/production inputs', klass: 'variable_seasonal', ledger: 'business', annualTotal: 46000 },
+    { id: nextId++, name: 'Seasonal labor', klass: 'variable_seasonal', ledger: 'business', annualTotal: 20000 },
+    { id: nextId++, name: 'Equipment purchase reserve', klass: 'capex', ledger: 'business', annualTotal: 42000 },
+    { id: nextId++, name: 'Accounting/professional fees', klass: 'overhead', ledger: 'business', annualTotal: 6000 },
+  );
+
+  // Owner's draw history — fixed monthly amount
+  for (let m = 1; m <= new Date().getMonth() + 1; m++) {
+    store.ownerDraws.push({ id: nextId++, date: `${year}-${String(m).padStart(2, '0')}-01`, amount: 4500, note: 'Scheduled draw' });
+  }
+
+  // A reserve sweep from a strong month
+  store.reserveTransfers.push({ date: `${year}-10-20`, amount: 15000, direction: 'sweep_in', note: 'Surplus after year-end settlement' });
+
+  // One prior purchase evaluation, for illustration
+  store.purchaseEvaluations.push({
+    id: nextId++, name: 'Replacement equipment (sample)', price: 65000, purchaseClass: 'productive_tool',
+    decision: 'pass', liquidityPass: true, dscrPass: true, opportunityCost: 32.5,
+  });
+
+  // Assets — some linked to the term loan above, some unencumbered
+  const loanId = store.loans[0].id;
+  store.assets.push(
+    { id: nextId++, name: 'Land', category: 'Real property', value: 350000, linkedLoanId: null },
+    { id: nextId++, name: 'Equipment / machinery', category: 'Equipment', value: 180000, linkedLoanId: loanId },
+    { id: nextId++, name: 'Vehicle', category: 'Vehicle', value: 38000, linkedLoanId: null },
+  );
+
+  // Recurring bills — monthly and quarterly, business and personal
+  store.bills.push(
+    { id: nextId++, name: 'Property tax', amount: 3200, frequency: 'quarterly', ledger: 'business', category: 'Overhead', nextDueDate: `${year}-${String(((new Date().getMonth() + 2) % 12) + 1).padStart(2, '0')}-01`, paid: false },
+    { id: nextId++, name: 'Software subscriptions', amount: 180, frequency: 'monthly', ledger: 'business', category: 'Overhead', nextDueDate: `${year}-${String(new Date().getMonth() + 1).padStart(2, '0')}-05`, paid: false },
+    { id: nextId++, name: 'Equipment lease', amount: 950, frequency: 'monthly', ledger: 'business', category: 'Fixed', nextDueDate: `${year}-${String(new Date().getMonth() + 1).padStart(2, '0')}-15`, paid: false },
+    { id: nextId++, name: 'Utilities', amount: 220, frequency: 'monthly', ledger: 'personal', category: 'Household', nextDueDate: `${year}-${String(new Date().getMonth() + 1).padStart(2, '0')}-10`, paid: false },
+  );
+})();
+
+// ---------- Free cash flow suite ----------
+function monthlyRevenue(year) {
+  const byMonth = Array(12).fill(0);
+  store.transactions
+    .filter(t => t.ledger === 'business' && !t.isCapex && t.amount > 0 && new Date(t.date).getFullYear() === year)
+    .forEach(t => { byMonth[new Date(t.date).getMonth()] += t.amount; });
+  return byMonth;
+}
+
+function monthlyCapex(year) {
+  const byMonth = Array(12).fill(0);
+  store.transactions
+    .filter(t => t.ledger === 'business' && t.isCapex && t.amount < 0 && new Date(t.date).getFullYear() === year)
+    .forEach(t => { byMonth[new Date(t.date).getMonth()] += -t.amount; });
+  return byMonth;
+}
+
+function monthlyDraws(year) {
+  const byMonth = Array(12).fill(0);
+  store.ownerDraws
+    .filter(d => new Date(d.date).getFullYear() === year)
+    .forEach(d => { byMonth[new Date(d.date).getMonth()] += d.amount; });
+  return byMonth;
+}
+
+/**
+ * Free Cash Flow = NOI − debt service − capex − owner draws, per month.
+ * The truly discretionary number: what's left after every obligation
+ * and every planned extraction has been paid.
+ */
+function freeCashFlow(year) {
+  const noi = monthlyNOI(year);
+  const ds = monthlyDebtService(year);
+  const capex = monthlyCapex(year);
+  const draws = monthlyDraws(year);
+  const monthly = noi.map((n, i) => n - ds[i] - capex[i] - draws[i]);
+
+  const revenueTotal = monthlyRevenue(year).reduce((a, b) => a + b, 0);
+  const noiTotal = noi.reduce((a, b) => a + b, 0);
+  const annual = monthly.reduce((a, b) => a + b, 0);
+  const ytd = monthly.slice(0, new Date().getMonth() + 1).reduce((a, b) => a + b, 0);
+
+  return {
+    monthly, annual, ytd,
+    margin: revenueTotal > 0 ? annual / revenueTotal : null,
+    totals: {
+      revenue: revenueTotal,
+      opex: noiTotal - revenueTotal,          // negative
+      debtService: ds.reduce((a, b) => a + b, 0),
+      capex: capex.reduce((a, b) => a + b, 0),
+      draws: draws.reduce((a, b) => a + b, 0),
+      fcf: annual,
+    },
+  };
+}
+
+/** Cash above the floor and reserve obligations — what could actually be deployed today. */
+function deployableCapital(year, liquidity, reserve) {
+  const operatingCash = store.accounts
+    .filter(a => a.ledger === 'business' && a.type === 'operating')
+    .reduce((s, a) => s + a.balance, 0);
+  const reserveShortfall = Math.max(0, reserve.target - reserve.currentReserve);
+  return operatingCash - liquidity.requiredFloor - reserveShortfall;
+}
+
+function runwayMonths(year) {
+  const operatingCash = store.accounts
+    .filter(a => a.ledger === 'business' && a.type === 'operating')
+    .reduce((s, a) => s + a.balance, 0);
+  const avg = avgMonthlyExpenseValue(year);
+  return avg > 0 ? operatingCash / avg : null;
+}
+
+function avgMonthlyExpenseValue(year) {
+  const byMonth = Array(12).fill(0);
+  store.transactions
+    .filter(t => t.ledger === 'business' && t.amount < 0 && new Date(t.date).getFullYear() === year)
+    .forEach(t => { byMonth[new Date(t.date).getMonth()] += -t.amount; });
+  const nonZero = byMonth.filter(v => v > 0);
+  return nonZero.length ? nonZero.reduce((a, b) => a + b, 0) / nonZero.length : 0;
+}
+
+function loanOutstandingBalance(loan, asOf = new Date()) {
+  const paidPrincipal = loan.payments
+    .filter(p => p.paid || new Date(p.dueDate) <= asOf)
+    .reduce((s, p) => s + p.principal, 0);
+  return Math.max(loan.principal - paidPrincipal, 0);
+}
+
+function reserveTrajectory(year) {
+  const base = store.accounts.filter(a => a.type === 'reserve').reduce((s, a) => s + a.balance, 0);
+  const byMonth = Array(12).fill(0);
+  store.reserveTransfers.forEach(t => {
+    const d = new Date(t.date);
+    if (d.getFullYear() === year) byMonth[d.getMonth()] += t.direction === 'sweep_in' ? t.amount : -t.amount;
+  });
+  let running = base;
+  return byMonth.map((delta, i) => { running += delta; return { month: i + 1, balance: running }; });
+}
+
+// ---------- Calculation logic (mirrors server/lib/calculations.js) ----------
+function monthlyNOI(year) {
+  const byMonth = Array(12).fill(0);
+  store.transactions
+    .filter(t => t.ledger === 'business' && !t.isCapex && new Date(t.date).getFullYear() === year)
+    .forEach(t => { byMonth[new Date(t.date).getMonth()] += t.amount; });
+  return byMonth;
+}
+
+function monthlyDebtService(year) {
+  const byMonth = Array(12).fill(0);
+  store.loans.forEach(l => {
+    l.payments.forEach(p => {
+      const d = new Date(p.dueDate);
+      if (d.getFullYear() === year) byMonth[d.getMonth()] += p.principal + p.interest;
+    });
+  });
+  return byMonth;
+}
+
+function computeDSCR(year) {
+  const noi = monthlyNOI(year);
+  const ds = monthlyDebtService(year);
+  const threshold = store.settings.dscrThreshold;
+  const monthly = noi.map((n, i) => {
+    const debtService = ds[i];
+    const ratio = debtService === 0 ? null : n / debtService;
+    return { month: i + 1, noi: n, debtService, dscr: ratio };
+  });
+  const withRatio = monthly.filter(m => m.dscr !== null);
+  const worst = withRatio.length ? withRatio.reduce((a, b) => (b.dscr < a.dscr ? b : a)) : null;
+  return { threshold, monthly, worstMonth: worst, passes: worst ? worst.dscr >= threshold : null };
+}
+
+function avgMonthlyExpense(year) {
+  const byMonth = Array(12).fill(0);
+  store.transactions
+    .filter(t => t.ledger === 'business' && t.amount < 0 && new Date(t.date).getFullYear() === year)
+    .forEach(t => { byMonth[new Date(t.date).getMonth()] += -t.amount; });
+  const nonZero = byMonth.filter(v => v > 0);
+  return nonZero.length ? nonZero.reduce((a, b) => a + b, 0) / nonZero.length : 0;
+}
+
+function liquidityFloor(year) {
+  const bufferPct = store.settings.liquidityBufferPct;
+  const startingBalance = store.accounts
+    .filter(a => a.ledger === 'business' && a.type === 'operating')
+    .reduce((s, a) => s + a.balance, 0);
+  const noi = monthlyNOI(year);
+  let running = startingBalance;
+  const trajectory = noi.map((n, i) => { running += n; return { month: i + 1, balance: running }; });
+  const floorMonth = trajectory.reduce((a, b) => (b.balance < a.balance ? b : a), trajectory[0] || { month: 1, balance: startingBalance });
+  const requiredFloor = avgMonthlyExpense(year) * bufferPct;
+  return { startingBalance, trajectory, floorMonth, bufferPct, requiredFloor, passes: floorMonth.balance >= requiredFloor };
+}
+
+function reserveStatus(year) {
+  const targetMonths = store.settings.reserveTargetMonths;
+  const reserveAccountTotal = store.accounts.filter(a => a.type === 'reserve').reduce((s, a) => s + a.balance, 0);
+  const sweepIn = store.reserveTransfers.filter(t => t.direction === 'sweep_in').reduce((s, t) => s + t.amount, 0);
+  const drawOut = store.reserveTransfers.filter(t => t.direction === 'draw_out').reduce((s, t) => s + t.amount, 0);
+  const currentReserve = reserveAccountTotal + sweepIn - drawOut;
+  const target = avgMonthlyExpense(year) * targetMonths;
+  return { currentReserve, targetMonths, target, fundedPct: target > 0 ? Math.min(currentReserve / target, 1) : null, passes: currentReserve >= target };
+}
+
+function opportunityCostUnits(price, unitValue) {
+  if (!unitValue) return null;
+  return price / unitValue;
+}
+
+function buildAmortizationSchedule({ principal, ratePct, termMonths, startDate }) {
+  const monthlyRate = ratePct / 100 / 12;
+  const payment = monthlyRate === 0
+    ? principal / termMonths
+    : (principal * monthlyRate) / (1 - Math.pow(1 + monthlyRate, -termMonths));
+  let balance = principal;
+  const schedule = [];
+  const start = new Date(startDate);
+  for (let i = 0; i < termMonths; i++) {
+    const interest = balance * monthlyRate;
+    const principalPortion = payment - interest;
+    balance -= principalPortion;
+    const due = new Date(start);
+    due.setMonth(due.getMonth() + i + 1);
+    schedule.push({ dueDate: due.toISOString().slice(0, 10), principal: Math.round(principalPortion * 100) / 100, interest: Math.round(interest * 100) / 100, paid: false });
+  }
+  return schedule;
+}
+
+// ---------- Formatting ----------
+const money = n => (n === null || n === undefined || Number.isNaN(n)) ? '—' : new Intl.NumberFormat('en-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n);
+const ratioFmt = n => (n === null || n === undefined) ? '—' : `${n.toFixed(2)}x`;
+const pctFmt = n => (n === null || n === undefined) ? '—' : `${(n * 100).toFixed(0)}%`;
+
+// ---------- Charts (inline SVG, no external library) ----------
+let tipEl = null;
+function showTip(e, text) {
+  if (!tipEl) { tipEl = document.createElement('div'); tipEl.className = 'chart-tooltip'; document.body.appendChild(tipEl); }
+  tipEl.textContent = text;
+  tipEl.style.display = 'block';
+  tipEl.style.left = (e.clientX + 14) + 'px';
+  tipEl.style.top = (e.clientY - 12) + 'px';
+}
+function hideTip() { if (tipEl) tipEl.style.display = 'none'; }
+
+function svgWrap(innerSVG, width, height) {
+  const div = document.createElement('div');
+  div.innerHTML = `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" style="display:block">${innerSVG}</svg>`;
+  const svg = div.firstElementChild;
+  svg.querySelectorAll('[data-tip]').forEach(node => {
+    node.addEventListener('mousemove', e => showTip(e, node.getAttribute('data-tip')));
+    node.addEventListener('mouseleave', hideTip);
+  });
+  return svg;
+}
+
+function sparkline(values, { width = 160, height = 36, color = 'var(--gold)' } = {}) {
+  const padding = 4;
+  const min = Math.min(...values), max = Math.max(...values);
+  const range = (max - min) || 1;
+  const step = (width - padding * 2) / (values.length - 1 || 1);
+  const path = values.map((v, i) => {
+    const x = padding + i * step;
+    const y = height - padding - ((v - min) / range) * (height - padding * 2);
+    return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const last = values[values.length - 1];
+  const lastX = padding + (values.length - 1) * step;
+  const lastY = height - padding - ((last - min) / range) * (height - padding * 2);
+  const svg = `<path d="${path}" fill="none" stroke="${color}" stroke-width="1.5"/><circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="2.5" fill="${color}"/>`;
+  return svgWrap(svg, width, height);
+}
+
+/** 12-point (or N-point) line chart with a dashed target line; points colored by pass/fail vs. target. */
+function lineChartWithTarget(values, targetValue, { width = 680, height = 180, padding = 32 } = {}) {
+  const allVals = [...values, targetValue].filter(v => v !== null && v !== undefined);
+  const min = Math.min(...allVals, 0), max = Math.max(...allVals);
+  const range = (max - min) || 1;
+  const innerW = width - padding * 2, innerH = height - padding * 2;
+  const step = innerW / (values.length - 1 || 1);
+  const xFor = i => padding + i * step;
+  const yFor = v => padding + innerH - ((v - min) / range) * innerH;
+  const path = values.map((v, i) => `${i === 0 ? 'M' : 'L'}${xFor(i).toFixed(1)},${yFor(v).toFixed(1)}`).join(' ');
+  const targetY = yFor(targetValue);
+  const points = values.map((v, i) =>
+    `<circle cx="${xFor(i).toFixed(1)}" cy="${yFor(v).toFixed(1)}" r="4" fill="${v >= targetValue ? 'var(--positive)' : 'var(--negative)'}" data-tip="Month ${i + 1}: ${money(v)} (target ${money(targetValue)})"/>`
+  ).join('');
+  const axisLabels = values.map((v, i) =>
+    `<text x="${xFor(i).toFixed(1)}" y="${height - 8}" font-size="9" fill="var(--text-faint)" text-anchor="middle" font-family="IBM Plex Mono">${i + 1}</text>`
+  ).join('');
+  const svg = `
+    <line x1="${padding}" y1="${targetY.toFixed(1)}" x2="${width - padding}" y2="${targetY.toFixed(1)}" stroke="var(--gold)" stroke-width="1" stroke-dasharray="4,3"/>
+    <path d="${path}" fill="none" stroke="var(--text-muted)" stroke-width="1.5"/>
+    ${points}${axisLabels}`;
+  return svgWrap(svg, width, height);
+}
+
+/** Vertical bar chart; bars colored by pass/fail vs. an optional threshold. */
+function barChart(items, { width = 680, height = 180, padding = 32, thresholdValue = null } = {}) {
+  const values = items.map(it => it.value);
+  const max = Math.max(...values, thresholdValue || 0, 0);
+  const min = Math.min(...values, thresholdValue || 0, 0);
+  const range = (max - min) || 1;
+  const innerW = width - padding * 2, innerH = height - padding * 2;
+  const gap = innerW / items.length;
+  const barW = gap * 0.6;
+  const zeroY = padding + innerH - ((0 - min) / range) * innerH;
+  const bars = items.map((it, i) => {
+    const x = padding + i * gap + (gap - barW) / 2;
+    const valY = padding + innerH - ((it.value - min) / range) * innerH;
+    const h = Math.abs(valY - zeroY);
+    const y = Math.min(valY, zeroY);
+    const pass = thresholdValue === null ? true : it.value >= thresholdValue;
+    const color = pass ? 'var(--positive)' : 'var(--negative)';
+    const tip = it.tip || `${it.label}: ${it.value.toLocaleString()}`;
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(h, 1).toFixed(1)}" fill="${color}" opacity="0.85" data-tip="${tip}"/>
+            <text x="${(x + barW / 2).toFixed(1)}" y="${height - 8}" font-size="9" fill="var(--text-faint)" text-anchor="middle" font-family="IBM Plex Mono">${it.label}</text>`;
+  }).join('');
+  const thresholdY = padding + innerH - ((thresholdValue - min) / range) * innerH;
+  const thresholdLine = thresholdValue !== null
+    ? `<line x1="${padding}" y1="${thresholdY.toFixed(1)}" x2="${width - padding}" y2="${thresholdY.toFixed(1)}" stroke="var(--gold)" stroke-width="1" stroke-dasharray="4,3"/>`
+    : '';
+  const svg = `<line x1="${padding}" y1="${zeroY.toFixed(1)}" x2="${width - padding}" y2="${zeroY.toFixed(1)}" stroke="var(--border)" stroke-width="1"/>${bars}${thresholdLine}`;
+  return svgWrap(svg, width, height);
+}
+
+const CHART_PALETTE = ['#c9a227', '#3ecf8e', '#5b8def', '#e5484d', '#a37fd8', '#4c5561', '#e0a63e'];
+
+/** Donut chart with a side legend; items: [{label, value}]. */
+function donutChart(items, { size = 160, strokeWidth = 26 } = {}) {
+  const total = items.reduce((s, it) => s + it.value, 0) || 1;
+  const radius = (size - strokeWidth) / 2;
+  const cx = size / 2, cy = size / 2;
+  const circumference = 2 * Math.PI * radius;
+  let offsetAcc = 0;
+  const segments = items.map((it, i) => {
+    const dash = (it.value / total) * circumference;
+    const seg = `<circle cx="${cx}" cy="${cy}" r="${radius}" fill="none" stroke="${CHART_PALETTE[i % CHART_PALETTE.length]}" stroke-width="${strokeWidth}" stroke-dasharray="${dash.toFixed(1)} ${(circumference - dash).toFixed(1)}" stroke-dashoffset="${(-offsetAcc).toFixed(1)}" transform="rotate(-90 ${cx} ${cy})"/>`;
+    offsetAcc += dash;
+    return seg;
+  }).join('');
+  const svg = svgWrap(segments, size, size);
+
+  const legend = document.createElement('div');
+  items.forEach((it, i) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:6px;font-family:var(--font-mono);color:var(--text)';
+    row.innerHTML = `<span style="width:10px;height:10px;background:${CHART_PALETTE[i % CHART_PALETTE.length]};display:inline-block;border-radius:2px;"></span> ${it.label} — ${money(it.value)}`;
+    legend.appendChild(row);
+  });
+
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;gap:24px;align-items:center;flex-wrap:wrap;padding:18px';
+  wrap.append(svg, legend);
+  return wrap;
+}
+
+/**
+ * Waterfall chart: Revenue → OpEx → Debt service → CapEx → Draws → FCF.
+ * steps: [{label, value}] (+/-); final step {label, isTotal:true} draws from zero.
+ */
+function waterfallChart(steps, { width = 720, height = 220, padding = 36 } = {}) {
+  let running = 0;
+  const computed = steps.map(s => {
+    if (s.isTotal) return { ...s, from: 0, to: running };
+    const from = running; running += s.value;
+    return { ...s, from, to: running };
+  });
+  const allVals = computed.flatMap(c => [c.from, c.to, 0]);
+  const min = Math.min(...allVals), max = Math.max(...allVals);
+  const range = (max - min) || 1;
+  const innerW = width - padding * 2, innerH = height - padding * 2;
+  const gap = innerW / computed.length;
+  const barW = gap * 0.62;
+  const yFor = v => padding + innerH - ((v - min) / range) * innerH;
+
+  const parts = computed.map((c, i) => {
+    const x = padding + i * gap + (gap - barW) / 2;
+    const yTop = Math.min(yFor(c.from), yFor(c.to));
+    const h = Math.max(Math.abs(yFor(c.from) - yFor(c.to)), 1.5);
+    const delta = c.isTotal ? c.to : c.value;
+    const color = c.isTotal ? 'var(--gold)' : delta >= 0 ? 'var(--positive)' : 'var(--negative)';
+    const connector = i < computed.length - 1
+      ? `<line x1="${(x + barW).toFixed(1)}" y1="${yFor(c.to).toFixed(1)}" x2="${(padding + (i + 1) * gap + (gap - barW) / 2).toFixed(1)}" y2="${yFor(c.to).toFixed(1)}" stroke="var(--text-faint)" stroke-width="1" stroke-dasharray="2,3"/>`
+      : '';
+    return `<rect x="${x.toFixed(1)}" y="${yTop.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${color}" opacity="0.88" data-tip="${c.label}: ${money(delta)}"/>
+            ${connector}
+            <text x="${(x + barW / 2).toFixed(1)}" y="${height - 8}" font-size="9" fill="var(--text-faint)" text-anchor="middle" font-family="IBM Plex Mono">${c.label}</text>`;
+  }).join('');
+
+  const zeroLine = `<line x1="${padding}" y1="${yFor(0).toFixed(1)}" x2="${width - padding}" y2="${yFor(0).toFixed(1)}" stroke="var(--border)" stroke-width="1"/>`;
+  return svgWrap(zeroLine + parts, width, height);
+}
+
+/** Animate a number counting up in a node over ~900ms. */
+function countUp(node, target, formatter = money) {
+  const duration = 900;
+  const start = performance.now();
+  function frame(now) {
+    const t = Math.min((now - start) / duration, 1);
+    const eased = 1 - Math.pow(1 - t, 3);
+    node.textContent = formatter(target * eased);
+    if (t < 1) requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+
+// ---------- Router / render ----------
+const routes = [
+  { path: 'dashboard', label: 'Dashboard', render: renderDashboard },
+  { path: 'accounts', label: 'Accounts', render: renderAccounts },
+  { path: 'assets', label: 'Assets & Liabilities', render: renderAssets },
+  { path: 'bills', label: 'Bills', render: renderBills },
+  { path: 'ledgers', label: 'Ledgers', render: renderLedgers },
+  { path: 'loans', label: 'Loans', render: renderLoans },
+  { path: 'expenses', label: 'Expenses', render: renderExpenses },
+  { path: 'evaluator', label: 'Purchase Evaluator', render: renderEvaluator },
+];
+let currentPath = 'dashboard';
+
+function navigate(path) { currentPath = path; render(); }
+
+function renderNav() {
+  const nav = document.getElementById('nav');
+  nav.innerHTML = '';
+  routes.forEach(r => {
+    const btn = document.createElement('button');
+    btn.className = 'nav-link' + (currentPath === r.path ? ' active' : '');
+    btn.textContent = r.label;
+    btn.onclick = () => navigate(r.path);
+    nav.appendChild(btn);
+  });
+}
+
+function render() {
+  renderNav();
+  const main = document.getElementById('main');
+  main.innerHTML = '';
+  if (currentPath === 'dashboard' && !hasSavedData) {
+    main.innerHTML = '<div class="notice">Starting from sample data. Everything you add or change saves automatically to this browser — no server, no account, nothing leaves this device.</div>';
+  }
+  routes.find(r => r.path === currentPath).render(main);
+  saveStore();
+}
+
+// ---------- Accounts ----------
+const ACCOUNT_TYPE_LABELS = { operating: 'Operating', reserve: 'Reserve', credit: 'Credit card / line of credit', personal: 'Personal', investment: 'Investment' };
+
+function balancesPanel(title, showAddLink) {
+  const ledgers = ['business', 'personal'];
+  const sections = ledgers.map(ledger => {
+    const accts = store.accounts.filter(a => a.ledger === ledger);
+    if (accts.length === 0) return null;
+    const netTotal = accts.reduce((s, a) => s + a.balance, 0);
+    return el('div', '', [
+      el('div', 'panel-header', [], `${ledger === 'business' ? 'Business' : 'Personal'} — net ${money(netTotal)}`),
+      table(['Account', 'Type', 'Balance'],
+        accts.map(a => [a.name, ACCOUNT_TYPE_LABELS[a.type] || a.type,
+          a.balance < 0 ? `<span style="color:var(--negative)">${money(a.balance)}</span>` : money(a.balance)])),
+    ]);
+  }).filter(Boolean);
+  return el('div', 'panel', [el('div', 'panel-header', [], title), ...sections]);
+}
+
+function renderAccounts(main) {
+  const header = el('div', 'page-header', [el('h1', 'page-title', [], 'Accounts')]);
+
+  const form = document.createElement('form');
+  form.className = 'form-panel';
+  form.innerHTML = `
+    <div class="field"><label>Account name</label><input type="text" name="name" required placeholder="e.g. Farm Operating, Personal Credit Card" /></div>
+    <div class="field"><label>Ledger</label><select name="ledger"><option value="business">Business</option><option value="personal">Personal</option></select></div>
+    <div class="field"><label>Type</label>
+      <select name="type">${Object.entries(ACCOUNT_TYPE_LABELS).map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Current balance (negative = amount owed, e.g. a credit card)</label><input type="number" step="0.01" name="balance" required /></div>
+    <button type="submit">Add account</button>
+  `;
+  form.onsubmit = e => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    store.accounts.push({ id: nextId++, name: fd.get('name'), ledger: fd.get('ledger'), type: fd.get('type'), balance: Number(fd.get('balance')) });
+    render();
+  };
+
+  const formPanel = el('div', 'panel', [el('div', 'panel-header', [], 'Add account'), form]);
+  main.append(header, balancesPanel('Balances', true), formPanel);
+}
+
+// ---------- Assets & Liabilities ----------
+function renderAssets(main) {
+  const header = el('div', 'page-header', [el('h1', 'page-title', [], 'Assets & Liabilities')]);
+
+  const assetForm = document.createElement('form');
+  assetForm.className = 'form-panel';
+  assetForm.innerHTML = `
+    <div class="field"><label>Asset name</label><input type="text" name="name" required /></div>
+    <div class="field"><label>Category</label><input type="text" name="category" placeholder="e.g. Real property, Equipment, Vehicle" /></div>
+    <div class="field"><label>Current value</label><input type="number" step="0.01" name="value" required /></div>
+    <div class="field"><label>Linked loan (optional)</label>
+      <select name="linkedLoanId"><option value="">None</option>${store.loans.map(l => `<option value="${l.id}">${l.lender} (${money(l.principal)})</option>`).join('')}</select>
+    </div>
+    <button type="submit">Add asset</button>
+  `;
+  assetForm.onsubmit = e => {
+    e.preventDefault();
+    const fd = new FormData(assetForm);
+    store.assets.push({
+      id: nextId++, name: fd.get('name'), category: fd.get('category') || 'Other',
+      value: Number(fd.get('value')), linkedLoanId: fd.get('linkedLoanId') ? Number(fd.get('linkedLoanId')) : null,
+    });
+    render();
+  };
+
+  const assetRows = store.assets.map(a => {
+    const linkedLoan = store.loans.find(l => l.id === a.linkedLoanId);
+    const liability = linkedLoan ? loanOutstandingBalance(linkedLoan) : 0;
+    const netEquity = a.value - liability;
+    return [a.name, a.category, money(a.value), linkedLoan ? `${linkedLoan.lender} — ${money(liability)}` : '—',
+      netEquity < 0 ? `<span style="color:var(--negative)">${money(netEquity)}</span>` : money(netEquity)];
+  });
+  const assetsPanel = el('div', 'panel', [
+    el('div', 'panel-header', [], 'Assets'),
+    store.assets.length === 0
+      ? el('div', 'empty-state', [], 'No assets on file.')
+      : table(['Asset', 'Category', 'Value', 'Linked liability', 'Net equity'], assetRows),
+  ]);
+
+  const loanLiabilityRows = store.loans.map(l => [l.lender, 'Loan', money(loanOutstandingBalance(l))]);
+  const creditLiabilityRows = store.accounts.filter(a => a.type === 'credit').map(a => [a.name, 'Credit card / LOC', money(Math.abs(a.balance))]);
+  const liabilitiesPanel = el('div', 'panel', [
+    el('div', 'panel-header', [], 'Liabilities'),
+    table(['Source', 'Type', 'Outstanding'], [...loanLiabilityRows, ...creditLiabilityRows]),
+  ]);
+
+  const totalAssets = store.assets.reduce((s, a) => s + a.value, 0)
+    + store.accounts.filter(a => a.type !== 'credit').reduce((s, a) => s + a.balance, 0);
+  const totalLiabilities = store.loans.reduce((s, l) => s + loanOutstandingBalance(l), 0)
+    + store.accounts.filter(a => a.type === 'credit').reduce((s, a) => s + Math.abs(a.balance), 0);
+  const netWorth = totalAssets - totalLiabilities;
+
+  const totalsGrid = el('div', 'grid', [
+    metricCard('Total assets', money(totalAssets), 'Physical assets + all cash/investment accounts', ''),
+    metricCard('Total liabilities', money(totalLiabilities), 'All loans + credit card/LOC balances', ''),
+    metricCard('Net worth', money(netWorth), '', netWorth >= 0 ? 'positive' : 'negative'),
+  ]);
+
+  // Composition — physical assets by category + cash/investment lumped as one slice
+  const byCategory = {};
+  store.assets.forEach(a => { byCategory[a.category] = (byCategory[a.category] || 0) + a.value; });
+  const cashTotal = store.accounts.filter(a => a.type !== 'credit').reduce((s, a) => s + a.balance, 0);
+  if (cashTotal > 0) byCategory['Cash & investment accounts'] = cashTotal;
+  const compositionItems = Object.entries(byCategory).map(([label, value]) => ({ label, value }));
+
+  const chartsPanel = el('div', 'panel', [
+    el('div', 'panel-header', [], 'Composition & solvency'),
+    el('div', '', [
+      compositionItems.length ? donutChart(compositionItems) : el('div', 'empty-state', [], 'No assets to chart yet.'),
+    ]),
+    barChart([
+      { label: 'Assets', value: totalAssets },
+      { label: 'Liabilities', value: totalLiabilities },
+      { label: 'Net worth', value: netWorth },
+    ]),
+  ]);
+
+  main.append(header, totalsGrid, chartsPanel, assetsPanel, liabilitiesPanel,
+    el('div', 'panel', [el('div', 'panel-header', [], 'Add asset'), assetForm]));
+}
+
+// ---------- Bills ----------
+function addMonths(dateStr, n) {
+  const d = new Date(dateStr);
+  d.setMonth(d.getMonth() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+function renderBills(main) {
+  const header = el('div', 'page-header', [el('h1', 'page-title', [], 'Bills')]);
+
+  const form = document.createElement('form');
+  form.className = 'form-panel';
+  form.innerHTML = `
+    <div class="field"><label>Name</label><input type="text" name="name" required /></div>
+    <div class="field"><label>Amount</label><input type="number" step="0.01" name="amount" required /></div>
+    <div class="field"><label>Frequency</label><select name="frequency"><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option></select></div>
+    <div class="field"><label>Ledger</label><select name="ledger"><option value="business">Business</option><option value="personal">Personal</option></select></div>
+    <div class="field"><label>Category</label><input type="text" name="category" /></div>
+    <div class="field"><label>Next due date</label><input type="date" name="nextDueDate" required /></div>
+    <button type="submit">Add bill</button>
+  `;
+  form.onsubmit = e => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    store.bills.push({
+      id: nextId++, name: fd.get('name'), amount: Number(fd.get('amount')), frequency: fd.get('frequency'),
+      ledger: fd.get('ledger'), category: fd.get('category') || 'General', nextDueDate: fd.get('nextDueDate'), paid: false,
+    });
+    render();
+  };
+
+  const today = new Date();
+  const billRows = store.bills.map(b => ({
+    due: b.nextDueDate, source: b.name, detail: `${b.frequency === 'monthly' ? 'Monthly' : 'Quarterly'} · ${b.ledger}`,
+    amount: b.amount, kind: 'bill', ref: b,
+  }));
+  const loanRows = store.loans.flatMap(l => l.payments
+    .filter(p => !p.paid)
+    .map(p => ({ due: p.dueDate, source: l.lender, detail: 'Loan payment', amount: p.principal + p.interest, kind: 'loan', ref: p })));
+
+  const combined = [...billRows, ...loanRows]
+    .filter(r => new Date(r.due) <= new Date(today.getFullYear(), today.getMonth() + 6, 0))
+    .sort((a, b) => new Date(a.due) - new Date(b.due));
+
+  const table_ = document.createElement('table');
+  table_.innerHTML = `<thead><tr><th>Due</th><th>Bill / lender</th><th>Detail</th><th>Amount</th><th>Status</th><th></th></tr></thead>`;
+  const tbody = document.createElement('tbody');
+  combined.forEach(row => {
+    const isOverdue = new Date(row.due) < today;
+    const tr = document.createElement('tr');
+    const statusBadge = isOverdue ? `<span class="badge fail">OVERDUE</span>` : `<span class="badge pass">DUE</span>`;
+    const btn = document.createElement('button');
+    btn.textContent = 'Mark paid';
+    btn.style.padding = '4px 10px';
+    btn.style.fontSize = '11px';
+    btn.onclick = () => {
+      if (row.kind === 'bill') {
+        row.ref.nextDueDate = addMonths(row.ref.nextDueDate, row.ref.frequency === 'monthly' ? 1 : 3);
+      } else {
+        row.ref.paid = true;
+      }
+      render();
+    };
+    tr.innerHTML = `<td>${row.due}</td><td>${row.source}</td><td>${row.detail}</td><td>${money(row.amount)}</td><td>${statusBadge}</td>`;
+    const actionTd = document.createElement('td');
+    actionTd.appendChild(btn);
+    tr.appendChild(actionTd);
+    tbody.appendChild(tr);
+  });
+  table_.appendChild(tbody);
+
+  const listPanel = el('div', 'panel', [
+    el('div', 'panel-header', [], 'Upcoming & overdue — bills and loan payments, next 6 months'),
+    combined.length === 0 ? el('div', 'empty-state', [], 'Nothing due.') : table_,
+  ]);
+
+  const monthTotals = {};
+  combined.forEach(r => {
+    const d = new Date(r.due);
+    const key = `${d.getMonth() + 1}/${String(d.getFullYear()).slice(2)}`;
+    monthTotals[key] = (monthTotals[key] || 0) + r.amount;
+  });
+  const monthChartPanel = el('div', 'panel', [
+    el('div', 'panel-header', [], 'Total due by month'),
+    Object.keys(monthTotals).length
+      ? barChart(Object.entries(monthTotals).map(([label, value]) => ({ label, value: Math.round(value) })))
+      : el('div', 'empty-state', [], 'Nothing due.'),
+  ]);
+
+  main.append(header, monthChartPanel, listPanel, el('div', 'panel', [el('div', 'panel-header', [], 'Add recurring bill'), form]));
+}
+
+function renderDashboard(main) {
+  const year = new Date().getFullYear();
+  const dscr = computeDSCR(year);
+  const liquidity = liquidityFloor(year);
+  const reserve = reserveStatus(year);
+  const ownerDrawYTD = store.ownerDraws.filter(d => new Date(d.date).getFullYear() === year).reduce((s, d) => s + d.amount, 0);
+  const upcoming = store.loans
+    .flatMap(l => l.payments.map(p => ({ ...p, lender: l.lender })))
+    .filter(p => new Date(p.dueDate) >= new Date())
+    .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate))
+    .slice(0, 5);
+
+  const header = el('div', 'page-header', [
+    el('h1', 'page-title', [], 'Dashboard'),
+    el('span', 'page-meta', [], `FY ${year}`),
+  ]);
+
+  const netBalance = store.accounts.reduce((s, a) => s + a.balance, 0);
+  const businessNet = store.accounts.filter(a => a.ledger === 'business').reduce((s, a) => s + a.balance, 0);
+  const personalNet = store.accounts.filter(a => a.ledger === 'personal').reduce((s, a) => s + a.balance, 0);
+
+  const grid = el('div', 'grid', [
+    metricCard('Net balance', money(netBalance),
+      `Business ${money(businessNet)} · Personal ${money(personalNet)}`,
+      netBalance >= 0 ? 'positive' : 'negative'),
+    metricCard('Liquidity floor', money(liquidity.floorMonth.balance),
+      `Month ${liquidity.floorMonth.month} · required ${money(liquidity.requiredFloor)} (${pctFmt(liquidity.bufferPct)} buffer)`,
+      liquidity.passes ? 'positive' : 'negative',
+      liquidity.trajectory.map(m => m.balance)),
+    metricCard('DSCR (worst month)', dscr.worstMonth ? ratioFmt(dscr.worstMonth.dscr) : '—',
+      `Threshold ${ratioFmt(dscr.threshold)} · month ${dscr.worstMonth ? dscr.worstMonth.month : '—'}`,
+      dscr.passes === false ? 'negative' : dscr.passes ? 'positive' : '',
+      dscr.monthly.filter(m => m.dscr !== null).map(m => m.dscr)),
+    metricCard('Reserve', money(reserve.currentReserve),
+      `Target ${money(reserve.target)} (${reserve.targetMonths} mo.) · ${pctFmt(reserve.fundedPct)} funded`,
+      reserve.passes ? 'positive' : 'negative',
+      reserveTrajectory(year).map(m => m.balance)),
+    metricCard('Owner draw YTD', money(ownerDrawYTD), '', ''),
+  ]);
+
+  const panel = el('div', 'panel', [
+    el('div', 'panel-header', [], 'Upcoming debt service'),
+    upcoming.length === 0
+      ? el('div', 'empty-state', [], 'No scheduled payments on file.')
+      : table(['Due', 'Lender', 'Principal', 'Interest', 'Total'],
+          upcoming.map(p => [p.dueDate, p.lender, money(p.principal), money(p.interest), money(p.principal + p.interest)])),
+  ]);
+
+  const liquidityForecastPanel = el('div', 'panel', [
+    el('div', 'panel-header', [], 'Liquidity floor — forecast vs. target'),
+    lineChartWithTarget(liquidity.trajectory.map(m => m.balance), liquidity.requiredFloor),
+    table(['Month', 'Projected balance', 'Target floor', 'Status'],
+      liquidity.trajectory.map(m => [
+        m.month, money(m.balance), money(liquidity.requiredFloor),
+        m.balance >= liquidity.requiredFloor ? '<span class="badge pass">CLEARS</span>' : '<span class="badge fail">BELOW</span>',
+      ])),
+  ]);
+
+  const reserveTraj = reserveTrajectory(year);
+  const reserveForecastPanel = el('div', 'panel', [
+    el('div', 'panel-header', [], 'Reserve — forecast vs. target'),
+    lineChartWithTarget(reserveTraj.map(m => m.balance), reserve.target),
+    table(['Month', 'Reserve balance', 'Target', 'Status'],
+      reserveTraj.map(m => [
+        m.month, money(m.balance), money(reserve.target),
+        m.balance >= reserve.target ? '<span class="badge pass">FUNDED</span>' : '<span class="badge fail">BELOW</span>',
+      ])),
+  ]);
+
+  const dscrChartPanel = el('div', 'panel', [
+    el('div', 'panel-header', [], 'DSCR by month — vs. threshold'),
+    barChart(dscr.monthly.filter(m => m.dscr !== null).map(m => ({ label: m.month, value: Number(m.dscr.toFixed(2)), tip: `Month ${m.month}: ${m.dscr.toFixed(2)}x (NOI ${money(m.noi)} / DS ${money(m.debtService)})` })), { thresholdValue: dscr.threshold }),
+  ]);
+
+  // ----- Free cash flow hero -----
+  const fcf = freeCashFlow(year);
+  const deployable = deployableCapital(year, liquidity, reserve);
+  const runway = runwayMonths(year);
+
+  const heroValue = el('div', 'hero-value' + (fcf.ytd < 0 ? ' negative' : ''), [], money(0));
+  const hero = el('div', 'hero', [
+    el('div', '', [
+      el('div', 'hero-label', [], 'Free cash flow — year to date'),
+      heroValue,
+      el('div', 'metric-sub', [], 'NOI − debt service − capex − owner draws'),
+    ]),
+    el('div', 'hero-side', [
+      el('div', 'hero-stat', [
+        el('div', 'metric-label', [], 'FCF margin'),
+        el('div', 'metric-value', [], fcf.margin !== null ? pctFmt(fcf.margin) : '—'),
+      ]),
+      el('div', 'hero-stat', [
+        el('div', 'metric-label', [], 'Deployable capital'),
+        el('div', 'metric-value ' + (deployable >= 0 ? 'positive' : 'negative'), [], money(deployable)),
+      ]),
+      el('div', 'hero-stat', [
+        el('div', 'metric-label', [], 'Runway'),
+        el('div', 'metric-value', [], runway !== null ? `${runway.toFixed(1)} mo.` : '—'),
+      ]),
+    ]),
+  ]);
+  requestAnimationFrame(() => countUp(heroValue, fcf.ytd));
+
+  // ----- Cash flow waterfall -----
+  const waterfallPanel = el('div', 'panel', [
+    el('div', 'panel-header', [], 'Cash flow waterfall — where the money goes'),
+    waterfallChart([
+      { label: 'Revenue', value: fcf.totals.revenue },
+      { label: 'OpEx', value: fcf.totals.opex },
+      { label: 'Debt svc', value: -fcf.totals.debtService },
+      { label: 'CapEx', value: -fcf.totals.capex },
+      { label: 'Draws', value: -fcf.totals.draws },
+      { label: 'FCF', isTotal: true },
+    ]),
+  ]);
+
+  // ----- Monthly FCF bars -----
+  const fcfChartPanel = el('div', 'panel', [
+    el('div', 'panel-header', [], 'Free cash flow by month'),
+    barChart(fcf.monthly.map((v, i) => ({ label: i + 1, value: Math.round(v), tip: `Month ${i + 1}: ${money(v)}` })), { thresholdValue: 0 }),
+  ]);
+
+  // ----- War Room: interactive purchase simulator -----
+  const simPanel = el('div', 'panel', []);
+  simPanel.appendChild(el('div', 'panel-header', [], 'War room — simulate a purchase before you make it'));
+  const simGrid = document.createElement('div');
+  simGrid.className = 'sim-grid';
+
+  const controls = document.createElement('div');
+  controls.className = 'sim-controls';
+  controls.innerHTML = `
+    <div class="field">
+      <label>Cash purchase amount — <span class="sim-value" id="sim-price-label">$0</span></label>
+      <input type="range" id="sim-price" min="0" max="250000" step="1000" value="0" />
+    </div>
+    <div class="field">
+      <label>Added monthly debt service (if financed) — <span class="sim-value" id="sim-ds-label">$0</span></label>
+      <input type="range" id="sim-ds" min="0" max="5000" step="50" value="0" />
+    </div>
+    <p style="font-size:11px;color:var(--text-faint);font-family:var(--font-mono);margin:0;letter-spacing:0.03em">
+      Drag either lever. Every readout recalculates live against the same
+      liquidity, DSCR and FCF math driving the rest of this dossier.
+    </p>
+  `;
+
+  const readouts = document.createElement('div');
+  readouts.className = 'sim-readouts';
+  readouts.innerHTML = `
+    <div class="metric-card"><div class="metric-label">Verdict</div><span class="badge pass" id="sim-verdict">CLEARS</span></div>
+    <div class="metric-card"><div class="metric-label">Floor after purchase</div><div class="metric-value" id="sim-floor">—</div><div class="metric-sub">required ${money(liquidity.requiredFloor)}</div></div>
+    <div class="metric-card"><div class="metric-label">Worst-month DSCR after</div><div class="metric-value" id="sim-dscr">—</div><div class="metric-sub">threshold ${ratioFmt(dscr.threshold)}</div></div>
+    <div class="metric-card"><div class="metric-label">Annual FCF after</div><div class="metric-value" id="sim-fcf">—</div><div class="metric-sub">currently ${money(fcf.annual)}</div></div>
+    <div class="metric-card"><div class="metric-label">Max cash headroom</div><div class="metric-value" id="sim-headroom">—</div><div class="metric-sub">before floor breach</div></div>
+  `;
+
+  simGrid.append(controls, readouts);
+  simPanel.appendChild(simGrid);
+
+  function runSim() {
+    const price = Number(controls.querySelector('#sim-price').value);
+    const addedDS = Number(controls.querySelector('#sim-ds').value);
+    controls.querySelector('#sim-price-label').textContent = money(price);
+    controls.querySelector('#sim-ds-label').textContent = money(addedDS) + '/mo';
+
+    const floorAfter = liquidity.floorMonth.balance - price;
+    const floorPass = floorAfter >= liquidity.requiredFloor;
+
+    let dscrAfter = dscr.worstMonth ? dscr.worstMonth.dscr : null;
+    let dscrPass = dscr.passes !== false;
+    if (dscr.worstMonth && addedDS > 0) {
+      const newDS = dscr.worstMonth.debtService + addedDS;
+      dscrAfter = newDS === 0 ? null : dscr.worstMonth.noi / newDS;
+      dscrPass = dscrAfter !== null && dscrAfter >= dscr.threshold;
+    }
+
+    // A cash purchase is capex → hits FCF in full this year; financing hits it via 12 months of debt service.
+    const fcfAfter = fcf.annual - price - addedDS * 12;
+    const headroom = Math.max(0, liquidity.floorMonth.balance - liquidity.requiredFloor);
+    const verdict = floorPass && dscrPass;
+
+    const set = (id, text, tone) => {
+      const node = readouts.querySelector('#' + id);
+      node.textContent = text;
+      if (tone !== undefined) node.className = 'metric-value ' + tone;
+    };
+    set('sim-floor', money(floorAfter), floorPass ? 'positive' : 'negative');
+    set('sim-dscr', dscrAfter !== null ? ratioFmt(dscrAfter) : '—', dscrPass ? 'positive' : 'negative');
+    set('sim-fcf', money(fcfAfter), fcfAfter >= 0 ? 'positive' : 'negative');
+    set('sim-headroom', money(headroom));
+    const verdictNode = readouts.querySelector('#sim-verdict');
+    verdictNode.textContent = verdict ? 'CLEARS' : 'FAILS';
+    verdictNode.className = 'badge ' + (verdict ? 'pass' : 'fail');
+  }
+  controls.querySelector('#sim-price').addEventListener('input', runSim);
+  controls.querySelector('#sim-ds').addEventListener('input', runSim);
+  runSim();
+
+  main.append(header, hero, grid, waterfallPanel, simPanel, fcfChartPanel,
+    balancesPanel('Account balances'), liquidityForecastPanel, reserveForecastPanel, dscrChartPanel, panel);
+}
+
+// ---------- Ledgers ----------
+function renderLedgers(main) {
+  const header = el('div', 'page-header', [el('h1', 'page-title', [], 'Ledgers')]);
+
+  const form = document.createElement('form');
+  form.className = 'form-panel';
+  form.innerHTML = `
+    <div class="field"><label>Account</label>
+      <select name="accountId" required>${store.accounts.map(a => `<option value="${a.id}">${a.name} (${a.ledger})</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Ledger</label>
+      <select name="ledger"><option value="business">Business</option><option value="personal">Personal</option></select>
+    </div>
+    <div class="field"><label>Date</label><input type="date" name="date" required /></div>
+    <div class="field"><label>Amount (negative = outflow)</label><input type="number" step="0.01" name="amount" required /></div>
+    <div class="field"><label>Description</label><input type="text" name="description" /></div>
+    <div class="field"><label><input type="checkbox" name="isMixedUse" /> Mixed-use (cost-basis split)</label></div>
+    <div class="field"><label>Business % of cost</label><input type="number" name="mixedUsePct" min="0" max="100" /></div>
+    <div class="field"><label><input type="checkbox" name="isCapex" /> Capital expenditure</label></div>
+    <button type="submit">Save transaction</button>
+  `;
+  form.onsubmit = e => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    store.transactions.push({
+      id: nextId++,
+      accountId: Number(fd.get('accountId')),
+      ledger: fd.get('ledger'),
+      date: fd.get('date'),
+      amount: Number(fd.get('amount')),
+      description: fd.get('description'),
+      isMixedUse: fd.get('isMixedUse') === 'on',
+      mixedUsePct: fd.get('mixedUsePct') ? Number(fd.get('mixedUsePct')) : null,
+      isCapex: fd.get('isCapex') === 'on',
+    });
+    render();
+  };
+
+  const formPanel = el('div', 'panel', [el('div', 'panel-header', [], 'Record transaction'), form]);
+
+  const rows = [...store.transactions].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const listPanel = el('div', 'panel', [
+    el('div', 'panel-header', [], 'Recent transactions'),
+    rows.length === 0
+      ? el('div', 'empty-state', [], 'No transactions recorded yet.')
+      : table(['Date', 'Ledger', 'Description', 'Amount'], rows.map(t => [t.date, t.ledger, t.description || '', money(t.amount)])),
+  ]);
+
+  main.append(header, formPanel, listPanel);
+}
+
+// ---------- Loans ----------
+function renderLoans(main) {
+  const header = el('div', 'page-header', [el('h1', 'page-title', [], 'Loans')]);
+
+  const form = document.createElement('form');
+  form.className = 'form-panel';
+  form.innerHTML = `
+    <div class="field"><label>Lender</label><input type="text" name="lender" required /></div>
+    <div class="field"><label>Purpose</label>
+      <select name="purpose"><option value="operating">Operating</option><option value="term">Term</option><option value="capital_asset">Capital asset</option></select>
+    </div>
+    <div class="field"><label>Principal</label><input type="number" step="0.01" name="principal" required /></div>
+    <div class="field"><label>Interest rate (%)</label><input type="number" step="0.001" name="ratePct" required /></div>
+    <div class="field"><label>Rate type</label><select name="rateType"><option value="fixed">Fixed</option><option value="variable">Variable</option></select></div>
+    <div class="field"><label>Term (months)</label><input type="number" name="termMonths" required /></div>
+    <div class="field"><label>Start date</label><input type="date" name="startDate" required /></div>
+    <button type="submit">Save loan &amp; generate schedule</button>
+  `;
+  form.onsubmit = e => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    const principal = Number(fd.get('principal'));
+    const ratePct = Number(fd.get('ratePct'));
+    const termMonths = Number(fd.get('termMonths'));
+    const startDate = fd.get('startDate');
+    const payments = buildAmortizationSchedule({ principal, ratePct, termMonths, startDate });
+    store.loans.push({
+      id: nextId++, lender: fd.get('lender'), purpose: fd.get('purpose'),
+      principal, ratePct, rateType: fd.get('rateType'), termMonths, startDate, payments,
+    });
+    render();
+  };
+
+  const formPanel = el('div', 'panel', [el('div', 'panel-header', [], 'Add loan'), form]);
+  const listPanel = el('div', 'panel', [
+    el('div', 'panel-header', [], 'Loan book'),
+    store.loans.length === 0
+      ? el('div', 'empty-state', [], 'No loans on file.')
+      : table(['Lender', 'Purpose', 'Principal', 'Rate', 'Term', 'Start'],
+          store.loans.map(l => [l.lender, l.purpose, money(l.principal), `${l.ratePct.toFixed(2)}% (${l.rateType})`, `${l.termMonths} mo.`, l.startDate])),
+  ]);
+
+  main.append(header, formPanel, listPanel);
+}
+
+// ---------- Expenses ----------
+const CLASS_LABELS = { fixed: 'Fixed', variable_seasonal: 'Variable / seasonal', capex: 'Capital expenditure', overhead: 'Overhead' };
+
+function renderExpenses(main) {
+  const header = el('div', 'page-header', [el('h1', 'page-title', [], 'Expenses')]);
+
+  const form = document.createElement('form');
+  form.className = 'form-panel';
+  form.innerHTML = `
+    <div class="field"><label>Name</label><input type="text" name="name" required /></div>
+    <div class="field"><label>Class</label>
+      <select name="klass">${Object.entries(CLASS_LABELS).map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Ledger</label><select name="ledger"><option value="business">Business</option><option value="personal">Personal</option></select></div>
+    <div class="field"><label>Annual total</label><input type="number" step="0.01" name="annualTotal" required /></div>
+    <p style="font-size:12px;color:var(--text-muted);margin:0;">Monthly distribution defaults to even 1/12ths in this build.</p>
+    <button type="submit">Save category</button>
+  `;
+  form.onsubmit = e => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    store.expenseCategories.push({ id: nextId++, name: fd.get('name'), klass: fd.get('klass'), ledger: fd.get('ledger'), annualTotal: Number(fd.get('annualTotal')) });
+    render();
+  };
+
+  const formPanel = el('div', 'panel', [el('div', 'panel-header', [], 'Add category'), form]);
+
+  const groupPanels = Object.entries(CLASS_LABELS).map(([klass, label]) => {
+    const items = store.expenseCategories.filter(c => c.klass === klass);
+    return el('div', 'panel', [
+      el('div', 'panel-header', [], label),
+      items.length === 0
+        ? el('div', 'empty-state', [], 'No categories yet.')
+        : table(['Name', 'Ledger', 'Annual total'], items.map(c => [c.name, c.ledger, money(c.annualTotal)])),
+    ]);
+  });
+
+  const classTotals = Object.entries(CLASS_LABELS).map(([klass, label]) => ({
+    label, value: store.expenseCategories.filter(c => c.klass === klass).reduce((s, c) => s + c.annualTotal, 0),
+  })).filter(it => it.value > 0);
+
+  const chartPanel = el('div', 'panel', [
+    el('div', 'panel-header', [], 'Annual allocation by class'),
+    classTotals.length
+      ? donutChart(classTotals)
+      : el('div', 'empty-state', [], 'Add categories to see the breakdown.'),
+  ]);
+
+  main.append(header, chartPanel, formPanel, ...groupPanels);
+}
+
+// ---------- Purchase Evaluator ----------
+function renderEvaluator(main) {
+  const header = el('div', 'page-header', [el('h1', 'page-title', [], 'Purchase Evaluator')]);
+
+  const form = document.createElement('form');
+  form.className = 'form-panel';
+  form.innerHTML = `
+    <div class="field"><label>Item</label><input type="text" name="name" required /></div>
+    <div class="field"><label>Price</label><input type="number" step="0.01" name="price" required /></div>
+    <div class="field"><label>Classification</label>
+      <select name="purchaseClass"><option value="compounding">Compounding</option><option value="productive_tool">Productive tool</option><option value="consumptive">Consumptive</option></select>
+    </div>
+    <div class="field"><label><input type="checkbox" name="isMixedUse" /> Mixed-use (cost-basis split)</label></div>
+    <div class="field"><label>Business % of cost</label><input type="number" name="mixedUsePct" min="0" max="100" /></div>
+    <div class="field"><label>Core-asset unit value (annual return per unit — optional)</label><input type="number" step="0.01" name="unitValue" /></div>
+    <div class="field"><label>Added monthly debt service if financed</label><input type="number" step="0.01" name="addedDebtService" value="0" /></div>
+    <div class="field"><label>Reversibility (1 = illiquid, 5 = highly liquid)</label><input type="number" name="reversibility" min="1" max="5" value="3" /></div>
+    <button type="submit">Run evaluation</button>
+  `;
+
+  const resultHolder = el('div', '', []);
+  form.onsubmit = e => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    const year = new Date().getFullYear();
+    const price = Number(fd.get('price'));
+    const isMixedUse = fd.get('isMixedUse') === 'on';
+    const mixedUsePct = isMixedUse ? Number(fd.get('mixedUsePct')) : null;
+    const businessShare = isMixedUse ? price * (mixedUsePct / 100) : price;
+    const addedDebtService = Number(fd.get('addedDebtService')) || 0;
+
+    const liquidity = liquidityFloor(year);
+    const dscr = computeDSCR(year);
+
+    const projectedFloorAfterPurchase = liquidity.floorMonth.balance - businessShare;
+    const liquidityPass = projectedFloorAfterPurchase >= liquidity.requiredFloor;
+
+    let dscrPass = dscr.passes;
+    if (addedDebtService > 0 && dscr.worstMonth) {
+      const newDebtService = dscr.worstMonth.debtService + addedDebtService;
+      const newRatio = newDebtService === 0 ? null : dscr.worstMonth.noi / newDebtService;
+      dscrPass = newRatio !== null && newRatio >= dscr.threshold;
+    }
+
+    const unitValue = fd.get('unitValue') ? Number(fd.get('unitValue')) : null;
+    const opportunityCost = opportunityCostUnits(businessShare, unitValue);
+    const decision = liquidityPass && dscrPass !== false ? 'pass' : 'fail';
+
+    const record = { id: nextId++, name: fd.get('name'), price, purchaseClass: fd.get('purchaseClass'), decision, liquidityPass, dscrPass, opportunityCost };
+    store.purchaseEvaluations.unshift(record);
+
+    resultHolder.innerHTML = '';
+    resultHolder.append(el('div', 'panel', [
+      el('div', 'panel-header', [], `Result — ${record.name}`),
+      el('div', 'grid', [
+        metricBadgeCard('Decision', record.decision),
+        metricBadgeCard('Liquidity gate', record.liquidityPass ? 'CLEARS' : 'FAILS', record.liquidityPass),
+        metricBadgeCard('DSCR gate', record.dscrPass ? 'CLEARS' : 'FAILS', record.dscrPass),
+        metricCard('Opportunity cost', opportunityCost ? `${opportunityCost.toFixed(1)} units` : '—', '', ''),
+      ]),
+    ]));
+    renderHistory();
+  };
+
+  const formPanel = el('div', 'panel', [
+    el('div', 'panel-header', [], 'Five-gate test: liquidity floor · DSCR · opportunity cost · reversibility'),
+    form,
+  ]);
+
+  const historyPanel = el('div', 'panel', []);
+  function renderHistory() {
+    historyPanel.innerHTML = '';
+    historyPanel.append(
+      el('div', 'panel-header', [], 'Evaluation history'),
+      store.purchaseEvaluations.length === 0
+        ? el('div', 'empty-state', [], 'No evaluations run yet.')
+        : table(['Item', 'Price', 'Class', 'Decision'],
+            store.purchaseEvaluations.map(h => [h.name, money(h.price), h.purchaseClass, badgeHtml(h.decision, h.decision === 'pass')]))
+    );
+  }
+  renderHistory();
+
+  main.append(header, formPanel, resultHolder, historyPanel);
+}
+
+function metricBadgeCard(label, text, pass) {
+  const isPass = pass === undefined ? text.toLowerCase() === 'pass' || text === 'CLEARS' : pass;
+  const card = el('div', 'metric-card', [el('div', 'metric-label', [], label)]);
+  const badge = document.createElement('span');
+  badge.className = 'badge ' + (isPass ? 'pass' : 'fail');
+  badge.textContent = text.toUpperCase();
+  card.appendChild(badge);
+  return card;
+}
+
+// ---------- DOM helpers ----------
+function el(tag, className, children = [], text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  children.forEach(c => node.appendChild(c));
+  return node;
+}
+
+function metricCard(label, value, sub, tone, sparkValues) {
+  const card = el('div', 'metric-card', [
+    el('div', 'metric-label', [], label),
+    el('div', 'metric-value' + (tone ? ' ' + tone : ''), [], value),
+    ...(sub ? [el('div', 'metric-sub', [], sub)] : []),
+  ]);
+  if (sparkValues && sparkValues.length > 1) {
+    const wrap = document.createElement('div');
+    wrap.style.marginTop = '10px';
+    wrap.appendChild(sparkline(sparkValues, { color: tone === 'negative' ? 'var(--negative)' : 'var(--gold)' }));
+    card.appendChild(wrap);
+  }
+  return card;
+}
+
+function badgeHtml(text, isPass) {
+  return `<span class="badge ${isPass ? 'pass' : 'fail'}">${text}</span>`;
+}
+
+function table(headers, rows) {
+  const t = document.createElement('table');
+  const thead = document.createElement('thead');
+  thead.innerHTML = `<tr>${headers.map(h => `<th>${h}</th>`).join('')}</tr>`;
+  const tbody = document.createElement('tbody');
+  tbody.innerHTML = rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('');
+  t.append(thead, tbody);
+  return t;
+}
+
+render();
+</script>
+</body>
+</html>
