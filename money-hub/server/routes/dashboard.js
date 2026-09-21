@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { computeDSCR, liquidityFloor, reserveStatus } from '../lib/calculations.js';
+import { computeDSCR, liquidityFloor, reserveStatus, monthlyAccountFees } from '../lib/calculations.js';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 
@@ -8,7 +8,7 @@ const router = Router();
 router.get('/', ah(async (req, res) => {
   const year = Number(req.query.year) || new Date().getFullYear();
 
-  const [dscr, liquidity, reserve, upcomingPayments, drawTotal] = await Promise.all([
+  const [dscr, liquidity, reserve, upcomingPayments, drawTotal, unpaidBills, accountFees] = await Promise.all([
     computeDSCR(year),
     liquidityFloor(year),
     reserveStatus(year),
@@ -23,7 +23,14 @@ router.get('/', ah(async (req, res) => {
        WHERE EXTRACT(YEAR FROM date) = $1`,
       [year]
     ),
+    pool.query(
+      `SELECT * FROM bills WHERE status = 'unpaid' ORDER BY due_date ASC LIMIT 10`
+    ),
+    monthlyAccountFees(year),
   ]);
+
+  const totalUnpaidBills = unpaidBills.rows.reduce((s, b) => s + Number(b.amount), 0);
+  const overdueBills = unpaidBills.rows.filter((b) => new Date(b.due_date) < new Date());
 
   res.json({
     year,
@@ -32,6 +39,12 @@ router.get('/', ah(async (req, res) => {
     reserve,
     upcomingDebtService: upcomingPayments.rows,
     ownerDrawYTD: Number(drawTotal.rows[0].total),
+    bills: {
+      upcoming: unpaidBills.rows,
+      totalUnpaid: totalUnpaidBills,
+      overdueCount: overdueBills.length,
+    },
+    annualAccountFees: accountFees.reduce((a, b) => a + b, 0),
   });
 }));
 

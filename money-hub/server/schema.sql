@@ -2,6 +2,10 @@
 -- Business and personal ledgers are kept structurally separate: every
 -- account and transaction carries a `ledger` tag, and DSCR/liquidity
 -- calculations filter on ledger = 'business' only.
+--
+-- CREATE TYPE has no IF NOT EXISTS in Postgres, so every enum is wrapped in
+-- a DO block that swallows "already exists" — this file is re-run on every
+-- deploy (see server/lib/migrate.js) and must be safe to apply repeatedly.
 
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
@@ -19,7 +23,11 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
-  CREATE TYPE account_type AS ENUM ('operating', 'draw', 'reserve', 'personal', 'investment');
+  CREATE TYPE account_type AS ENUM ('operating', 'draw', 'reserve', 'personal', 'investment', 'credit');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE TYPE fee_frequency AS ENUM ('none', 'monthly', 'annual', 'per_transaction');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS accounts (
@@ -29,8 +37,21 @@ CREATE TABLE IF NOT EXISTS accounts (
   account_type    account_type NOT NULL,
   opening_balance NUMERIC(14,2) NOT NULL DEFAULT 0,
   source_system   TEXT,              -- e.g. 'quicken', 'agexpert', 'wealthsimple', 'manual'
+  -- Fee structure: the recurring cost of holding this account, tracked
+  -- alongside its balance so the true cost of an account is visible, not
+  -- just its balance. fee_amount is per-occurrence at fee_frequency
+  -- (e.g. $14.95 'monthly', or $2.50 'per_transaction').
+  fee_amount      NUMERIC(10,2) NOT NULL DEFAULT 0,
+  fee_frequency   fee_frequency NOT NULL DEFAULT 'none',
+  fee_notes       TEXT,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Idempotent column additions for databases created before fee tracking
+-- existed — ADD COLUMN IF NOT EXISTS is safe to re-run, unlike CREATE TYPE.
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS fee_amount NUMERIC(10,2) NOT NULL DEFAULT 0;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS fee_frequency fee_frequency NOT NULL DEFAULT 'none';
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS fee_notes TEXT;
 
 DO $$ BEGIN
   CREATE TYPE expense_class AS ENUM ('fixed', 'variable_seasonal', 'capex', 'overhead');
@@ -137,6 +158,36 @@ CREATE TABLE IF NOT EXISTS purchase_evaluations (
   evaluated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Accounts payable: invoices/bills received but not yet paid. Kept
+-- separate from `transactions` (which records money that has actually
+-- moved) so a known upcoming obligation shows up on the liquidity forecast
+-- before it clears, not after.
+DO $$ BEGIN
+  CREATE TYPE bill_status AS ENUM ('unpaid', 'paid');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE TYPE bill_frequency AS ENUM ('one_time', 'monthly', 'quarterly');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+CREATE TABLE IF NOT EXISTS bills (
+  id             SERIAL PRIMARY KEY,
+  name           TEXT NOT NULL,          -- vendor / bill name, e.g. "AgriChem Ltd invoice #4471"
+  ledger         ledger_type NOT NULL DEFAULT 'business',
+  category       TEXT,
+  amount         NUMERIC(14,2) NOT NULL,
+  frequency      bill_frequency NOT NULL DEFAULT 'one_time',
+  received_date  DATE,                   -- when the invoice was received (optional)
+  due_date       DATE NOT NULL,
+  status         bill_status NOT NULL DEFAULT 'unpaid',
+  paid_date      DATE,
+  linked_transaction_id INTEGER REFERENCES transactions(id),
+  notes          TEXT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);
 CREATE INDEX IF NOT EXISTS idx_transactions_ledger ON transactions (ledger);
 CREATE INDEX IF NOT EXISTS idx_loan_payments_due_date ON loan_payments (due_date);
+CREATE INDEX IF NOT EXISTS idx_bills_due_date ON bills (due_date);
+CREATE INDEX IF NOT EXISTS idx_bills_status ON bills (status);

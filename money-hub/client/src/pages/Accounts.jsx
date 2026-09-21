@@ -6,7 +6,14 @@ const ACCOUNT_TYPE_LABELS = {
   personal: 'Personal', investment: 'Investment', draw: 'Draw',
 };
 
-const emptyForm = { name: '', ledger: 'business', account_type: 'operating', opening_balance: '' };
+const FEE_FREQUENCY_LABELS = {
+  none: 'No fee', monthly: 'Monthly', annual: 'Annual', per_transaction: 'Per transaction',
+};
+
+const emptyForm = {
+  name: '', ledger: 'business', account_type: 'operating', opening_balance: '',
+  fee_amount: '', fee_frequency: 'none', fee_notes: '',
+};
 
 export default function Accounts() {
   const [accounts, setAccounts] = useState([]);
@@ -20,7 +27,11 @@ export default function Accounts() {
     await fetch('/api/accounts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...form, opening_balance: Number(form.opening_balance) }),
+      body: JSON.stringify({
+        ...form,
+        opening_balance: Number(form.opening_balance),
+        fee_amount: form.fee_amount ? Number(form.fee_amount) : 0,
+      }),
     });
     setForm(emptyForm);
     load();
@@ -29,6 +40,17 @@ export default function Accounts() {
   const business = accounts.filter((a) => a.ledger === 'business');
   const personal = accounts.filter((a) => a.ledger === 'personal');
   const netTotal = accounts.reduce((s, a) => s + Number(a.opening_balance), 0);
+  const totalAnnualFees = accounts.reduce((s, a) => {
+    const amt = Number(a.fee_amount) || 0;
+    if (a.fee_frequency === 'monthly') return s + amt * 12;
+    if (a.fee_frequency === 'annual') return s + amt;
+    return s;
+  }, 0);
+
+  const feeDisplay = (a) => {
+    if (a.fee_frequency === 'none' || !Number(a.fee_amount)) return '—';
+    return `${money(Number(a.fee_amount))} / ${a.fee_frequency === 'per_transaction' ? 'txn' : a.fee_frequency}`;
+  };
 
   const renderGroup = (label, items) => (
     <div key={label}>
@@ -37,7 +59,7 @@ export default function Accounts() {
         <div className="empty-state">No accounts yet.</div>
       ) : (
         <table>
-          <thead><tr><th>Account</th><th>Type</th><th>Balance</th></tr></thead>
+          <thead><tr><th>Account</th><th>Type</th><th>Balance</th><th>Fee</th></tr></thead>
           <tbody>
             {items.map((a) => (
               <tr key={a.id}>
@@ -46,6 +68,7 @@ export default function Accounts() {
                 <td style={Number(a.opening_balance) < 0 ? { color: 'var(--negative)' } : undefined}>
                   {money(Number(a.opening_balance))}
                 </td>
+                <td title={a.fee_notes || ''}>{feeDisplay(a)}</td>
               </tr>
             ))}
           </tbody>
@@ -58,7 +81,7 @@ export default function Accounts() {
     <>
       <div className="page-header">
         <h1 className="page-title">Accounts</h1>
-        <span className="page-meta">Net {money(netTotal)}</span>
+        <span className="page-meta">Net {money(netTotal)} · Fees {money(totalAnnualFees)}/yr</span>
       </div>
 
       <div className="panel">
@@ -90,6 +113,26 @@ export default function Accounts() {
             <label>Current balance (negative = amount owed, e.g. a credit card)</label>
             <input type="number" step="0.01" required value={form.opening_balance} onChange={(e) => setForm({ ...form, opening_balance: e.target.value })} />
           </div>
+
+          <div className="field">
+            <label>Fee structure</label>
+            <select value={form.fee_frequency} onChange={(e) => setForm({ ...form, fee_frequency: e.target.value })}>
+              {Object.entries(FEE_FREQUENCY_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </div>
+          {form.fee_frequency !== 'none' && (
+            <>
+              <div className="field">
+                <label>Fee amount (per {form.fee_frequency === 'per_transaction' ? 'transaction' : form.fee_frequency === 'monthly' ? 'month' : 'year'})</label>
+                <input type="number" step="0.01" value={form.fee_amount} onChange={(e) => setForm({ ...form, fee_amount: e.target.value })} placeholder="e.g. 14.95" />
+              </div>
+              <div className="field">
+                <label>Fee notes (optional)</label>
+                <input value={form.fee_notes} onChange={(e) => setForm({ ...form, fee_notes: e.target.value })} placeholder="e.g. waived if balance > $5,000" />
+              </div>
+            </>
+          )}
+
           <button type="submit">Add account</button>
         </form>
       </div>

@@ -40,6 +40,49 @@ export async function monthlyDebtService(year) {
 }
 
 /**
+ * Known unpaid bills (accounts payable) per month, business ledger only,
+ * grouped by due date. These aren't in `transactions` yet — the money
+ * hasn't moved — but they're a known obligation, so the liquidity forecast
+ * treats them as a committed outflow in their due month rather than
+ * waiting until they're actually paid to notice them.
+ */
+export async function monthlyUnpaidBills(year) {
+  const { rows } = await pool.query(
+    `SELECT EXTRACT(MONTH FROM due_date)::int AS month, SUM(amount) AS total
+     FROM bills
+     WHERE ledger = 'business' AND status = 'unpaid'
+       AND EXTRACT(YEAR FROM due_date) = $1
+     GROUP BY month`,
+    [year]
+  );
+  const byMonth = Array(MONTHS).fill(0);
+  for (const r of rows) byMonth[r.month - 1] = Number(r.total);
+  return byMonth;
+}
+
+/** Recurring account fees per month, business ledger only. Monthly fees hit
+ * every month; annual fees are spread evenly across 12 (approximation —
+ * good enough for a planning forecast, not a statement reconciliation). */
+export async function monthlyAccountFees(year) {
+  const { rows } = await pool.query(
+    `SELECT fee_amount, fee_frequency FROM accounts
+     WHERE ledger = 'business' AND fee_frequency != 'none' AND fee_amount > 0`
+  );
+  const byMonth = Array(MONTHS).fill(0);
+  for (const r of rows) {
+    const amount = Number(r.fee_amount);
+    if (r.fee_frequency === 'monthly') {
+      for (let i = 0; i < MONTHS; i++) byMonth[i] += amount;
+    } else if (r.fee_frequency === 'annual') {
+      for (let i = 0; i < MONTHS; i++) byMonth[i] += amount / 12;
+    }
+    // per_transaction fees aren't schedulable — they show up via actual
+    // transaction volume, not as a forecastable recurring line.
+  }
+  return byMonth;
+}
+
+/**
  * DSCR = NOI / Total Debt Service, computed per month.
  * The gating number is the worst month, not the annual average —
  * an annual DSCR hides seasonal troughs.
@@ -69,8 +112,9 @@ export async function computeDSCR(year) {
 
 /**
  * Liquidity floor: projected cumulative business cash balance across the
- * year, starting from current operating account balances. The floor is
- * the lowest point in that projection, not the current balance.
+ * year, starting from current operating account balances, net of known
+ * unpaid bills and recurring account fees. The floor is the lowest point
+ * in that projection, not the current balance.
  */
 export async function liquidityFloor(year) {
   const bufferPct = Number(await getSetting('liquidity_buffer_pct', 0.15));
@@ -81,12 +125,16 @@ export async function liquidityFloor(year) {
   );
   const startingBalance = Number(accountRows[0].total);
 
-  const noi = await monthlyNOI(year);
+  const [noi, unpaidBills, accountFees] = await Promise.all([
+    monthlyNOI(year),
+    monthlyUnpaidBills(year),
+    monthlyAccountFees(year),
+  ]);
 
   let running = startingBalance;
   const trajectory = noi.map((n, i) => {
-    running += n;
-    return { month: i + 1, balance: running };
+    running += n - unpaidBills[i] - accountFees[i];
+    return { month: i + 1, balance: running, unpaidBillsDue: unpaidBills[i], accountFees: accountFees[i] };
   });
 
   const floorMonth = trajectory.reduce((a, b) => (b.balance < a.balance ? b : a));
@@ -151,6 +199,47 @@ export async function reserveStatus(year) {
     fundedPct: target > 0 ? Math.min(currentReserve / target, 1) : null,
     passes: currentReserve >= target,
   };
+}
+
+/** Cash above the floor and reserve obligations — what could actually be deployed today. */
+export async function deployableCapital(year, liquidity, reserve) {
+  const operatingCash = (await pool.query(
+    `SELECT COALESCE(SUM(opening_balance), 0) AS total FROM accounts
+     WHERE ledger = 'business' AND account_type = 'operating'`
+  )).rows[0].total;
+  const reserveShortfall = Math.max(0, reserve.target - reserve.currentReserve);
+  return Number(operatingCash) - liquidity.requiredFloor - reserveShortfall;
+}
+
+async function avgMonthlyExpenseValue(year) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(AVG(monthly_outflow), 0) AS avg FROM (
+       SELECT EXTRACT(MONTH FROM date) AS m, SUM(-amount) AS monthly_outflow
+       FROM transactions
+       WHERE ledger = 'business' AND amount < 0 AND EXTRACT(YEAR FROM date) = $1
+       GROUP BY m
+     ) sub`,
+    [year]
+  );
+  return Number(rows[0].avg);
+}
+
+export async function runwayMonths(year) {
+  const { rows } = await pool.query(
+    `SELECT COALESCE(SUM(opening_balance), 0) AS total FROM accounts
+     WHERE ledger = 'business' AND account_type = 'operating'`
+  );
+  const operatingCash = Number(rows[0].total);
+  const avg = await avgMonthlyExpenseValue(year);
+  return avg > 0 ? operatingCash / avg : null;
+}
+
+/** Outstanding principal balance on a loan as of a given date. */
+export function loanOutstandingBalance(loan, payments, asOf = new Date()) {
+  const paidPrincipal = payments
+    .filter((p) => p.paid || new Date(p.due_date) <= asOf)
+    .reduce((s, p) => s + Number(p.principal_amount), 0);
+  return Math.max(Number(loan.principal) - paidPrincipal, 0);
 }
 
 /**

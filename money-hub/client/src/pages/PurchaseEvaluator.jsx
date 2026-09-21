@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { money, ratio } from '../format.js';
+import { money } from '../format.js';
 
 const emptyForm = {
   name: '', price: '', purchase_class: 'productive_tool',
