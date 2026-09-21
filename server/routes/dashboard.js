@@ -37,6 +37,34 @@ router.get('/', ah(async (req, res) => {
     ),
   ]);
 
+  // Net worth = all account balances (both ledgers — net worth is the whole
+  // person) + underlying asset values on loans − outstanding loan principal.
+  // Outstanding principal uses the same paid-or-past-due assumption as the
+  // loan book. Assets with no loan aren't tracked yet, so this is net worth
+  // of what the app knows about, not an appraisal of everything owned.
+  const [cashRow, loanAgg] = await Promise.all([
+    pool.query(`SELECT COALESCE(SUM(opening_balance), 0) AS total FROM accounts`),
+    pool.query(`
+      SELECT
+        COALESCE(SUM(l.asset_value), 0) AS asset_values,
+        COALESCE(SUM(GREATEST(l.principal - paid.principal_paid, 0)), 0) AS outstanding_principal
+      FROM loans l
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(SUM(
+          CASE WHEN lp.paid = true OR lp.due_date <= CURRENT_DATE
+               THEN lp.principal_amount ELSE 0 END
+        ), 0) AS principal_paid
+        FROM loan_payments lp WHERE lp.loan_id = l.id
+      ) paid ON true
+    `),
+  ]);
+  const netWorth = {
+    cash: Number(cashRow.rows[0].total),
+    assetValues: Number(loanAgg.rows[0].asset_values),
+    outstandingPrincipal: Number(loanAgg.rows[0].outstanding_principal),
+  };
+  netWorth.total = netWorth.cash + netWorth.assetValues - netWorth.outstandingPrincipal;
+
   const totalUnpaidBills = unpaidBills.rows.reduce((s, b) => s + Number(b.amount), 0);
   const totalUnpaidGst = unpaidBills.rows.reduce((s, b) => s + Number(b.gst_amount || 0), 0);
   const overdueBills = unpaidBills.rows.filter((b) => new Date(b.due_date) < new Date());
@@ -59,6 +87,7 @@ router.get('/', ah(async (req, res) => {
       count: outstandingChecks.rows[0].count,
       total: Number(outstandingChecks.rows[0].total),
     },
+    netWorth,
   });
 }));
 

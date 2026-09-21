@@ -5,7 +5,22 @@ const emptyForm = {
   account_id: '', ledger: 'business', date: '', amount: '', description: '',
   is_mixed_use: false, mixed_use_business_pct: '', is_capex: false,
   paid_by_check: false,
+  segment: 'grain', is_segment_split: false,
+  segment_grain_pct: '', segment_livestock_pct: '', segment_personal_pct: '',
 };
+
+const SEGMENT_LABELS = { grain: 'Grain', livestock: 'Livestock', personal: 'Personal' };
+
+function segmentSummary(t) {
+  if (t.is_segment_split) {
+    const parts = [];
+    if (Number(t.segment_grain_pct)) parts.push(`Grain ${t.segment_grain_pct}%`);
+    if (Number(t.segment_livestock_pct)) parts.push(`Livestock ${t.segment_livestock_pct}%`);
+    if (Number(t.segment_personal_pct)) parts.push(`Personal ${t.segment_personal_pct}%`);
+    return parts.join(' / ') || 'Split';
+  }
+  return SEGMENT_LABELS[t.segment] || '—';
+}
 
 export default function Ledgers() {
   const [transactions, setTransactions] = useState([]);
@@ -34,6 +49,10 @@ export default function Ledgers() {
         amount: Number(form.amount),
         mixed_use_business_pct: form.is_mixed_use ? Number(form.mixed_use_business_pct) : null,
         cleared: !form.paid_by_check,
+        segment: form.is_segment_split ? null : form.segment,
+        segment_grain_pct: form.is_segment_split ? Number(form.segment_grain_pct) || 0 : null,
+        segment_livestock_pct: form.is_segment_split ? Number(form.segment_livestock_pct) || 0 : null,
+        segment_personal_pct: form.is_segment_split ? Number(form.segment_personal_pct) || 0 : null,
       }),
     });
     setForm(emptyForm);
@@ -129,6 +148,35 @@ export default function Ledgers() {
             <label>
               <input
                 type="checkbox"
+                checked={form.is_segment_split}
+                onChange={(e) => setForm({ ...form, is_segment_split: e.target.checked })}
+              /> Split across enterprises
+            </label>
+          </div>
+          {!form.is_segment_split ? (
+            <div className="field">
+              <label>Enterprise</label>
+              <select value={form.segment} onChange={(e) => setForm({ ...form, segment: e.target.value })}>
+                {Object.entries(SEGMENT_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+            </div>
+          ) : (
+            <div className="field">
+              <label>Split % (grain / livestock / personal, must total 100)</label>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input type="number" step="0.1" placeholder="Grain" style={{ width: 70 }}
+                  value={form.segment_grain_pct} onChange={(e) => setForm({ ...form, segment_grain_pct: e.target.value })} />
+                <input type="number" step="0.1" placeholder="Livestock" style={{ width: 70 }}
+                  value={form.segment_livestock_pct} onChange={(e) => setForm({ ...form, segment_livestock_pct: e.target.value })} />
+                <input type="number" step="0.1" placeholder="Personal" style={{ width: 70 }}
+                  value={form.segment_personal_pct} onChange={(e) => setForm({ ...form, segment_personal_pct: e.target.value })} />
+              </div>
+            </div>
+          )}
+          <div className="field">
+            <label>
+              <input
+                type="checkbox"
                 checked={form.paid_by_check}
                 onChange={(e) => setForm({ ...form, paid_by_check: e.target.checked })}
               /> Paid by check (not yet cleared)
@@ -154,13 +202,15 @@ export default function Ledgers() {
         ) : (
           <table>
             <thead>
-              <tr><th>Date</th><th>Ledger</th><th>Description</th><th>Amount</th><th>Cleared</th><th></th></tr>
+              <tr><th>Date</th><th>Account</th><th>Ledger</th><th>Enterprise</th><th>Description</th><th>Amount</th><th>Cleared</th><th></th></tr>
             </thead>
             <tbody>
               {visible.map((t) => (
                 <tr key={t.id}>
                   <td>{t.date?.slice(0, 10)}</td>
+                  <td>{t.account_name || '—'}</td>
                   <td>{t.ledger}</td>
+                  <td>{segmentSummary(t)}</td>
                   <td>{t.description}</td>
                   <td>{money(Number(t.amount))}</td>
                   <td>

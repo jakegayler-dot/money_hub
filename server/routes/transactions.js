@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
+import { validateSegment } from '../lib/segments.js';
 
 const router = Router();
 
@@ -11,21 +12,27 @@ router.get('/', ah(async (req, res) => {
 
   if (ledger) {
     params.push(ledger);
-    conditions.push(`ledger = $${params.length}`);
+    conditions.push(`t.ledger = $${params.length}`);
   }
   if (from) {
     params.push(from);
-    conditions.push(`date >= $${params.length}`);
+    conditions.push(`t.date >= $${params.length}`);
   }
   if (to) {
     params.push(to);
-    conditions.push(`date <= $${params.length}`);
+    conditions.push(`t.date <= $${params.length}`);
   }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   params.push(Number(limit));
 
+  // account_name joined in so the ledger can say which account each entry
+  // (especially an outstanding check) is drawn on, without a second fetch.
   const { rows } = await pool.query(
-    `SELECT * FROM transactions ${where} ORDER BY date DESC LIMIT $${params.length}`,
+    `SELECT t.*, a.name AS account_name
+     FROM transactions t
+     JOIN accounts a ON a.id = t.account_id
+     ${where}
+     ORDER BY t.date DESC LIMIT $${params.length}`,
     params
   );
   res.json(rows);
@@ -45,18 +52,24 @@ router.post('/', ah(async (req, res) => {
     is_mixed_use = false, mixed_use_business_pct = null,
     is_capex = false, entered_by = 'manual',
     cleared = true,
+    segment = null, is_segment_split = false,
+    segment_grain_pct = null, segment_livestock_pct = null, segment_personal_pct = null,
   } = req.body;
+
+  const segmentError = validateSegment({ segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_personal_pct });
+  if (segmentError) return res.status(400).json({ error: segmentError });
 
   const row = await withTransaction(async (client) => {
     const { rows } = await client.query(
       `INSERT INTO transactions
         (account_id, ledger, date, amount, description, category_id,
          purchase_class, is_mixed_use, mixed_use_business_pct, is_capex, entered_by,
-         cleared, cleared_date)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+         cleared, cleared_date, segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_personal_pct)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
       [account_id, ledger, date, amount, description, category_id,
        purchase_class, is_mixed_use, mixed_use_business_pct, is_capex, entered_by,
-       !!cleared, cleared ? date : null]
+       !!cleared, cleared ? date : null,
+       segment, !!is_segment_split, segment_grain_pct, segment_livestock_pct, segment_personal_pct]
     );
     await client.query(
       `UPDATE accounts SET opening_balance = opening_balance + $1 WHERE id = $2`,

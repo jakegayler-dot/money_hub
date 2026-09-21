@@ -5,7 +5,66 @@ const emptyForm = {
   name: '', ledger: 'business', category: '', amount: '', frequency: 'one_time',
   received_date: '', due_date: '', notes: '',
   has_gst: false, gst_pct: '5',
+  segment: 'grain', is_segment_split: false,
+  segment_grain_pct: '', segment_livestock_pct: '', segment_personal_pct: '',
 };
+
+const SEGMENT_LABELS = { grain: 'Grain', livestock: 'Livestock', personal: 'Personal' };
+
+// Shared by the add-bill form and the per-bill edit panel: either pick one
+// enterprise, or split the amount across all three by percentage — same
+// shape as the mixed-use business/personal split elsewhere in the app.
+function SegmentFields({ state, setState, disabled }) {
+  const splitTotal = (Number(state.segment_grain_pct) || 0) + (Number(state.segment_livestock_pct) || 0) + (Number(state.segment_personal_pct) || 0);
+  return (
+    <>
+      <div className="field">
+        <label>
+          <input
+            type="checkbox" disabled={disabled}
+            checked={state.is_segment_split}
+            onChange={(e) => setState({ ...state, is_segment_split: e.target.checked })}
+          />
+          {' '}Split across enterprises
+        </label>
+      </div>
+      {!state.is_segment_split ? (
+        <div className="field">
+          <label>Enterprise</label>
+          <select disabled={disabled} value={state.segment || ''} onChange={(e) => setState({ ...state, segment: e.target.value })}>
+            {Object.entries(SEGMENT_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </div>
+      ) : (
+        <div className="field">
+          <label>Split % (must total 100)</label>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input type="number" step="0.1" disabled={disabled} placeholder="Grain" style={{ width: 70 }}
+              value={state.segment_grain_pct} onChange={(e) => setState({ ...state, segment_grain_pct: e.target.value })} />
+            <input type="number" step="0.1" disabled={disabled} placeholder="Livestock" style={{ width: 70 }}
+              value={state.segment_livestock_pct} onChange={(e) => setState({ ...state, segment_livestock_pct: e.target.value })} />
+            <input type="number" step="0.1" disabled={disabled} placeholder="Personal" style={{ width: 70 }}
+              value={state.segment_personal_pct} onChange={(e) => setState({ ...state, segment_personal_pct: e.target.value })} />
+          </div>
+          <p style={{ fontSize: 11, color: splitTotal === 100 ? 'var(--text-muted)' : 'var(--negative)', margin: '4px 0 0' }}>
+            Total: {splitTotal}%
+          </p>
+        </div>
+      )}
+    </>
+  );
+}
+
+function segmentSummary(b) {
+  if (b.is_segment_split) {
+    const parts = [];
+    if (Number(b.segment_grain_pct)) parts.push(`Grain ${b.segment_grain_pct}%`);
+    if (Number(b.segment_livestock_pct)) parts.push(`Livestock ${b.segment_livestock_pct}%`);
+    if (Number(b.segment_personal_pct)) parts.push(`Personal ${b.segment_personal_pct}%`);
+    return parts.join(' / ') || 'Split';
+  }
+  return SEGMENT_LABELS[b.segment] || '—';
+}
 
 export default function Bills() {
   const [bills, setBills] = useState([]);
@@ -47,6 +106,10 @@ export default function Bills() {
         received_date: form.received_date || null,
         notes: form.notes || null,
         gst_pct: form.has_gst ? Number(form.gst_pct) : 5,
+        segment: form.is_segment_split ? null : form.segment,
+        segment_grain_pct: form.is_segment_split ? Number(form.segment_grain_pct) || 0 : null,
+        segment_livestock_pct: form.is_segment_split ? Number(form.segment_livestock_pct) || 0 : null,
+        segment_personal_pct: form.is_segment_split ? Number(form.segment_personal_pct) || 0 : null,
       }),
     });
     if (!res.ok) {
@@ -91,6 +154,9 @@ export default function Bills() {
     setEditForm({
       name: b.name, category: b.category || '', amount: b.amount, due_date: b.due_date?.slice(0, 10),
       notes: b.notes || '', has_gst: b.has_gst, gst_pct: b.gst_pct,
+      segment: b.segment || 'grain', is_segment_split: b.is_segment_split,
+      segment_grain_pct: b.segment_grain_pct ?? '', segment_livestock_pct: b.segment_livestock_pct ?? '',
+      segment_personal_pct: b.segment_personal_pct ?? '',
     });
     setError(null);
   };
@@ -106,6 +172,10 @@ export default function Bills() {
         ...editForm,
         amount: Number(editForm.amount),
         gst_pct: Number(editForm.gst_pct),
+        segment: editForm.is_segment_split ? null : editForm.segment,
+        segment_grain_pct: editForm.is_segment_split ? Number(editForm.segment_grain_pct) || 0 : null,
+        segment_livestock_pct: editForm.is_segment_split ? Number(editForm.segment_livestock_pct) || 0 : null,
+        segment_personal_pct: editForm.is_segment_split ? Number(editForm.segment_personal_pct) || 0 : null,
       }),
     });
     if (!res.ok) {
@@ -172,7 +242,7 @@ export default function Bills() {
         ) : (
           <table>
             <thead>
-              <tr><th>Due</th><th>Name</th><th>Category</th><th>Ledger</th><th>Subtotal</th><th>GST</th><th>Total</th><th>Status</th><th></th></tr>
+              <tr><th>Due</th><th>Name</th><th>Category</th><th>Ledger</th><th>Enterprise</th><th>Subtotal</th><th>GST</th><th>Total</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
               {bills.map((b) => {
@@ -184,6 +254,7 @@ export default function Bills() {
                       <td>{b.name}</td>
                       <td>{b.category || '—'}</td>
                       <td>{b.ledger}</td>
+                      <td>{segmentSummary(b)}</td>
                       <td>{b.has_gst ? money(Number(b.subtotal_amount)) : '—'}</td>
                       <td>{b.has_gst ? `${money(Number(b.gst_amount))} (${Number(b.gst_pct)}%)` : '—'}</td>
                       <td>{money(Number(b.amount))}</td>
@@ -230,7 +301,7 @@ export default function Bills() {
                     </tr>
                     {editingId === b.id && editForm && (
                       <tr>
-                        <td colSpan={9} style={{ background: 'var(--panel-alt, rgba(255,255,255,0.03))' }}>
+                        <td colSpan={10} style={{ background: 'var(--panel-alt, rgba(255,255,255,0.03))' }}>
                           <div style={{ padding: '12px 4px' }}>
                             {b.status === 'paid' && (
                               <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 10px' }}>
@@ -272,6 +343,7 @@ export default function Bills() {
                                 <label>Notes</label>
                                 <input value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} />
                               </div>
+                              <SegmentFields state={editForm} setState={setEditForm} disabled={false} />
                             </div>
                             <div style={{ marginTop: 8 }}>
                               <button className="small" onClick={() => saveEdit(b.id)}>Save changes</button>
@@ -308,6 +380,7 @@ export default function Bills() {
             <label>Category</label>
             <input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="e.g. Inputs, Utilities" />
           </div>
+          <SegmentFields state={form} setState={setForm} disabled={false} />
           <div className="field">
             <label>Amount (total invoice value)</label>
             <input type="number" step="0.01" required value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />

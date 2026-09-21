@@ -22,7 +22,7 @@ export default function Dashboard() {
   if (error) return <div className="empty-state">Could not load dashboard: {error}. Try refreshing — if it persists, check the server's deploy logs.</div>;
   if (!data) return <div className="empty-state">Loading…</div>;
 
-  const { dscr, liquidity, reserve, upcomingDebtService, ownerDrawYTD, bills, annualAccountFees, outstandingChecks, year } = data;
+  const { dscr, liquidity, reserve, upcomingDebtService, ownerDrawYTD, bills, annualAccountFees, outstandingChecks, netWorth, year } = data;
 
   return (
     <>
@@ -32,6 +32,14 @@ export default function Dashboard() {
       </div>
 
       <div className="grid">
+        {netWorth && (
+          <MetricCard
+            label="Net worth"
+            value={money(netWorth.total)}
+            sub={`Cash ${money(netWorth.cash)} + assets ${money(netWorth.assetValues)} − loans ${money(netWorth.outstandingPrincipal)}`}
+            tone={netWorth.total >= 0 ? 'positive' : 'negative'}
+          />
+        )}
         <MetricCard
           label="Liquidity floor"
           value={money(liquidity.floorMonth.balance)}

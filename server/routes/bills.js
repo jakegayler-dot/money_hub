@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
+import { validateSegment } from '../lib/segments.js';
 
 const router = Router();
 
@@ -33,15 +34,24 @@ router.post('/', ah(async (req, res) => {
     name, ledger = 'business', category = null, amount, frequency = 'one_time',
     received_date = null, due_date, notes = null,
     has_gst = false, gst_pct = 5,
+    segment = null, is_segment_split = false,
+    segment_grain_pct = null, segment_livestock_pct = null, segment_personal_pct = null,
   } = req.body;
+
+  const segmentError = validateSegment({ segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_personal_pct });
+  if (segmentError) return res.status(400).json({ error: segmentError });
+
   // Empty strings from an optional form field are not valid DATE input —
   // coerce them (and empty text) to NULL rather than letting the insert fail.
   const { gst_amount, subtotal_amount } = splitGst(amount, has_gst, gst_pct);
   const { rows } = await pool.query(
-    `INSERT INTO bills (name, ledger, category, amount, frequency, received_date, due_date, notes, has_gst, gst_pct, gst_amount, subtotal_amount)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+    `INSERT INTO bills
+      (name, ledger, category, amount, frequency, received_date, due_date, notes, has_gst, gst_pct, gst_amount, subtotal_amount,
+       segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_personal_pct)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
     [name, ledger, category || null, amount, frequency, received_date || null, due_date, notes || null,
-     !!has_gst, gst_pct, gst_amount, subtotal_amount]
+     !!has_gst, gst_pct, gst_amount, subtotal_amount,
+     segment, !!is_segment_split, segment_grain_pct, segment_livestock_pct, segment_personal_pct]
   );
   res.status(201).json(rows[0]);
 }));
@@ -76,11 +86,14 @@ router.post('/:id/pay', ah(async (req, res) => {
       // balance), but `cleared` stays false until it's reconciled against
       // the bank statement — see the `cleared` column comment in schema.sql.
       const { rows: txRows } = await client.query(
-        `INSERT INTO transactions (account_id, ledger, date, amount, description, entered_by, cleared, cleared_date)
-         VALUES ($1, $2, $3, $4, $5, 'manual', $6, $7) RETURNING id`,
+        `INSERT INTO transactions
+          (account_id, ledger, date, amount, description, entered_by, cleared, cleared_date,
+           segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_personal_pct)
+         VALUES ($1, $2, $3, $4, $5, 'manual', $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
         [account_id, bill.ledger, paid_date, -Math.abs(Number(bill.amount)),
          `Bill paid: ${bill.name}${paid_by_check ? ' (check)' : ''}`,
-         !paid_by_check, paid_by_check ? null : paid_date]
+         !paid_by_check, paid_by_check ? null : paid_date,
+         bill.segment, bill.is_segment_split, bill.segment_grain_pct, bill.segment_livestock_pct, bill.segment_personal_pct]
       );
       linkedTransactionId = txRows[0].id;
       await client.query(
@@ -103,11 +116,14 @@ router.post('/:id/pay', ah(async (req, res) => {
     const nextDue = new Date(bill.due_date);
     nextDue.setMonth(nextDue.getMonth() + monthsToAdd);
     const { rows: nextRows } = await pool.query(
-      `INSERT INTO bills (name, ledger, category, amount, frequency, due_date, status, notes, has_gst, gst_pct, gst_amount, subtotal_amount)
-       VALUES ($1,$2,$3,$4,$5,$6,'unpaid',$7,$8,$9,$10,$11) RETURNING *`,
+      `INSERT INTO bills
+        (name, ledger, category, amount, frequency, due_date, status, notes, has_gst, gst_pct, gst_amount, subtotal_amount,
+         segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_personal_pct)
+       VALUES ($1,$2,$3,$4,$5,$6,'unpaid',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
       [bill.name, bill.ledger, bill.category, bill.amount, bill.frequency,
        nextDue.toISOString().slice(0, 10), bill.notes,
-       bill.has_gst, bill.gst_pct, bill.gst_amount, bill.subtotal_amount]
+       bill.has_gst, bill.gst_pct, bill.gst_amount, bill.subtotal_amount,
+       bill.segment, bill.is_segment_split, bill.segment_grain_pct, bill.segment_livestock_pct, bill.segment_personal_pct]
     );
     return res.json({ paid: bill.id, nextBill: nextRows[0] });
   }
@@ -163,7 +179,10 @@ router.post('/:id/unpay', ah(async (req, res) => {
 }));
 
 router.patch('/:id', ah(async (req, res) => {
-  const { name, amount, due_date, category, notes, has_gst, gst_pct } = req.body;
+  const {
+    name, amount, due_date, category, notes, has_gst, gst_pct,
+    segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_personal_pct,
+  } = req.body;
 
   const { rows: currentRows } = await pool.query('SELECT * FROM bills WHERE id = $1', [req.params.id]);
   if (!currentRows.length) return res.status(404).json({ error: 'not found' });
@@ -173,30 +192,77 @@ router.patch('/:id', ah(async (req, res) => {
     amount !== undefined || due_date !== undefined || has_gst !== undefined || gst_pct !== undefined;
   if (current.status === 'paid' && touchesFinancials) {
     return res.status(409).json({
-      error: 'This bill is already paid — its amount, due date, and GST are locked because a transaction already moved money based on them. Only name, category, and notes can still be edited. To fix an amount, reverse the payment first.',
+      error: 'This bill is already paid — its amount, due date, and GST are locked because a transaction already moved money based on them. Only name, category, notes, and segment can still be edited. To fix an amount, reverse the payment first.',
     });
+  }
+
+  // Segment (which enterprise this belongs to) is just categorization, not
+  // money — safe to change even on a paid bill. But it's copied onto the
+  // linked transaction at pay time, so an edit here has to be propagated
+  // there too, or the bill and its own transaction would disagree about
+  // which enterprise the spend belongs to.
+  const touchesSegment =
+    segment !== undefined || is_segment_split !== undefined ||
+    segment_grain_pct !== undefined || segment_livestock_pct !== undefined || segment_personal_pct !== undefined;
+  if (touchesSegment) {
+    const segmentError = validateSegment({
+      segment: segment ?? current.segment,
+      is_segment_split: is_segment_split ?? current.is_segment_split,
+      segment_grain_pct: segment_grain_pct ?? current.segment_grain_pct,
+      segment_livestock_pct: segment_livestock_pct ?? current.segment_livestock_pct,
+      segment_personal_pct: segment_personal_pct ?? current.segment_personal_pct,
+    });
+    if (segmentError) return res.status(400).json({ error: segmentError });
   }
 
   const effectiveAmount = amount ?? current.amount;
   const effectiveHasGst = has_gst ?? current.has_gst;
   const effectiveGstPct = gst_pct ?? current.gst_pct;
   const { gst_amount, subtotal_amount } = splitGst(effectiveAmount, effectiveHasGst, effectiveGstPct);
+  const effectiveSegment = segment ?? current.segment;
+  const effectiveIsSplit = is_segment_split ?? current.is_segment_split;
+  const effectiveGrainPct = segment_grain_pct ?? current.segment_grain_pct;
+  const effectiveLivestockPct = segment_livestock_pct ?? current.segment_livestock_pct;
+  const effectivePersonalPct = segment_personal_pct ?? current.segment_personal_pct;
 
-  const { rows } = await pool.query(
-    `UPDATE bills SET
-       name = COALESCE($1, name),
-       amount = COALESCE($2, amount),
-       due_date = COALESCE($3, due_date),
-       category = COALESCE($4, category),
-       notes = COALESCE($5, notes),
-       has_gst = $6,
-       gst_pct = $7,
-       gst_amount = $8,
-       subtotal_amount = $9
-     WHERE id = $10 RETURNING *`,
-    [name, amount, due_date, category, notes, effectiveHasGst, effectiveGstPct, gst_amount, subtotal_amount, req.params.id]
-  );
-  res.json(rows[0]);
+  const bill = await withTransaction(async (client) => {
+    const { rows } = await client.query(
+      `UPDATE bills SET
+         name = COALESCE($1, name),
+         amount = COALESCE($2, amount),
+         due_date = COALESCE($3, due_date),
+         category = COALESCE($4, category),
+         notes = COALESCE($5, notes),
+         has_gst = $6,
+         gst_pct = $7,
+         gst_amount = $8,
+         subtotal_amount = $9,
+         segment = $10,
+         is_segment_split = $11,
+         segment_grain_pct = $12,
+         segment_livestock_pct = $13,
+         segment_personal_pct = $14
+       WHERE id = $15 RETURNING *`,
+      [name, amount, due_date, category, notes, effectiveHasGst, effectiveGstPct, gst_amount, subtotal_amount,
+       effectiveSegment, effectiveIsSplit, effectiveGrainPct, effectiveLivestockPct, effectivePersonalPct,
+       req.params.id]
+    );
+    const updated = rows[0];
+
+    if (touchesSegment && updated.linked_transaction_id) {
+      await client.query(
+        `UPDATE transactions SET
+           segment = $1, is_segment_split = $2, segment_grain_pct = $3,
+           segment_livestock_pct = $4, segment_personal_pct = $5
+         WHERE id = $6`,
+        [effectiveSegment, effectiveIsSplit, effectiveGrainPct, effectiveLivestockPct, effectivePersonalPct,
+         updated.linked_transaction_id]
+      );
+    }
+    return updated;
+  });
+
+  res.json(bill);
 }));
 
 router.delete('/:id', ah(async (req, res) => {

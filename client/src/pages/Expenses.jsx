@@ -13,9 +13,14 @@ const emptyForm = { name: '', class: 'fixed', ledger: 'business', annual_total: 
 export default function Expenses() {
   const [categories, setCategories] = useState([]);
   const [form, setForm] = useState(emptyForm);
+  const [segmentTotals, setSegmentTotals] = useState(null);
+  const year = new Date().getFullYear();
 
   const load = () => { fetch('/api/expenses').then((r) => r.json()).then(setCategories); };
   useEffect(load, []);
+  useEffect(() => {
+    fetch(`/api/expenses/segment-totals?year=${year}`).then((r) => r.json()).then((d) => setSegmentTotals(d.totals));
+  }, []);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -35,7 +40,43 @@ export default function Expenses() {
 
   return (
     <>
-      <div className="page-header"><h1 className="page-title">Expenses</h1></div>
+      <div className="page-header">
+        <h1 className="page-title">Expenses</h1>
+        <span className="page-meta">FY {year}</span>
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">Actual spend by enterprise — {year}</div>
+        {!segmentTotals ? (
+          <div className="empty-state">Loading…</div>
+        ) : (
+          <div className="grid">
+            <div className="metric-card">
+              <div className="metric-label">Grain</div>
+              <div className="metric-value">{money(segmentTotals.grain)}</div>
+            </div>
+            <div className="metric-card">
+              <div className="metric-label">Livestock</div>
+              <div className="metric-value">{money(segmentTotals.livestock)}</div>
+            </div>
+            <div className="metric-card">
+              <div className="metric-label">Personal</div>
+              <div className="metric-value">{money(segmentTotals.personal)}</div>
+            </div>
+            {segmentTotals.unassigned > 0 && (
+              <div className="metric-card">
+                <div className="metric-label">Unassigned</div>
+                <div className="metric-value">{money(segmentTotals.unassigned)}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Older bills/transactions with no enterprise tag</div>
+              </div>
+            )}
+          </div>
+        )}
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '10px 0 0' }}>
+          Actual money spent this year (bills paid + manual ledger entries), not the budget figures below —
+          a bill or transaction split across enterprises counts proportionally toward each.
+        </p>
+      </div>
 
       <div className="panel">
         <div className="panel-header">Add category</div>

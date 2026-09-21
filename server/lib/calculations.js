@@ -10,11 +10,16 @@ const MONTHS = 12;
  * uses booked transactions where present.
  */
 export async function monthlyNOI(year) {
+  // is_debt_service excluded: NOI is income before debt service by
+  // definition. Recorded loan payments live on the loan schedule side of
+  // the DSCR ratio (and of the liquidity forecast), so counting them here
+  // too would subtract the same dollars twice.
   const { rows } = await pool.query(
     `SELECT EXTRACT(MONTH FROM date)::int AS month, SUM(amount) AS net
      FROM transactions
      WHERE ledger = 'business'
        AND is_capex = false
+       AND is_debt_service = false
        AND EXTRACT(YEAR FROM date) = $1
      GROUP BY month`,
     [year]
@@ -31,6 +36,26 @@ export async function monthlyDebtService(year) {
             SUM(principal_amount + interest_amount) AS total
      FROM loan_payments
      WHERE EXTRACT(YEAR FROM due_date) = $1
+     GROUP BY month`,
+    [year]
+  );
+  const byMonth = Array(MONTHS).fill(0);
+  for (const r of rows) byMonth[r.month - 1] = Number(r.total);
+  return byMonth;
+}
+
+/**
+ * Scheduled debt service still owed (paid = false) per month. This is what
+ * the liquidity forecast subtracts: a payment already recorded as paid has
+ * become a real transaction (and already left the balance), so only the
+ * still-upcoming scheduled payments are future outflows.
+ */
+export async function monthlyUnpaidDebtService(year) {
+  const { rows } = await pool.query(
+    `SELECT EXTRACT(MONTH FROM due_date)::int AS month,
+            SUM(principal_amount + interest_amount) AS total
+     FROM loan_payments
+     WHERE paid = false AND EXTRACT(YEAR FROM due_date) = $1
      GROUP BY month`,
     [year]
   );
@@ -125,16 +150,23 @@ export async function liquidityFloor(year) {
   );
   const startingBalance = Number(accountRows[0].total);
 
-  const [noi, unpaidBills, accountFees] = await Promise.all([
+  const [noi, unpaidBills, accountFees, unpaidDebtService] = await Promise.all([
     monthlyNOI(year),
     monthlyUnpaidBills(year),
     monthlyAccountFees(year),
+    monthlyUnpaidDebtService(year),
   ]);
 
   let running = startingBalance;
   const trajectory = noi.map((n, i) => {
-    running += n - unpaidBills[i] - accountFees[i];
-    return { month: i + 1, balance: running, unpaidBillsDue: unpaidBills[i], accountFees: accountFees[i] };
+    running += n - unpaidBills[i] - accountFees[i] - unpaidDebtService[i];
+    return {
+      month: i + 1,
+      balance: running,
+      unpaidBillsDue: unpaidBills[i],
+      accountFees: accountFees[i],
+      debtServiceDue: unpaidDebtService[i],
+    };
   });
 
   const floorMonth = trajectory.reduce((a, b) => (b.balance < a.balance ? b : a));

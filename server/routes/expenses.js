@@ -1,12 +1,41 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
+import { allocateBySegment } from '../lib/segments.js';
 
 const router = Router();
 
 router.get('/', ah(async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM expense_categories ORDER BY class, name');
   res.json(rows);
+}));
+
+// Actual money spent this year, split across grain/livestock/personal —
+// distinct from the budgeted `expense_categories` totals above. Reads
+// every outflow transaction (bills paid + manual entries alike, since both
+// land in `transactions`) and allocates it by segment, splitting a
+// percentage-split transaction proportionally rather than double-counting
+// it in every bucket.
+router.get('/segment-totals', ah(async (req, res) => {
+  const year = Number(req.query.year) || new Date().getFullYear();
+  const { rows } = await pool.query(
+    `SELECT amount, segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_personal_pct
+     FROM transactions
+     WHERE amount < 0 AND EXTRACT(YEAR FROM date) = $1`,
+    [year]
+  );
+
+  const totals = { grain: 0, livestock: 0, personal: 0, unassigned: 0 };
+  for (const row of rows) {
+    const allocated = allocateBySegment(row.amount, row);
+    totals.grain += allocated.grain;
+    totals.livestock += allocated.livestock;
+    totals.personal += allocated.personal;
+    totals.unassigned += allocated.unassigned;
+  }
+  for (const key of Object.keys(totals)) totals[key] = Math.round(totals[key] * 100) / 100;
+
+  res.json({ year, totals });
 }));
 
 const EVEN_MONTHLY_PCT = [0.0833,0.0833,0.0834,0.0833,0.0833,0.0834,0.0833,0.0833,0.0834,0.0833,0.0833,0.0834];

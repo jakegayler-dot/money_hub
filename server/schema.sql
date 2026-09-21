@@ -71,6 +71,16 @@ DO $$ BEGIN
   CREATE TYPE purchase_class AS ENUM ('compounding', 'productive_tool', 'consumptive');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+-- Enterprise segment: which part of the operation a transaction or bill
+-- belongs to. Separate from `ledger` (business/personal) on purpose — most
+-- personal-ledger items are segment 'personal', but this lets a business
+-- expense be split across grain and livestock the same way mixed-use
+-- already splits business/personal by cost basis, using the same
+-- single-value-or-percentage-split pattern as `is_mixed_use`.
+DO $$ BEGIN
+  CREATE TYPE enterprise_segment AS ENUM ('grain', 'livestock', 'personal');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
 CREATE TABLE IF NOT EXISTS transactions (
   id                      SERIAL PRIMARY KEY,
   account_id              INTEGER NOT NULL REFERENCES accounts(id),
@@ -84,6 +94,21 @@ CREATE TABLE IF NOT EXISTS transactions (
   mixed_use_business_pct  NUMERIC(5,2),             -- cost-basis %, e.g. 60.00
   is_capex                BOOLEAN NOT NULL DEFAULT false,
   entered_by              TEXT NOT NULL DEFAULT 'manual', -- manual | agent
+  -- Enterprise segment: single value (segment) when the whole transaction
+  -- belongs to one enterprise, or a cost-basis split across all three when
+  -- is_segment_split is true — same pattern as is_mixed_use above, just for
+  -- grain/livestock/personal instead of business/personal.
+  segment                 enterprise_segment,
+  is_segment_split        BOOLEAN NOT NULL DEFAULT false,
+  segment_grain_pct       NUMERIC(5,2),
+  segment_livestock_pct   NUMERIC(5,2),
+  segment_personal_pct    NUMERIC(5,2),
+  -- True for transactions created by recording a loan payment. NOI must
+  -- exclude these (NOI is income before debt service, by definition) or
+  -- DSCR would divide by a denominator already subtracted from its own
+  -- numerator, and the liquidity forecast would double-count payments that
+  -- are also on the loan schedule.
+  is_debt_service         BOOLEAN NOT NULL DEFAULT false,
   -- Book balance vs. bank balance: `amount` hits the account's balance the
   -- moment the transaction is recorded (e.g. a check is written), but a
   -- check can sit uncashed for months. `cleared` tracks whether it has
@@ -97,7 +122,14 @@ CREATE TABLE IF NOT EXISTS transactions (
 
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS cleared BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS cleared_date DATE;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS segment enterprise_segment;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_segment_split BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS segment_grain_pct NUMERIC(5,2);
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS segment_livestock_pct NUMERIC(5,2);
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS segment_personal_pct NUMERIC(5,2);
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_debt_service BOOLEAN NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS idx_transactions_cleared ON transactions (cleared);
+CREATE INDEX IF NOT EXISTS idx_transactions_segment ON transactions (segment);
 
 DO $$ BEGIN
   CREATE TYPE loan_purpose AS ENUM ('operating', 'term', 'capital_asset', 'mortgage');
@@ -131,11 +163,16 @@ CREATE TABLE IF NOT EXISTS loans (
   -- (and therefore equity) changes as it's paid down.
   asset_value       NUMERIC(14,2),
   asset_value_date  DATE,
+  -- Which enterprise this loan's payments belong to (grain/livestock/
+  -- personal) — carried onto the transaction each recorded payment creates,
+  -- so debt service shows up in the right bucket on the Expenses page.
+  segment           enterprise_segment,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 ALTER TABLE loans ADD COLUMN IF NOT EXISTS asset_value NUMERIC(14,2);
 ALTER TABLE loans ADD COLUMN IF NOT EXISTS asset_value_date DATE;
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS segment enterprise_segment;
 ALTER TABLE loans ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
 -- Backfill: any loan that predates the `name` column gets the lender name
 -- as a starting point, so nothing shows up blank in the UI. Safe to re-run —
@@ -152,8 +189,14 @@ CREATE TABLE IF NOT EXISTS loan_payments (
   principal_amount  NUMERIC(14,2) NOT NULL,
   interest_amount   NUMERIC(14,2) NOT NULL,
   paid              BOOLEAN NOT NULL DEFAULT false,
-  paid_date         DATE
+  paid_date         DATE,
+  -- Set when the payment is recorded through the payment planner: the
+  -- ledger transaction that actually moved the money, same linkage
+  -- pattern as bills.linked_transaction_id.
+  linked_transaction_id INTEGER REFERENCES transactions(id)
 );
+
+ALTER TABLE loan_payments ADD COLUMN IF NOT EXISTS linked_transaction_id INTEGER REFERENCES transactions(id);
 
 CREATE TABLE IF NOT EXISTS owner_draws (
   id      SERIAL PRIMARY KEY,
@@ -226,12 +269,26 @@ CREATE TABLE IF NOT EXISTS bills (
   gst_pct        NUMERIC(5,2) NOT NULL DEFAULT 5,
   gst_amount     NUMERIC(14,2) NOT NULL DEFAULT 0,
   subtotal_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+  -- Same enterprise-segment tagging as transactions (see that table's
+  -- comment) — carried onto the transaction this bill produces when paid,
+  -- and onto the next auto-recurred bill, so the tag doesn't have to be
+  -- re-entered every cycle.
+  segment                enterprise_segment,
+  is_segment_split       BOOLEAN NOT NULL DEFAULT false,
+  segment_grain_pct      NUMERIC(5,2),
+  segment_livestock_pct  NUMERIC(5,2),
+  segment_personal_pct   NUMERIC(5,2),
   notes          TEXT,
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 ALTER TABLE bills ADD COLUMN IF NOT EXISTS has_gst BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE bills ADD COLUMN IF NOT EXISTS gst_pct NUMERIC(5,2) NOT NULL DEFAULT 5;
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS segment enterprise_segment;
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS is_segment_split BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS segment_grain_pct NUMERIC(5,2);
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS segment_livestock_pct NUMERIC(5,2);
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS segment_personal_pct NUMERIC(5,2);
 ALTER TABLE bills ADD COLUMN IF NOT EXISTS gst_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
 ALTER TABLE bills ADD COLUMN IF NOT EXISTS subtotal_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
 
