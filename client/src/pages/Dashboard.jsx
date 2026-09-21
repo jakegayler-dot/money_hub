@@ -22,7 +22,7 @@ export default function Dashboard() {
   if (error) return <div className="empty-state">Could not load dashboard: {error}. Try refreshing — if it persists, check the server's deploy logs.</div>;
   if (!data) return <div className="empty-state">Loading…</div>;
 
-  const { dscr, liquidity, reserve, upcomingDebtService, ownerDrawYTD, year } = data;
+  const { dscr, liquidity, reserve, upcomingDebtService, ownerDrawYTD, bills, annualAccountFees, year } = data;
 
   return (
     <>
@@ -51,8 +51,19 @@ export default function Dashboard() {
           tone={reserve.passes ? 'positive' : 'negative'}
         />
         <MetricCard
+          label="Unpaid bills"
+          value={money(bills.totalUnpaid)}
+          sub={bills.overdueCount > 0 ? `${bills.overdueCount} overdue` : 'None overdue'}
+          tone={bills.overdueCount > 0 ? 'negative' : undefined}
+        />
+        <MetricCard
           label="Owner draw YTD"
           value={money(ownerDrawYTD)}
+        />
+        <MetricCard
+          label="Account fees (annual)"
+          value={money(annualAccountFees)}
+          sub="Recurring cost of holding accounts"
         />
       </div>
 
@@ -81,6 +92,33 @@ export default function Dashboard() {
                   <td>{money(Number(p.principal_amount) + Number(p.interest_amount))}</td>
                 </tr>
               ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">Unpaid bills — soonest due first</div>
+        {bills.upcoming.length === 0 ? (
+          <div className="empty-state">Nothing outstanding.</div>
+        ) : (
+          <table>
+            <thead>
+              <tr><th>Due</th><th>Name</th><th>Category</th><th>Amount</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              {bills.upcoming.map((b) => {
+                const overdue = new Date(b.due_date) < new Date();
+                return (
+                  <tr key={b.id}>
+                    <td>{b.due_date?.slice(0, 10)}</td>
+                    <td>{b.name}</td>
+                    <td>{b.category || '—'}</td>
+                    <td>{money(Number(b.amount))}</td>
+                    <td>{overdue ? <span className="badge fail">OVERDUE</span> : <span className="badge warn">DUE</span>}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}

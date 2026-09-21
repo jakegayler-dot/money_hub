@@ -1,12 +1,14 @@
 # Money Hub
 
 Capital allocation and financial decision system. Aggregates business and
-personal ledgers, loan schedules, and expense budgets into a single model,
-and gates capital purchases against a five-part quantitative test:
+personal ledgers, loan schedules, unpaid bills, and expense budgets into a
+single model, and gates capital purchases against a five-part quantitative
+test:
 
-1. **Liquidity floor** — projected minimum monthly cash balance, with a 15% buffer
-2. **Debt Service Coverage Ratio (DSCR)** — Net Operating Income ÷ Total Debt
-   Service, computed **monthly** (worst month binds), gated at **1.25x**
+1. **Liquidity floor** — projected minimum monthly cash balance (net of
+   known unpaid bills), with a 15% buffer
+2. **Debt Service Coverage Ratio (DSCR)** — Net Operating Income ÷ Total
+   Debt Service, computed **monthly** (worst month binds), gated at **1.25x**
 3. **Opportunity cost** — purchase price converted into units of the core
    return-generating asset, not evaluated as a raw dollar figure
 4. **Reversibility** — resale/exit-cost weighting if the decision proves wrong
@@ -25,20 +27,26 @@ money-hub/
   client/   React (Vite) dashboard
 ```
 
-Stack matches the Quarter-Section project: React/Vite frontend, Node/Express
-backend, PostgreSQL (Railway in production, local Postgres or the bundled
-JSON fallback for development).
+Stack: React/Vite frontend, Node/Express backend, PostgreSQL (Railway in
+production, local Postgres for development). Single Railway service builds
+the client and serves it alongside the API.
 
 ## v1 scope decisions
 
 - Data entry is **manual**, done directly against the schema via the UI —
-  no CSV/API ingestion yet. The schema is designed so an automated importer
-  can write into the same tables later without a data-model change.
+  no CSV/API ingestion yet.
 - Mixed-use asset allocation is a **user-set percentage on a cost basis**
   only (no mileage/usage-log methodology).
 - Business and personal ledgers are **structurally separate** — DSCR and
   liquidity calculations run against the business ledger only.
 - Milestone/strategic-date tracking is **not** part of v1.
+- **Bills (accounts payable)**: invoices received but not yet paid are
+  tracked separately from ledger transactions, and factored into the
+  liquidity floor forecast at their due month — so the dashboard reflects
+  known upcoming obligations before cash actually moves, not after.
+- **Account fee structures**: each account can carry its own recurring fee
+  (monthly, annual, or per-transaction) so the true cost of holding an
+  account is visible, not just its balance.
 
 ## Getting started (local development)
 
@@ -59,49 +67,23 @@ npm run dev             # http://localhost:5173, proxies /api to :4000
 ## Deploying to Railway
 
 Single Railway service — it builds the client and serves it alongside the
-API, matching the Quarter-Section pattern (GitHub auto-deploy on push).
+API.
 
-1. **Push this repo to GitHub.**
-   ```bash
-   git init
-   git add .
-   git commit -m "Money Hub v1"
-   gh repo create money-hub --private --source=. --push
-   # or create the repo on github.com and `git remote add origin ...` / `git push`
-   ```
+1. Push this repo to GitHub.
+2. Railway → New Project → Deploy from GitHub repo → select it. Railway
+   detects the root `package.json` and `railway.json` automatically.
+3. Add a PostgreSQL database to the same Railway project — Railway injects
+   `DATABASE_URL` automatically.
+4. The migration runs automatically on every boot (`npm start` runs it
+   before starting the server) and is safe to re-run — it treats
+   "already exists" errors as success rather than crashing.
+5. Every push to `main` auto-deploys.
 
-2. **In Railway:** New Project → Deploy from GitHub repo → select `money-hub`.
-   Railway detects the root `package.json` and `railway.json` automatically
-   (Nixpacks builder, `npm start` as the start command).
-
-3. **Add a PostgreSQL database:** New → Database → PostgreSQL, in the same
-   Railway project. Railway injects `DATABASE_URL` into your service's
-   environment automatically — no manual wiring needed.
-
-4. **Run the migration once**, after the first successful deploy:
-   ```bash
-   railway login
-   railway link          # select this project
-   railway run npm run migrate
-   ```
-   (Or use Railway's dashboard → your service → the one-off command runner,
-   same command.)
-
-5. **Redeploy on every push** — Railway's GitHub integration handles this
-   automatically once connected, same as Quarter-Section.
-
-Environment variables Railway needs on the service (`DATABASE_URL` is
-auto-injected by the Postgres plugin; the rest are optional — defaults
-match the locked v1 thresholds and only need setting if you want to
-override them):
+Environment variables (optional — defaults match the locked v1 thresholds):
 
 ```
 LIQUIDITY_BUFFER_PCT=0.15
 DSCR_THRESHOLD=1.25
 RESERVE_TARGET_MONTHS=2
 ```
-
-(These map to the `settings` table seeded by `schema.sql` — changing the
-env var doesn't retroactively change a row already in the database; update
-the `settings` table directly, or re-run that part of the migration, if you
-change a threshold after go-live.)
+</content>

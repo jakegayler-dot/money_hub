@@ -12,7 +12,7 @@ router.get('/', ah(async (req, res) => {
 
 // The draw amount is fixed and reviewed on schedule — this endpoint records
 // the transfer, it does not resize the draw. Resizing is a deliberate,
-// separate action (see PATCH on a future /draw-policy resource).
+// separate action.
 router.post('/', ah(async (req, res) => {
   const { date, amount, note = null } = req.body;
   const { rows } = await pool.query(
