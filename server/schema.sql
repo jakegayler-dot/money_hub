@@ -292,6 +292,42 @@ ALTER TABLE bills ADD COLUMN IF NOT EXISTS segment_personal_pct NUMERIC(5,2);
 ALTER TABLE bills ADD COLUMN IF NOT EXISTS gst_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
 ALTER TABLE bills ADD COLUMN IF NOT EXISTS subtotal_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
 
+-- Sale contracts (accounts receivable side): known future INFLOWS — e.g. a
+-- grain contract deliverable in November — the mirror image of bills. The
+-- liquidity forecast adds each unsettled contract's value at its expected
+-- payment month; settling one converts it into a real transaction (and
+-- drops it from the forecast so it's never counted twice). `source` +
+-- `external_id` exist so an outside system (another business's API, an
+-- agent, a script) can push contracts idempotently: re-pushing the same
+-- external_id updates the row instead of duplicating it.
+DO $$ BEGIN
+  CREATE TYPE contract_status AS ENUM ('open', 'delivered', 'settled', 'cancelled');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+CREATE TABLE IF NOT EXISTS sale_contracts (
+  id                    SERIAL PRIMARY KEY,
+  source                TEXT NOT NULL DEFAULT 'manual', -- pushing system's name, or 'manual'
+  external_id           TEXT,                            -- the contract's id in the source system
+  commodity             TEXT NOT NULL,                   -- e.g. 'canola', 'feeder steers'
+  quantity              NUMERIC(14,3),
+  unit                  TEXT,                            -- e.g. 'tonnes', 'bu', 'head'
+  price_per_unit        NUMERIC(14,2),
+  total_value           NUMERIC(14,2) NOT NULL,
+  counterparty          TEXT,
+  delivery_date         DATE,
+  expected_payment_date DATE NOT NULL,
+  status                contract_status NOT NULL DEFAULT 'open',
+  segment               enterprise_segment NOT NULL DEFAULT 'grain',
+  linked_transaction_id INTEGER REFERENCES transactions(id),
+  notes                 TEXT,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sale_contracts_source_ext
+  ON sale_contracts (source, external_id) WHERE external_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sale_contracts_status ON sale_contracts (status);
+CREATE INDEX IF NOT EXISTS idx_sale_contracts_payment ON sale_contracts (expected_payment_date);
+
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);
 CREATE INDEX IF NOT EXISTS idx_transactions_ledger ON transactions (ledger);
 CREATE INDEX IF NOT EXISTS idx_loan_payments_due_date ON loan_payments (due_date);

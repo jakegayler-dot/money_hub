@@ -8,7 +8,7 @@ const router = Router();
 router.get('/', ah(async (req, res) => {
   const year = Number(req.query.year) || new Date().getFullYear();
 
-  const [dscr, liquidity, reserve, upcomingPayments, drawTotal, unpaidBills, accountFees, outstandingChecks] = await Promise.all([
+  const [dscr, liquidity, reserve, upcomingPayments, drawTotal, unpaidBills, accountFees, outstandingChecks, openContracts] = await Promise.all([
     computeDSCR(year),
     liquidityFloor(year),
     reserveStatus(year),
@@ -34,6 +34,12 @@ router.get('/', ah(async (req, res) => {
     pool.query(
       `SELECT COUNT(*)::int AS count, COALESCE(SUM(ABS(amount)), 0) AS total
        FROM transactions WHERE cleared = false`
+    ),
+    // Money contracted but not yet received — already counted into the
+    // liquidity forecast at its expected payment month.
+    pool.query(
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(total_value), 0) AS total
+       FROM sale_contracts WHERE status IN ('open', 'delivered')`
     ),
   ]);
 
@@ -86,6 +92,10 @@ router.get('/', ah(async (req, res) => {
     outstandingChecks: {
       count: outstandingChecks.rows[0].count,
       total: Number(outstandingChecks.rows[0].total),
+    },
+    contractedInflows: {
+      count: openContracts.rows[0].count,
+      total: Number(openContracts.rows[0].total),
     },
     netWorth,
   });

@@ -22,7 +22,7 @@ export default function Dashboard() {
   if (error) return <div className="empty-state">Could not load dashboard: {error}. Try refreshing — if it persists, check the server's deploy logs.</div>;
   if (!data) return <div className="empty-state">Loading…</div>;
 
-  const { dscr, liquidity, reserve, upcomingDebtService, ownerDrawYTD, bills, annualAccountFees, outstandingChecks, netWorth, year } = data;
+  const { dscr, liquidity, reserve, upcomingDebtService, ownerDrawYTD, bills, annualAccountFees, outstandingChecks, contractedInflows, netWorth, year } = data;
 
   return (
     <>
@@ -73,6 +73,16 @@ export default function Dashboard() {
           value={money(annualAccountFees)}
           sub="Recurring cost of holding accounts"
         />
+        {contractedInflows && (
+          <MetricCard
+            label="Contracted inflows"
+            value={money(contractedInflows.total)}
+            sub={contractedInflows.count > 0
+              ? `${contractedInflows.count} unsettled contract${contractedInflows.count === 1 ? '' : 's'} — already in the forecast`
+              : 'No open contracts'}
+            tone={contractedInflows.total > 0 ? 'positive' : undefined}
+          />
+        )}
         <MetricCard
           label="Outstanding checks"
           value={money(outstandingChecks.total)}

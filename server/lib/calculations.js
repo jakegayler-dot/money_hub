@@ -65,6 +65,26 @@ export async function monthlyUnpaidDebtService(year) {
 }
 
 /**
+ * Expected contract inflows per month: unsettled sale contracts (open or
+ * delivered-but-unpaid) at their expected payment month. Settled contracts
+ * are excluded — their money has become a real transaction and already
+ * flows through NOI, so counting them here would double it.
+ */
+export async function monthlyContractInflows(year) {
+  const { rows } = await pool.query(
+    `SELECT EXTRACT(MONTH FROM expected_payment_date)::int AS month, SUM(total_value) AS total
+     FROM sale_contracts
+     WHERE status IN ('open', 'delivered')
+       AND EXTRACT(YEAR FROM expected_payment_date) = $1
+     GROUP BY month`,
+    [year]
+  );
+  const byMonth = Array(MONTHS).fill(0);
+  for (const r of rows) byMonth[r.month - 1] = Number(r.total);
+  return byMonth;
+}
+
+/**
  * Known unpaid bills (accounts payable) per month, business ledger only,
  * grouped by due date. These aren't in `transactions` yet — the money
  * hasn't moved — but they're a known obligation, so the liquidity forecast
@@ -150,22 +170,24 @@ export async function liquidityFloor(year) {
   );
   const startingBalance = Number(accountRows[0].total);
 
-  const [noi, unpaidBills, accountFees, unpaidDebtService] = await Promise.all([
+  const [noi, unpaidBills, accountFees, unpaidDebtService, contractInflows] = await Promise.all([
     monthlyNOI(year),
     monthlyUnpaidBills(year),
     monthlyAccountFees(year),
     monthlyUnpaidDebtService(year),
+    monthlyContractInflows(year),
   ]);
 
   let running = startingBalance;
   const trajectory = noi.map((n, i) => {
-    running += n - unpaidBills[i] - accountFees[i] - unpaidDebtService[i];
+    running += n + contractInflows[i] - unpaidBills[i] - accountFees[i] - unpaidDebtService[i];
     return {
       month: i + 1,
       balance: running,
       unpaidBillsDue: unpaidBills[i],
       accountFees: accountFees[i],
       debtServiceDue: unpaidDebtService[i],
+      contractInflows: contractInflows[i],
     };
   });
 
