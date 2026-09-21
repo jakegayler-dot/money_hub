@@ -84,27 +84,52 @@ CREATE TABLE IF NOT EXISTS transactions (
   mixed_use_business_pct  NUMERIC(5,2),             -- cost-basis %, e.g. 60.00
   is_capex                BOOLEAN NOT NULL DEFAULT false,
   entered_by              TEXT NOT NULL DEFAULT 'manual', -- manual | agent
+  -- Book balance vs. bank balance: `amount` hits the account's balance the
+  -- moment the transaction is recorded (e.g. a check is written), but a
+  -- check can sit uncashed for months. `cleared` tracks whether it has
+  -- actually cleared the bank, purely for reconciliation — it does NOT
+  -- change the balance a second time. Non-check entries default cleared,
+  -- since there's nothing to reconcile.
+  cleared                 BOOLEAN NOT NULL DEFAULT true,
+  cleared_date            DATE,
   created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS cleared BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS cleared_date DATE;
+CREATE INDEX IF NOT EXISTS idx_transactions_cleared ON transactions (cleared);
+
 DO $$ BEGIN
-  CREATE TYPE loan_purpose AS ENUM ('operating', 'term', 'capital_asset');
+  CREATE TYPE loan_purpose AS ENUM ('operating', 'term', 'capital_asset', 'mortgage');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- Adding 'mortgage' to an existing loan_purpose enum (for databases created
+-- before this value existed) happens separately in migrate.js, NOT here —
+-- Postgres refuses to run ALTER TYPE ... ADD VALUE inside a multi-statement
+-- string/transaction block, which is exactly how this whole file is applied.
 
 CREATE TABLE IF NOT EXISTS loans (
   id                SERIAL PRIMARY KEY,
   lender            TEXT NOT NULL,
   purpose           loan_purpose NOT NULL,
-  linked_asset      TEXT,                 -- free text description if purpose = capital_asset
-  principal         NUMERIC(14,2) NOT NULL,
+  linked_asset      TEXT,                 -- free text description if purpose = capital_asset/mortgage
+  principal         NUMERIC(14,2) NOT NULL, -- for an existing loan, enter the CURRENT outstanding balance
   interest_rate_pct NUMERIC(6,3) NOT NULL,
   rate_type         TEXT NOT NULL DEFAULT 'fixed', -- fixed | variable
-  term_months       INTEGER NOT NULL,
-  start_date        DATE NOT NULL,
+  term_months       INTEGER NOT NULL,       -- for an existing loan, enter the term REMAINING
+  start_date        DATE NOT NULL,          -- for an existing loan, use today / next payment date
   covenant_notes    TEXT,
   covenant_date     DATE,
+  -- Underlying asset value, for equity tracking (mortgages, vehicle/equipment
+  -- loans). Entered manually and assumed constant going forward — this app
+  -- doesn't forecast appreciation/depreciation, only how the loan balance
+  -- (and therefore equity) changes as it's paid down.
+  asset_value       NUMERIC(14,2),
+  asset_value_date  DATE,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS asset_value NUMERIC(14,2);
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS asset_value_date DATE;
 
 -- One row per scheduled payment; lets a loan's payment timing be seasonal
 -- (larger after harvest/sale, smaller or skipped off-season) rather than
@@ -175,16 +200,29 @@ CREATE TABLE IF NOT EXISTS bills (
   name           TEXT NOT NULL,          -- vendor / bill name, e.g. "AgriChem Ltd invoice #4471"
   ledger         ledger_type NOT NULL DEFAULT 'business',
   category       TEXT,
-  amount         NUMERIC(14,2) NOT NULL,
+  amount         NUMERIC(14,2) NOT NULL, -- total amount owed, GST-inclusive if has_gst
   frequency      bill_frequency NOT NULL DEFAULT 'one_time',
   received_date  DATE,                   -- when the invoice was received (optional)
   due_date       DATE NOT NULL,
   status         bill_status NOT NULL DEFAULT 'unpaid',
   paid_date      DATE,
   linked_transaction_id INTEGER REFERENCES transactions(id),
+  -- GST split: `amount` is the total invoice value; when has_gst is true,
+  -- gst_amount/subtotal_amount are derived server-side from gst_pct so the
+  -- pre-tax cost and the GST component (for ITC/remittance tracking) are
+  -- both visible without changing what actually leaves the account.
+  has_gst        BOOLEAN NOT NULL DEFAULT false,
+  gst_pct        NUMERIC(5,2) NOT NULL DEFAULT 5,
+  gst_amount     NUMERIC(14,2) NOT NULL DEFAULT 0,
+  subtotal_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
   notes          TEXT,
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS has_gst BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS gst_pct NUMERIC(5,2) NOT NULL DEFAULT 5;
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS gst_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS subtotal_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);
 CREATE INDEX IF NOT EXISTS idx_transactions_ledger ON transactions (ledger);

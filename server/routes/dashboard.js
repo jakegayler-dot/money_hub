@@ -8,7 +8,7 @@ const router = Router();
 router.get('/', ah(async (req, res) => {
   const year = Number(req.query.year) || new Date().getFullYear();
 
-  const [dscr, liquidity, reserve, upcomingPayments, drawTotal, unpaidBills, accountFees] = await Promise.all([
+  const [dscr, liquidity, reserve, upcomingPayments, drawTotal, unpaidBills, accountFees, outstandingChecks] = await Promise.all([
     computeDSCR(year),
     liquidityFloor(year),
     reserveStatus(year),
@@ -27,9 +27,18 @@ router.get('/', ah(async (req, res) => {
       `SELECT * FROM bills WHERE status = 'unpaid' ORDER BY due_date ASC LIMIT 10`
     ),
     monthlyAccountFees(year),
+    // Outstanding checks: transactions already deducted from the book
+    // balance but not yet confirmed cleared against the bank statement —
+    // this is the gap that makes the app's balance look "wrong" next to
+    // what the bank shows, when really it's just ahead of it.
+    pool.query(
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(ABS(amount)), 0) AS total
+       FROM transactions WHERE cleared = false`
+    ),
   ]);
 
   const totalUnpaidBills = unpaidBills.rows.reduce((s, b) => s + Number(b.amount), 0);
+  const totalUnpaidGst = unpaidBills.rows.reduce((s, b) => s + Number(b.gst_amount || 0), 0);
   const overdueBills = unpaidBills.rows.filter((b) => new Date(b.due_date) < new Date());
 
   res.json({
@@ -42,9 +51,14 @@ router.get('/', ah(async (req, res) => {
     bills: {
       upcoming: unpaidBills.rows,
       totalUnpaid: totalUnpaidBills,
+      totalUnpaidGst: totalUnpaidGst,
       overdueCount: overdueBills.length,
     },
     annualAccountFees: accountFees.reduce((a, b) => a + b, 0),
+    outstandingChecks: {
+      count: outstandingChecks.rows[0].count,
+      total: Number(outstandingChecks.rows[0].total),
+    },
   });
 }));
 

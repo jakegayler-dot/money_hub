@@ -15,7 +15,29 @@ const ALREADY_APPLIED_CODES = new Set([
   '42701', // duplicate_column
 ]);
 
+// Adding a value to an existing enum (ALTER TYPE ... ADD VALUE) cannot run
+// inside a transaction block, and schema.sql is applied as one multi-
+// statement string, which Postgres treats as an implicit transaction. So
+// enum value additions run here instead, each as its own single-statement
+// query, before schema.sql is applied. Safe to re-run: IF NOT EXISTS means
+// a database that already has the value just no-ops.
+const ENUM_ADDITIONS = [
+  `ALTER TYPE loan_purpose ADD VALUE IF NOT EXISTS 'mortgage'`,
+];
+
 async function migrate() {
+  console.log('Applying enum additions ...');
+  for (const stmt of ENUM_ADDITIONS) {
+    try {
+      await pool.query(stmt);
+    } catch (err) {
+      // 42704 = undefined_object — the enum itself doesn't exist yet on a
+      // brand-new database; schema.sql's CREATE TYPE below already includes
+      // this value in that case, so there's nothing to add.
+      if (err.code !== '42704') throw err;
+    }
+  }
+
   const sql = readFileSync(join(__dirname, '..', 'schema.sql'), 'utf8');
   console.log('Applying schema.sql ...');
   try {

@@ -22,7 +22,7 @@ export default function Dashboard() {
   if (error) return <div className="empty-state">Could not load dashboard: {error}. Try refreshing — if it persists, check the server's deploy logs.</div>;
   if (!data) return <div className="empty-state">Loading…</div>;
 
-  const { dscr, liquidity, reserve, upcomingDebtService, ownerDrawYTD, bills, annualAccountFees, year } = data;
+  const { dscr, liquidity, reserve, upcomingDebtService, ownerDrawYTD, bills, annualAccountFees, outstandingChecks, year } = data;
 
   return (
     <>
@@ -64,6 +64,14 @@ export default function Dashboard() {
           label="Account fees (annual)"
           value={money(annualAccountFees)}
           sub="Recurring cost of holding accounts"
+        />
+        <MetricCard
+          label="Outstanding checks"
+          value={money(outstandingChecks.total)}
+          sub={outstandingChecks.count > 0
+            ? `${outstandingChecks.count} not yet cleared — already deducted from balance`
+            : 'None outstanding'}
+          tone={outstandingChecks.count > 0 ? 'negative' : undefined}
         />
       </div>
 

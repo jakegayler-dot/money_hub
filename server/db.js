@@ -16,3 +16,25 @@ export async function getSetting(key, fallback) {
   if (rows.length === 0) return fallback;
   return rows[0].value;
 }
+
+/**
+ * Runs `fn` inside a single DB transaction (BEGIN/COMMIT, ROLLBACK on
+ * error), passing it a dedicated client. Use this any time an action needs
+ * to touch more than one table consistently — e.g. recording a transaction
+ * AND moving the account balance it affects, so the two can never drift
+ * apart even if one write fails.
+ */
+export async function withTransaction(fn) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}

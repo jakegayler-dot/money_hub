@@ -1,20 +1,96 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
+import { loanOutstandingBalance } from '../lib/calculations.js';
 
 const router = Router();
 
+// principal_paid_to_date: sum of principal from payments that are marked
+// paid, OR whose due date has already passed (matches loanOutstandingBalance's
+// assumption that a scheduled payment happened on time unless told otherwise).
+// outstanding_balance and equity (when asset_value is set) are computed here
+// so the loan list can show them without a separate round trip per loan.
 router.get('/', ah(async (req, res) => {
-  const { rows } = await pool.query('SELECT * FROM loans ORDER BY start_date DESC');
-  res.json(rows);
+  const { rows } = await pool.query(`
+    SELECT l.*,
+      COALESCE(SUM(
+        CASE WHEN lp.paid = true OR lp.due_date <= CURRENT_DATE
+             THEN lp.principal_amount ELSE 0 END
+      ), 0) AS principal_paid_to_date
+    FROM loans l
+    LEFT JOIN loan_payments lp ON lp.loan_id = l.id
+    GROUP BY l.id
+    ORDER BY l.start_date DESC
+  `);
+  const withBalances = rows.map((l) => {
+    const outstanding_balance = Math.max(Number(l.principal) - Number(l.principal_paid_to_date), 0);
+    const equity = l.asset_value != null ? Number(l.asset_value) - outstanding_balance : null;
+    return { ...l, outstanding_balance, equity };
+  });
+  res.json(withBalances);
 }));
 
+// Full schedule for one loan, with a running balance and running equity
+// (if asset_value is set) after each payment — this is the interest/
+// principal breakdown plus equity build-up over the life of the loan.
 router.get('/:id/payments', ah(async (req, res) => {
-  const { rows } = await pool.query(
+  const { rows: loanRows } = await pool.query('SELECT * FROM loans WHERE id = $1', [req.params.id]);
+  if (!loanRows.length) return res.status(404).json({ error: 'not found' });
+  const loan = loanRows[0];
+
+  const { rows: payments } = await pool.query(
     'SELECT * FROM loan_payments WHERE loan_id = $1 ORDER BY due_date ASC',
     [req.params.id]
   );
-  res.json(rows);
+
+  let balance = Number(loan.principal);
+  const schedule = payments.map((p) => {
+    balance = Math.max(balance - Number(p.principal_amount), 0);
+    return {
+      ...p,
+      balance_after: Math.round(balance * 100) / 100,
+      equity_after: loan.asset_value != null ? Number(loan.asset_value) - balance : null,
+    };
+  });
+
+  res.json({ loan, payments: schedule });
+}));
+
+// Estimated payment and balance/equity as of an arbitrary date — "what's
+// the payment around this date, and what would I owe / have in equity at
+// that point" — using the closest scheduled payment on or after the date.
+router.get('/:id/estimate', ah(async (req, res) => {
+  const { date } = req.query;
+  if (!date) return res.status(400).json({ error: 'date query param is required (YYYY-MM-DD)' });
+
+  const { rows: loanRows } = await pool.query('SELECT * FROM loans WHERE id = $1', [req.params.id]);
+  if (!loanRows.length) return res.status(404).json({ error: 'not found' });
+  const loan = loanRows[0];
+
+  const { rows: payments } = await pool.query(
+    'SELECT * FROM loan_payments WHERE loan_id = $1 ORDER BY due_date ASC',
+    [req.params.id]
+  );
+  if (!payments.length) return res.status(404).json({ error: 'no payment schedule on file for this loan' });
+
+  const asOf = new Date(date);
+  const nearestPayment =
+    payments.find((p) => new Date(p.due_date) >= asOf) || payments[payments.length - 1];
+
+  const balanceAsOf = loanOutstandingBalance(loan, payments, asOf);
+  const balanceAfterPayment = Math.max(
+    balanceAsOf - Number(nearestPayment.principal_amount),
+    0
+  );
+
+  res.json({
+    asOfDate: date,
+    payment: nearestPayment,
+    balanceBeforePayment: Math.round(balanceAsOf * 100) / 100,
+    balanceAfterPayment: Math.round(balanceAfterPayment * 100) / 100,
+    equityBeforePayment: loan.asset_value != null ? Number(loan.asset_value) - balanceAsOf : null,
+    equityAfterPayment: loan.asset_value != null ? Number(loan.asset_value) - balanceAfterPayment : null,
+  });
 }));
 
 /** Standard fixed-rate amortization; produces one row per month. */
@@ -51,6 +127,7 @@ router.post('/', ah(async (req, res) => {
     lender, purpose, linked_asset = null, principal, interest_rate_pct,
     rate_type = 'fixed', term_months, start_date, covenant_notes = null,
     covenant_date = null, custom_schedule = null,
+    asset_value = null, asset_value_date = null,
   } = req.body;
 
   const client = await pool.connect();
@@ -59,10 +136,10 @@ router.post('/', ah(async (req, res) => {
     const { rows } = await client.query(
       `INSERT INTO loans
         (lender, purpose, linked_asset, principal, interest_rate_pct, rate_type,
-         term_months, start_date, covenant_notes, covenant_date)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+         term_months, start_date, covenant_notes, covenant_date, asset_value, asset_value_date)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
       [lender, purpose, linked_asset, principal, interest_rate_pct, rate_type,
-       term_months, start_date, covenant_notes, covenant_date]
+       term_months, start_date, covenant_notes, covenant_date, asset_value, asset_value_date]
     );
     const loan = rows[0];
 
@@ -89,6 +166,24 @@ router.post('/', ah(async (req, res) => {
   } finally {
     client.release();
   }
+}));
+
+// Lets the asset valuation (and covenant info) be updated without touching
+// the loan's rate/term/schedule — re-amortizing an existing schedule isn't
+// supported yet, so principal/rate/term are intentionally not editable here.
+router.patch('/:id', ah(async (req, res) => {
+  const { asset_value, asset_value_date, covenant_notes, covenant_date } = req.body;
+  const { rows } = await pool.query(
+    `UPDATE loans SET
+       asset_value = COALESCE($1, asset_value),
+       asset_value_date = COALESCE($2, asset_value_date),
+       covenant_notes = COALESCE($3, covenant_notes),
+       covenant_date = COALESCE($4, covenant_date)
+     WHERE id = $5 RETURNING *`,
+    [asset_value, asset_value_date, covenant_notes, covenant_date, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'not found' });
+  res.json(rows[0]);
 }));
 
 export default router;
