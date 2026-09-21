@@ -21,10 +21,12 @@ router.post('/', ah(async (req, res) => {
     name, ledger = 'business', category = null, amount, frequency = 'one_time',
     received_date = null, due_date, notes = null,
   } = req.body;
+  // Empty strings from an optional form field are not valid DATE input —
+  // coerce them (and empty text) to NULL rather than letting the insert fail.
   const { rows } = await pool.query(
     `INSERT INTO bills (name, ledger, category, amount, frequency, received_date, due_date, notes)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
-    [name, ledger, category, amount, frequency, received_date, due_date, notes]
+    [name, ledger, category || null, amount, frequency, received_date || null, due_date, notes || null]
   );
   res.status(201).json(rows[0]);
 }));

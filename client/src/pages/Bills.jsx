@@ -10,20 +10,39 @@ export default function Bills() {
   const [bills, setBills] = useState([]);
   const [form, setForm] = useState(emptyForm);
   const [filter, setFilter] = useState('unpaid');
+  const [error, setError] = useState(null);
 
   const load = () => {
     const q = filter === 'all' ? '' : `?status=${filter}`;
-    fetch(`/api/bills${q}`).then((r) => r.json()).then(setBills);
+    fetch(`/api/bills${q}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data)) setBills(data);
+        else setError(data?.error || 'Failed to load bills.');
+      })
+      .catch(() => setError('Failed to load bills.'));
   };
   useEffect(load, [filter]);
 
   const submit = async (e) => {
     e.preventDefault();
-    await fetch('/api/bills', {
+    setError(null);
+    const res = await fetch('/api/bills', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...form, amount: Number(form.amount) }),
+      body: JSON.stringify({
+        ...form,
+        amount: Number(form.amount),
+        category: form.category || null,
+        received_date: form.received_date || null,
+        notes: form.notes || null,
+      }),
     });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(body?.error || `Could not save bill (HTTP ${res.status}).`);
+      return;
+    }
     setForm(emptyForm);
     load();
   };
@@ -52,6 +71,13 @@ export default function Bills() {
         <h1 className="page-title">Bills</h1>
         <span className="page-meta">Unpaid total {money(totalUnpaid)}</span>
       </div>
+
+      {error && (
+        <div className="panel" style={{ borderColor: 'var(--red, #c0392b)' }}>
+          <div className="panel-header">Something went wrong</div>
+          <p style={{ margin: '8px 0 0', color: 'var(--red, #c0392b)' }}>{error}</p>
+        </div>
+      )}
 
       <div className="panel">
         <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
