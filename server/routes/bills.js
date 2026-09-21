@@ -115,14 +115,68 @@ router.post('/:id/pay', ah(async (req, res) => {
   res.json({ paid: bill.id, nextBill: null });
 }));
 
+// Editing an UNPAID bill is always safe — nothing downstream depends on its
+// numbers yet. Once a bill is PAID, though, it has a linked transaction
+// that already moved real money and already changed an account balance;
+// silently changing the bill's amount/due_date/GST after that would leave
+// the bill record disagreeing with the transaction it produced, with
+// nothing keeping them in sync. So those fields are locked once paid —
+// name/category/notes (cosmetic, no side effects) stay editable always.
+// To correct a paid bill's amount, reverse the payment (delete the linked
+// transaction, which is a separate, deliberate action) and re-enter it.
+// Reverses a paid bill back to unpaid: deletes its linked transaction
+// (restoring the account balance it deducted) and clears paid_date/
+// linked_transaction_id. This is the supported way to fix a paid bill's
+// amount or due date — undo the payment, edit the now-unpaid bill, then
+// pay it again — rather than editing a paid bill in place and leaving its
+// transaction pointing at stale numbers.
+router.post('/:id/unpay', ah(async (req, res) => {
+  const bill = await withTransaction(async (client) => {
+    const { rows } = await client.query('SELECT * FROM bills WHERE id = $1', [req.params.id]);
+    if (!rows.length) return null;
+    const bill = rows[0];
+    if (bill.status !== 'paid') return bill;
+
+    if (bill.linked_transaction_id) {
+      const { rows: txRows } = await client.query(
+        'SELECT * FROM transactions WHERE id = $1', [bill.linked_transaction_id]
+      );
+      if (txRows.length) {
+        const tx = txRows[0];
+        await client.query(
+          `UPDATE accounts SET opening_balance = opening_balance - $1 WHERE id = $2`,
+          [tx.amount, tx.account_id]
+        );
+        await client.query('DELETE FROM transactions WHERE id = $1', [tx.id]);
+      }
+    }
+
+    const { rows: updated } = await client.query(
+      `UPDATE bills SET status = 'unpaid', paid_date = NULL, linked_transaction_id = NULL WHERE id = $1 RETURNING *`,
+      [bill.id]
+    );
+    return updated[0];
+  });
+
+  if (!bill) return res.status(404).json({ error: 'not found' });
+  res.json(bill);
+}));
+
 router.patch('/:id', ah(async (req, res) => {
   const { name, amount, due_date, category, notes, has_gst, gst_pct } = req.body;
 
-  // Recompute the GST split whenever amount, has_gst, or gst_pct changes —
-  // read the current row first so partial edits keep the values not sent.
   const { rows: currentRows } = await pool.query('SELECT * FROM bills WHERE id = $1', [req.params.id]);
   if (!currentRows.length) return res.status(404).json({ error: 'not found' });
   const current = currentRows[0];
+
+  const touchesFinancials =
+    amount !== undefined || due_date !== undefined || has_gst !== undefined || gst_pct !== undefined;
+  if (current.status === 'paid' && touchesFinancials) {
+    return res.status(409).json({
+      error: 'This bill is already paid — its amount, due date, and GST are locked because a transaction already moved money based on them. Only name, category, and notes can still be edited. To fix an amount, reverse the payment first.',
+    });
+  }
+
   const effectiveAmount = amount ?? current.amount;
   const effectiveHasGst = has_gst ?? current.has_gst;
   const effectiveGstPct = gst_pct ?? current.gst_pct;

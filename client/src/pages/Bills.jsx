@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { money } from '../format.js';
 
 const emptyForm = {
@@ -16,6 +16,8 @@ export default function Bills() {
   const [payingId, setPayingId] = useState(null);
   const [payAccountId, setPayAccountId] = useState('');
   const [payByCheck, setPayByCheck] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState(null);
 
   const load = () => {
     const q = filter === 'all' ? '' : `?status=${filter}`;
@@ -84,6 +86,48 @@ export default function Bills() {
     load();
   };
 
+  const startEdit = (b) => {
+    setEditingId(b.id);
+    setEditForm({
+      name: b.name, category: b.category || '', amount: b.amount, due_date: b.due_date?.slice(0, 10),
+      notes: b.notes || '', has_gst: b.has_gst, gst_pct: b.gst_pct,
+    });
+    setError(null);
+  };
+
+  const cancelEdit = () => { setEditingId(null); setEditForm(null); };
+
+  const saveEdit = async (id) => {
+    setError(null);
+    const res = await fetch(`/api/bills/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...editForm,
+        amount: Number(editForm.amount),
+        gst_pct: Number(editForm.gst_pct),
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(body?.error || `Could not save changes (HTTP ${res.status}).`);
+      return;
+    }
+    cancelEdit();
+    load();
+  };
+
+  const undoPayment = async (id) => {
+    setError(null);
+    const res = await fetch(`/api/bills/${id}/unpay`, { method: 'POST' });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(body?.error || `Could not undo payment (HTTP ${res.status}).`);
+      return;
+    }
+    load();
+  };
+
   const totalUnpaid = bills
     .filter((b) => b.status === 'unpaid')
     .reduce((s, b) => s + Number(b.amount), 0);
@@ -134,50 +178,111 @@ export default function Bills() {
               {bills.map((b) => {
                 const overdue = b.status === 'unpaid' && new Date(b.due_date) < new Date();
                 return (
-                  <tr key={b.id}>
-                    <td>{b.due_date?.slice(0, 10)}</td>
-                    <td>{b.name}</td>
-                    <td>{b.category || '—'}</td>
-                    <td>{b.ledger}</td>
-                    <td>{b.has_gst ? money(Number(b.subtotal_amount)) : '—'}</td>
-                    <td>{b.has_gst ? `${money(Number(b.gst_amount))} (${Number(b.gst_pct)}%)` : '—'}</td>
-                    <td>{money(Number(b.amount))}</td>
-                    <td>
-                      {b.status === 'paid' ? (
-                        <span className="badge pass">PAID</span>
-                      ) : overdue ? (
-                        <span className="badge fail">OVERDUE</span>
-                      ) : (
-                        <span className="badge warn">UNPAID</span>
-                      )}
-                    </td>
-                    <td>
-                      {b.status === 'unpaid' && payingId === b.id ? (
-                        <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
-                          <select value={payAccountId} onChange={(e) => setPayAccountId(e.target.value)}>
-                            <option value="">Paid from…</option>
-                            {accounts.map((a) => (
-                              <option key={a.id} value={a.id}>{a.name} ({a.ledger})</option>
-                            ))}
-                          </select>
-                          <label style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                            <input type="checkbox" checked={payByCheck} onChange={(e) => setPayByCheck(e.target.checked)} />
-                            By check
-                          </label>
-                          <button className="small" disabled={!payAccountId} onClick={confirmPay}>Confirm</button>
-                          <button className="small secondary" onClick={() => { setPayingId(null); setPayAccountId(''); setPayByCheck(false); }}>Cancel</button>
-                        </span>
-                      ) : (
-                        <>
-                          {b.status === 'unpaid' && (
-                            <button className="small" onClick={() => { setPayingId(b.id); setPayAccountId(''); setPayByCheck(false); }}>Mark paid</button>
-                          )}
-                          {' '}
-                          <button className="small secondary" onClick={() => remove(b.id)}>Delete</button>
-                        </>
-                      )}
-                    </td>
-                  </tr>
+                  <Fragment key={b.id}>
+                    <tr>
+                      <td>{b.due_date?.slice(0, 10)}</td>
+                      <td>{b.name}</td>
+                      <td>{b.category || '—'}</td>
+                      <td>{b.ledger}</td>
+                      <td>{b.has_gst ? money(Number(b.subtotal_amount)) : '—'}</td>
+                      <td>{b.has_gst ? `${money(Number(b.gst_amount))} (${Number(b.gst_pct)}%)` : '—'}</td>
+                      <td>{money(Number(b.amount))}</td>
+                      <td>
+                        {b.status === 'paid' ? (
+                          <span className="badge pass">PAID</span>
+                        ) : overdue ? (
+                          <span className="badge fail">OVERDUE</span>
+                        ) : (
+                          <span className="badge warn">UNPAID</span>
+                        )}
+                      </td>
+                      <td>
+                        {b.status === 'unpaid' && payingId === b.id ? (
+                          <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <select value={payAccountId} onChange={(e) => setPayAccountId(e.target.value)}>
+                              <option value="">Paid from…</option>
+                              {accounts.map((a) => (
+                                <option key={a.id} value={a.id}>{a.name} ({a.ledger})</option>
+                              ))}
+                            </select>
+                            <label style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                              <input type="checkbox" checked={payByCheck} onChange={(e) => setPayByCheck(e.target.checked)} />
+                              By check
+                            </label>
+                            <button className="small" disabled={!payAccountId} onClick={confirmPay}>Confirm</button>
+                            <button className="small secondary" onClick={() => { setPayingId(null); setPayAccountId(''); setPayByCheck(false); }}>Cancel</button>
+                          </span>
+                        ) : (
+                          <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+                            {b.status === 'unpaid' && (
+                              <button className="small" onClick={() => { setPayingId(b.id); setPayAccountId(''); setPayByCheck(false); }}>Mark paid</button>
+                            )}
+                            <button className="small secondary" onClick={() => (editingId === b.id ? cancelEdit() : startEdit(b))}>
+                              {editingId === b.id ? 'Close' : 'Edit'}
+                            </button>
+                            {b.status === 'paid' && (
+                              <button className="small secondary" onClick={() => undoPayment(b.id)}>Undo payment</button>
+                            )}
+                            <button className="small secondary" onClick={() => remove(b.id)}>Delete</button>
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                    {editingId === b.id && editForm && (
+                      <tr>
+                        <td colSpan={9} style={{ background: 'var(--panel-alt, rgba(255,255,255,0.03))' }}>
+                          <div style={{ padding: '12px 4px' }}>
+                            {b.status === 'paid' && (
+                              <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 10px' }}>
+                                This bill is paid, so amount, due date, and GST are locked (a transaction already
+                                moved money based on them). Only name, category, and notes can be changed here.
+                                Use "Undo payment" first if the amount itself needs fixing.
+                              </p>
+                            )}
+                            <div className="form-panel" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
+                              <div className="field">
+                                <label>Name / vendor</label>
+                                <input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} />
+                              </div>
+                              <div className="field">
+                                <label>Category</label>
+                                <input value={editForm.category} onChange={(e) => setEditForm({ ...editForm, category: e.target.value })} />
+                              </div>
+                              <div className="field">
+                                <label>Amount</label>
+                                <input type="number" step="0.01" disabled={b.status === 'paid'} value={editForm.amount} onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })} />
+                              </div>
+                              <div className="field">
+                                <label>Due date</label>
+                                <input type="date" disabled={b.status === 'paid'} value={editForm.due_date} onChange={(e) => setEditForm({ ...editForm, due_date: e.target.value })} />
+                              </div>
+                              <div className="field">
+                                <label>
+                                  <input type="checkbox" disabled={b.status === 'paid'} checked={editForm.has_gst} onChange={(e) => setEditForm({ ...editForm, has_gst: e.target.checked })} />
+                                  {' '}Includes GST
+                                </label>
+                              </div>
+                              {editForm.has_gst && (
+                                <div className="field">
+                                  <label>GST rate (%)</label>
+                                  <input type="number" step="0.01" disabled={b.status === 'paid'} value={editForm.gst_pct} onChange={(e) => setEditForm({ ...editForm, gst_pct: e.target.value })} />
+                                </div>
+                              )}
+                              <div className="field">
+                                <label>Notes</label>
+                                <input value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} />
+                              </div>
+                            </div>
+                            <div style={{ marginTop: 8 }}>
+                              <button className="small" onClick={() => saveEdit(b.id)}>Save changes</button>
+                              {' '}
+                              <button className="small secondary" onClick={cancelEdit}>Cancel</button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>
