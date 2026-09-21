@@ -183,6 +183,7 @@ export async function liquidityFloor(year) {
     running += n + contractInflows[i] - unpaidBills[i] - accountFees[i] - unpaidDebtService[i];
     return {
       month: i + 1,
+      noi: n,
       balance: running,
       unpaidBillsDue: unpaidBills[i],
       accountFees: accountFees[i],

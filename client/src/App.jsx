@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard.jsx';
 import Accounts from './pages/Accounts.jsx';
 import Bills from './pages/Bills.jsx';
 import Contracts from './pages/Contracts.jsx';
+import CashFlow from './pages/CashFlow.jsx';
 import Ledgers from './pages/Ledgers.jsx';
 import Loans from './pages/Loans.jsx';
 import Expenses from './pages/Expenses.jsx';
@@ -16,6 +17,7 @@ export default function App() {
       <main>
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/cash-flow" element={<CashFlow />} />
           <Route path="/accounts" element={<Accounts />} />
           <Route path="/bills" element={<Bills />} />
           <Route path="/contracts" element={<Contracts />} />

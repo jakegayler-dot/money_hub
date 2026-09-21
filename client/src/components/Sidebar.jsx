@@ -2,6 +2,7 @@ import { NavLink } from 'react-router-dom';
 
 const links = [
   { to: '/', label: 'Dashboard', end: true },
+  { to: '/cash-flow', label: 'Cash Flow' },
   { to: '/accounts', label: 'Accounts' },
   { to: '/bills', label: 'Bills' },
   { to: '/contracts', label: 'Contracts' },
