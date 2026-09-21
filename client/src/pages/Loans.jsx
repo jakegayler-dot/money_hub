@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from 'react';
 import { money } from '../format.js';
 
 const emptyForm = {
-  lender: '', purpose: 'term', linked_asset: '', principal: '',
+  name: '', lender: '', purpose: 'term', linked_asset: '', principal: '',
   interest_rate_pct: '', rate_type: 'fixed', term_months: '', start_date: '',
   covenant_notes: '', covenant_date: '', asset_value: '', asset_value_date: '',
 };
@@ -26,6 +26,8 @@ export default function Loans() {
   const [estimateDate, setEstimateDate] = useState('');
   const [estimateResult, setEstimateResult] = useState(null);
   const [error, setError] = useState(null);
+  const [renamingId, setRenamingId] = useState(null);
+  const [renameValue, setRenameValue] = useState('');
 
   const load = () => { fetch('/api/loans').then((r) => r.json()).then(setLoans); };
   useEffect(load, []);
@@ -77,6 +79,23 @@ export default function Loans() {
     setEstimateResult(data);
   };
 
+  const startRename = (loan) => {
+    setRenamingId(loan.id);
+    setRenameValue(loan.name || loan.lender);
+  };
+
+  const confirmRename = async (loanId) => {
+    const trimmed = renameValue.trim();
+    if (!trimmed) { setRenamingId(null); return; }
+    await fetch(`/api/loans/${loanId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: trimmed }),
+    });
+    setRenamingId(null);
+    load();
+  };
+
   return (
     <>
       <div className="page-header"><h1 className="page-title">Loans</h1></div>
@@ -91,6 +110,10 @@ export default function Loans() {
       <div className="panel">
         <div className="panel-header">Add loan</div>
         <form className="form-panel" onSubmit={submit}>
+          <div className="field">
+            <label>Name (yours to pick — tells this loan apart from others, even at the same lender)</label>
+            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Home mortgage, 2023 grain truck" />
+          </div>
           <div className="field">
             <label>Lender</label>
             <input required value={form.lender} onChange={(e) => setForm({ ...form, lender: e.target.value })} />
@@ -171,7 +194,7 @@ export default function Loans() {
           <table>
             <thead>
               <tr>
-                <th>Lender</th><th>Category</th><th>Outstanding</th><th>Rate</th><th>Term</th>
+                <th>Name</th><th>Lender</th><th>Category</th><th>Outstanding</th><th>Rate</th><th>Term</th>
                 <th>Asset value</th><th>Equity</th><th></th>
               </tr>
             </thead>
@@ -179,6 +202,25 @@ export default function Loans() {
               {loans.map((l) => (
                 <Fragment key={l.id}>
                   <tr>
+                    <td>
+                      {renamingId === l.id ? (
+                        <span style={{ display: 'inline-flex', gap: 4 }}>
+                          <input
+                            style={{ width: 140 }}
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && confirmRename(l.id)}
+                            autoFocus
+                          />
+                          <button className="small" onClick={() => confirmRename(l.id)}>Save</button>
+                          <button className="small secondary" onClick={() => setRenamingId(null)}>Cancel</button>
+                        </span>
+                      ) : (
+                        <span style={{ cursor: 'pointer' }} title="Click to rename" onClick={() => startRename(l)}>
+                          {l.name || l.lender} <span style={{ opacity: 0.4, fontSize: 11 }}>✎</span>
+                        </span>
+                      )}
+                    </td>
                     <td>{l.lender}</td>
                     <td>{PURPOSE_LABELS[l.purpose] || l.purpose}</td>
                     <td>{money(Number(l.outstanding_balance))}</td>
@@ -196,7 +238,7 @@ export default function Loans() {
                   </tr>
                   {expandedId === l.id && (
                     <tr>
-                      <td colSpan={8} style={{ background: 'var(--panel-alt, rgba(255,255,255,0.03))' }}>
+                      <td colSpan={9} style={{ background: 'var(--panel-alt, rgba(255,255,255,0.03))' }}>
                         {!schedules[l.id] ? (
                           <div className="empty-state">Loading schedule…</div>
                         ) : (

@@ -109,6 +109,12 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS loans (
   id                SERIAL PRIMARY KEY,
+  -- A short name you pick, e.g. "Home mortgage" or "2023 grain truck" —
+  -- exists because `lender` alone can't tell apart two loans from the same
+  -- bank (a farm's operating line and a mortgage, both from the same credit
+  -- union, say). Defaults to the lender name if left blank so existing rows
+  -- (and anyone who skips it) still get something sane, not NULL.
+  name              TEXT NOT NULL DEFAULT '',
   lender            TEXT NOT NULL,
   purpose           loan_purpose NOT NULL,
   linked_asset      TEXT,                 -- free text description if purpose = capital_asset/mortgage
@@ -130,6 +136,11 @@ CREATE TABLE IF NOT EXISTS loans (
 
 ALTER TABLE loans ADD COLUMN IF NOT EXISTS asset_value NUMERIC(14,2);
 ALTER TABLE loans ADD COLUMN IF NOT EXISTS asset_value_date DATE;
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+-- Backfill: any loan that predates the `name` column gets the lender name
+-- as a starting point, so nothing shows up blank in the UI. Safe to re-run —
+-- once a loan has a real name it will no longer be the empty string.
+UPDATE loans SET name = lender WHERE name = '';
 
 -- One row per scheduled payment; lets a loan's payment timing be seasonal
 -- (larger after harvest/sale, smaller or skipped off-season) rather than

@@ -124,21 +124,25 @@ function buildAmortizationSchedule({ principal, interest_rate_pct, term_months, 
 
 router.post('/', ah(async (req, res) => {
   const {
-    lender, purpose, linked_asset = null, principal, interest_rate_pct,
+    name, lender, purpose, linked_asset = null, principal, interest_rate_pct,
     rate_type = 'fixed', term_months, start_date, covenant_notes = null,
     covenant_date = null, custom_schedule = null,
     asset_value = null, asset_value_date = null,
   } = req.body;
+  // A blank name falls back to the lender name, same as the backfill for
+  // rows that predate this field — never leaves a loan with nothing to
+  // tell it apart from another one at the same lender.
+  const resolvedName = (name && name.trim()) || lender;
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const { rows } = await client.query(
       `INSERT INTO loans
-        (lender, purpose, linked_asset, principal, interest_rate_pct, rate_type,
+        (name, lender, purpose, linked_asset, principal, interest_rate_pct, rate_type,
          term_months, start_date, covenant_notes, covenant_date, asset_value, asset_value_date)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-      [lender, purpose, linked_asset, principal, interest_rate_pct, rate_type,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+      [resolvedName, lender, purpose, linked_asset, principal, interest_rate_pct, rate_type,
        term_months, start_date, covenant_notes, covenant_date, asset_value, asset_value_date]
     );
     const loan = rows[0];
@@ -172,15 +176,16 @@ router.post('/', ah(async (req, res) => {
 // the loan's rate/term/schedule — re-amortizing an existing schedule isn't
 // supported yet, so principal/rate/term are intentionally not editable here.
 router.patch('/:id', ah(async (req, res) => {
-  const { asset_value, asset_value_date, covenant_notes, covenant_date } = req.body;
+  const { name, asset_value, asset_value_date, covenant_notes, covenant_date } = req.body;
   const { rows } = await pool.query(
     `UPDATE loans SET
-       asset_value = COALESCE($1, asset_value),
-       asset_value_date = COALESCE($2, asset_value_date),
-       covenant_notes = COALESCE($3, covenant_notes),
-       covenant_date = COALESCE($4, covenant_date)
-     WHERE id = $5 RETURNING *`,
-    [asset_value, asset_value_date, covenant_notes, covenant_date, req.params.id]
+       name = COALESCE($1, name),
+       asset_value = COALESCE($2, asset_value),
+       asset_value_date = COALESCE($3, asset_value_date),
+       covenant_notes = COALESCE($4, covenant_notes),
+       covenant_date = COALESCE($5, covenant_date)
+     WHERE id = $6 RETURNING *`,
+    [name, asset_value, asset_value_date, covenant_notes, covenant_date, req.params.id]
   );
   if (!rows.length) return res.status(404).json({ error: 'not found' });
   res.json(rows[0]);
