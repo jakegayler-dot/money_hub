@@ -80,7 +80,16 @@ router.post('/ingest', ah(async (req, res) => {
       status = 'open', segment = 'grain', notes = null,
     } = item;
     const total = resolveTotal(item);
-    const paymentDate = resolvePaymentDate({ expected_payment_date, delivery_date, contract_period_end, payment_terms_days });
+    // For AUTOMATED pushes the rule always wins: delivery + terms, else the
+    // contract period's last day. A pushed expected_payment_date is only a
+    // last resort when neither date exists — experience shows exporters
+    // fabricate this field when their schema forces them to have one, and a
+    // fabricated payment date silently drags the whole cash-flow forecast
+    // to the wrong month. (Manual entry below keeps explicit-wins, because
+    // a human typing a date means it.)
+    const paymentDate =
+      resolvePaymentDate({ expected_payment_date: null, delivery_date, contract_period_end, payment_terms_days })
+      ?? expected_payment_date;
 
     if (!external_id || !commodity || !paymentDate || total == null) {
       results.push({ external_id: external_id || null, ok: false, error: 'external_id, commodity, total_value (or quantity + price_per_unit), and one of expected_payment_date / delivery_date / contract_period_end are required' });
