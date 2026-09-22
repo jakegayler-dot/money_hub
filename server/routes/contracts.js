@@ -14,6 +14,29 @@ function resolveTotal({ total_value, quantity, price_per_unit }) {
   return null;
 }
 
+function addDays(dateStr, days) {
+  const d = new Date(dateStr);
+  d.setDate(d.getDate() + Number(days));
+  return d.toISOString().slice(0, 10);
+}
+
+// The payment date drives which forecast month the money lands in, so a
+// fabricated one is worse than none. The rule, in order:
+//   1. An explicitly known expected_payment_date wins (a real override,
+//      never a guess — pushing systems must not fabricate this field).
+//   2. Confirmed delivery date → payment = delivery + 7 days (override the
+//      terms per contract with payment_terms_days).
+//   3. No delivery scheduled yet → the last day of the contract period,
+//      the latest date the delivery window allows, so the forecast leans
+//      conservative until a delivery date firms up.
+const DEFAULT_PAYMENT_TERMS_DAYS = 7;
+function resolvePaymentDate({ expected_payment_date, delivery_date, contract_period_end, payment_terms_days }) {
+  if (expected_payment_date) return expected_payment_date;
+  if (delivery_date) return addDays(delivery_date, payment_terms_days ?? DEFAULT_PAYMENT_TERMS_DAYS);
+  if (contract_period_end) return contract_period_end;
+  return null;
+}
+
 router.get('/', ah(async (req, res) => {
   const { status } = req.query;
   const where = status ? 'WHERE status = $1' : '';
@@ -53,12 +76,14 @@ router.post('/ingest', ah(async (req, res) => {
     const {
       source = 'ingest', external_id, commodity, quantity = null, unit = null,
       price_per_unit = null, counterparty = null, delivery_date = null,
-      expected_payment_date, status = 'open', segment = 'grain', notes = null,
+      contract_period_end = null, expected_payment_date = null, payment_terms_days = null,
+      status = 'open', segment = 'grain', notes = null,
     } = item;
     const total = resolveTotal(item);
+    const paymentDate = resolvePaymentDate({ expected_payment_date, delivery_date, contract_period_end, payment_terms_days });
 
-    if (!external_id || !commodity || !expected_payment_date || total == null) {
-      results.push({ external_id: external_id || null, ok: false, error: 'external_id, commodity, expected_payment_date, and total_value (or quantity + price_per_unit) are required' });
+    if (!external_id || !commodity || !paymentDate || total == null) {
+      results.push({ external_id: external_id || null, ok: false, error: 'external_id, commodity, total_value (or quantity + price_per_unit), and one of expected_payment_date / delivery_date / contract_period_end are required' });
       continue;
     }
     if (!['open', 'delivered', 'cancelled'].includes(status)) {
@@ -69,8 +94,8 @@ router.post('/ingest', ah(async (req, res) => {
     const { rows } = await pool.query(
       `INSERT INTO sale_contracts
         (source, external_id, commodity, quantity, unit, price_per_unit, total_value,
-         counterparty, delivery_date, expected_payment_date, status, segment, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         counterparty, delivery_date, contract_period_end, expected_payment_date, status, segment, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
        ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL
        DO UPDATE SET
          commodity = EXCLUDED.commodity,
@@ -80,6 +105,7 @@ router.post('/ingest', ah(async (req, res) => {
          total_value = EXCLUDED.total_value,
          counterparty = EXCLUDED.counterparty,
          delivery_date = EXCLUDED.delivery_date,
+         contract_period_end = EXCLUDED.contract_period_end,
          expected_payment_date = EXCLUDED.expected_payment_date,
          status = EXCLUDED.status,
          segment = EXCLUDED.segment,
@@ -87,7 +113,7 @@ router.post('/ingest', ah(async (req, res) => {
        WHERE sale_contracts.status != 'settled'
        RETURNING id, status`,
       [source, external_id, commodity, quantity, unit, price_per_unit, total,
-       counterparty, delivery_date || null, expected_payment_date, status, segment, notes]
+       counterparty, delivery_date || null, contract_period_end || null, paymentDate, status, segment, notes]
     );
     results.push({ external_id, ok: true, skipped_settled: rows.length === 0, id: rows[0]?.id ?? null });
   }
@@ -98,18 +124,21 @@ router.post('/ingest', ah(async (req, res) => {
 router.post('/', ah(async (req, res) => {
   const {
     commodity, quantity = null, unit = null, price_per_unit = null,
-    counterparty = null, delivery_date = null, expected_payment_date,
+    counterparty = null, delivery_date = null, contract_period_end = null,
+    expected_payment_date = null, payment_terms_days = null,
     segment = 'grain', notes = null,
   } = req.body;
   const total = resolveTotal(req.body);
   if (total == null) return res.status(400).json({ error: 'total_value, or quantity and price_per_unit, is required' });
+  const paymentDate = resolvePaymentDate({ expected_payment_date, delivery_date, contract_period_end, payment_terms_days });
+  if (!paymentDate) return res.status(400).json({ error: 'one of expected_payment_date, delivery_date, or contract_period_end is required' });
 
   const { rows } = await pool.query(
     `INSERT INTO sale_contracts
-      (commodity, quantity, unit, price_per_unit, total_value, counterparty, delivery_date, expected_payment_date, segment, notes)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      (commodity, quantity, unit, price_per_unit, total_value, counterparty, delivery_date, contract_period_end, expected_payment_date, segment, notes)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
     [commodity, quantity, unit, price_per_unit, total, counterparty,
-     delivery_date || null, expected_payment_date, segment, notes || null]
+     delivery_date || null, contract_period_end || null, paymentDate, segment, notes || null]
   );
   res.status(201).json(rows[0]);
 }));
@@ -194,7 +223,8 @@ router.post('/:id/unsettle', ah(async (req, res) => {
 router.patch('/:id', ah(async (req, res) => {
   const {
     commodity, quantity, unit, price_per_unit, total_value, counterparty,
-    delivery_date, expected_payment_date, status, segment, notes,
+    delivery_date, contract_period_end, expected_payment_date, status, segment, notes,
+    payment_terms_days,
   } = req.body;
 
   const { rows: currentRows } = await pool.query('SELECT * FROM sale_contracts WHERE id = $1', [req.params.id]);
@@ -217,11 +247,23 @@ router.patch('/:id', ah(async (req, res) => {
     price_per_unit: price_per_unit ?? current.price_per_unit,
     counterparty: counterparty ?? current.counterparty,
     delivery_date: delivery_date ?? current.delivery_date,
-    expected_payment_date: expected_payment_date ?? current.expected_payment_date,
+    contract_period_end: contract_period_end ?? current.contract_period_end,
     status: status ?? current.status,
     segment: segment ?? current.segment,
     notes: notes ?? current.notes,
   };
+  // If the dates that drive the payment rule changed and no explicit
+  // payment date came with them, re-derive: delivery + terms, else the
+  // contract period's last day — same rule as everywhere else.
+  merged.expected_payment_date = expected_payment_date
+    ?? ((delivery_date !== undefined || contract_period_end !== undefined)
+      ? resolvePaymentDate({
+          expected_payment_date: null,
+          delivery_date: merged.delivery_date,
+          contract_period_end: merged.contract_period_end,
+          payment_terms_days,
+        }) ?? current.expected_payment_date
+      : current.expected_payment_date);
   const total = total_value != null
     ? Number(total_value)
     : (quantity !== undefined || price_per_unit !== undefined)
@@ -231,11 +273,11 @@ router.patch('/:id', ah(async (req, res) => {
   const { rows } = await pool.query(
     `UPDATE sale_contracts SET
        commodity = $1, quantity = $2, unit = $3, price_per_unit = $4, total_value = $5,
-       counterparty = $6, delivery_date = $7, expected_payment_date = $8, status = $9,
-       segment = $10, notes = $11
-     WHERE id = $12 RETURNING *`,
+       counterparty = $6, delivery_date = $7, contract_period_end = $8, expected_payment_date = $9, status = $10,
+       segment = $11, notes = $12
+     WHERE id = $13 RETURNING *`,
     [merged.commodity, merged.quantity, merged.unit, merged.price_per_unit, total,
-     merged.counterparty, merged.delivery_date, merged.expected_payment_date, merged.status,
+     merged.counterparty, merged.delivery_date, merged.contract_period_end, merged.expected_payment_date, merged.status,
      merged.segment, merged.notes, req.params.id]
   );
   res.json(rows[0]);

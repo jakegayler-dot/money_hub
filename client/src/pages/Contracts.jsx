@@ -3,7 +3,8 @@ import { money } from '../format.js';
 
 const emptyForm = {
   commodity: '', quantity: '', unit: 'tonnes', price_per_unit: '', total_value: '',
-  counterparty: '', delivery_date: '', expected_payment_date: '', segment: 'grain', notes: '',
+  counterparty: '', delivery_date: '', contract_period_end: '', expected_payment_date: '',
+  segment: 'grain', notes: '',
 };
 
 const SEGMENT_LABELS = { grain: 'Grain', livestock: 'Livestock', personal: 'Personal' };
@@ -52,6 +53,8 @@ export default function Contracts() {
         total_value: form.total_value ? Number(form.total_value) : null,
         counterparty: form.counterparty || null,
         delivery_date: form.delivery_date || null,
+        contract_period_end: form.contract_period_end || null,
+        expected_payment_date: form.expected_payment_date || null,
         notes: form.notes || null,
       }),
     });
@@ -233,13 +236,22 @@ export default function Contracts() {
             <input value={form.counterparty} onChange={(e) => setForm({ ...form, counterparty: e.target.value })} />
           </div>
           <div className="field">
-            <label>Delivery date (optional)</label>
+            <label>Confirmed delivery date (payment lands 7 days after)</label>
             <input type="date" value={form.delivery_date} onChange={(e) => setForm({ ...form, delivery_date: e.target.value })} />
           </div>
           <div className="field">
-            <label>Expected payment date</label>
-            <input type="date" required value={form.expected_payment_date} onChange={(e) => setForm({ ...form, expected_payment_date: e.target.value })} />
+            <label>Contract period end (used when no delivery is scheduled yet)</label>
+            <input type="date" value={form.contract_period_end} onChange={(e) => setForm({ ...form, contract_period_end: e.target.value })} />
           </div>
+          <div className="field">
+            <label>Expected payment date (only if actually known — overrides the rule)</label>
+            <input type="date" value={form.expected_payment_date} onChange={(e) => setForm({ ...form, expected_payment_date: e.target.value })} />
+          </div>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>
+            Payment date rule: confirmed delivery + 7 days; no delivery scheduled → last day of the
+            contract period (the latest the window allows, so the forecast stays conservative).
+            Enter at least one of the three dates.
+          </p>
           <div className="field">
             <label>Enterprise</label>
             <select value={form.segment} onChange={(e) => setForm({ ...form, segment: e.target.value })}>

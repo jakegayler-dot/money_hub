@@ -315,6 +315,7 @@ CREATE TABLE IF NOT EXISTS sale_contracts (
   total_value           NUMERIC(14,2) NOT NULL,
   counterparty          TEXT,
   delivery_date         DATE,
+  contract_period_end   DATE,        -- last day of the delivery window, e.g. an Oct 1 – Nov 30 contract → Nov 30
   expected_payment_date DATE NOT NULL,
   status                contract_status NOT NULL DEFAULT 'open',
   segment               enterprise_segment NOT NULL DEFAULT 'grain',
@@ -322,6 +323,8 @@ CREATE TABLE IF NOT EXISTS sale_contracts (
   notes                 TEXT,
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS contract_period_end DATE;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sale_contracts_source_ext
   ON sale_contracts (source, external_id) WHERE external_id IS NOT NULL;
