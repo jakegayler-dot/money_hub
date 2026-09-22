@@ -27,7 +27,7 @@ router.post('/evaluate', ah(async (req, res) => {
   } = req.body;
 
   const year = new Date().getFullYear();
-  const [liquidity, dscr] = await Promise.all([liquidityFloor(year), computeDSCR(year)]);
+  const [liquidity, dscr] = await Promise.all([liquidityFloor(), computeDSCR(year)]);
 
   // Liquidity gate: does the trough month still clear the buffer after the
   // purchase amount (business-attributable share only) leaves the account?

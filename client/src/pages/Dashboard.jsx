@@ -43,7 +43,7 @@ export default function Dashboard() {
         <MetricCard
           label="Liquidity floor"
           value={money(liquidity.floorMonth.balance)}
-          sub={`Month ${liquidity.floorMonth.month} · required ${money(liquidity.requiredFloor)} (${pct(liquidity.bufferPct)} buffer)`}
+          sub={`${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][liquidity.floorMonth.month - 1]} ${liquidity.floorMonth.year || ''} · required ${money(liquidity.requiredFloor)} (${pct(liquidity.bufferPct)} buffer)`}
           tone={liquidity.passes ? 'positive' : 'negative'}
         />
         <MetricCard

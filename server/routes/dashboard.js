@@ -10,7 +10,7 @@ router.get('/', ah(async (req, res) => {
 
   const [dscr, liquidity, reserve, upcomingPayments, drawTotal, unpaidBills, accountFees, outstandingChecks, openContracts] = await Promise.all([
     computeDSCR(year),
-    liquidityFloor(year),
+    liquidityFloor(), // rolling 12-month window from today, not the calendar year
     reserveStatus(year),
     pool.query(
       `SELECT lp.due_date, lp.principal_amount, lp.interest_amount, l.lender

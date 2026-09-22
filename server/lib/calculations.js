@@ -156,12 +156,17 @@ export async function computeDSCR(year) {
 }
 
 /**
- * Liquidity floor: projected cumulative business cash balance across the
- * year, starting from current operating account balances, net of known
- * unpaid bills and recurring account fees. The floor is the lowest point
- * in that projection, not the current balance.
+ * Liquidity floor: ROLLING 12-month projection of business cash, starting
+ * from the live operating balance TODAY and walking forward from the
+ * current month. Only future known flows enter it — unsettled contract
+ * inflows, unpaid bills, unpaid scheduled debt service, recurring account
+ * fees — because everything already booked is already inside today's
+ * balance (replaying past months on top of a live balance would count the
+ * same dollars twice). Anything overdue-but-unpaid lands in the current
+ * month: past its due date or not, it still hasn't moved. The floor is the
+ * lowest point in the projection, not the current balance.
  */
-export async function liquidityFloor(year) {
+export async function liquidityFloor() {
   const bufferPct = Number(await getSetting('liquidity_buffer_pct', 0.15));
 
   const { rows: accountRows } = await pool.query(
@@ -170,38 +175,83 @@ export async function liquidityFloor(year) {
   );
   const startingBalance = Number(accountRows[0].total);
 
-  const [noi, unpaidBills, accountFees, unpaidDebtService, contractInflows] = await Promise.all([
-    monthlyNOI(year),
-    monthlyUnpaidBills(year),
-    monthlyAccountFees(year),
-    monthlyUnpaidDebtService(year),
-    monthlyContractInflows(year),
+  const now = new Date();
+  const y0 = now.getFullYear();
+  const m0 = now.getMonth(); // 0-based
+  const monthsMeta = Array.from({ length: MONTHS }, (_, i) => {
+    const d = new Date(y0, m0 + i, 1);
+    return { year: d.getFullYear(), month: d.getMonth() + 1 };
+  });
+  const windowEnd = new Date(y0, m0 + MONTHS, 1); // exclusive
+  const endStr = `${windowEnd.getFullYear()}-${String(windowEnd.getMonth() + 1).padStart(2, '0')}-01`;
+
+  // Bucket a due date into the window; anything overdue clamps to month 0.
+  const idxFor = (dateStr) => {
+    const d = new Date(dateStr);
+    const idx = (d.getFullYear() - y0) * 12 + (d.getMonth() - m0);
+    return Math.max(0, idx);
+  };
+
+  const [billRows, debtRows, contractRows, fees] = await Promise.all([
+    pool.query(
+      `SELECT due_date, amount FROM bills
+       WHERE ledger = 'business' AND status = 'unpaid' AND due_date < $1`,
+      [endStr]
+    ),
+    // Personal-segment loans (e.g. a home mortgage) post to the personal
+    // ledger when recorded, so they stay out of the business forecast.
+    pool.query(
+      `SELECT lp.due_date, lp.principal_amount + lp.interest_amount AS amount
+       FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
+       WHERE lp.paid = false AND lp.due_date < $1
+         AND (l.segment IS NULL OR l.segment != 'personal')`,
+      [endStr]
+    ),
+    pool.query(
+      `SELECT expected_payment_date AS due_date, total_value AS amount
+       FROM sale_contracts
+       WHERE status IN ('open', 'delivered') AND expected_payment_date < $1
+         AND segment != 'personal'`,
+      [endStr]
+    ),
+    monthlyAccountFees(y0), // same value every month (monthly fees + annual/12)
   ]);
+  const feesPerMonth = fees[0] || 0;
+
+  const billsBy = Array(MONTHS).fill(0);
+  for (const r of billRows.rows) billsBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
+  const debtBy = Array(MONTHS).fill(0);
+  for (const r of debtRows.rows) debtBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
+  const contractsBy = Array(MONTHS).fill(0);
+  for (const r of contractRows.rows) contractsBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
 
   let running = startingBalance;
-  const trajectory = noi.map((n, i) => {
-    running += n + contractInflows[i] - unpaidBills[i] - accountFees[i] - unpaidDebtService[i];
+  const trajectory = monthsMeta.map((meta, i) => {
+    running += contractsBy[i] - billsBy[i] - debtBy[i] - feesPerMonth;
     return {
-      month: i + 1,
-      noi: n,
+      year: meta.year,
+      month: meta.month,
       balance: running,
-      unpaidBillsDue: unpaidBills[i],
-      accountFees: accountFees[i],
-      debtServiceDue: unpaidDebtService[i],
-      contractInflows: contractInflows[i],
+      contractInflows: contractsBy[i],
+      unpaidBillsDue: billsBy[i],
+      debtServiceDue: debtBy[i],
+      accountFees: feesPerMonth,
     };
   });
 
   const floorMonth = trajectory.reduce((a, b) => (b.balance < a.balance ? b : a));
+
+  // Buffer benchmark: average monthly business outflow over the trailing
+  // 12 months of actuals (not the calendar year to date).
   const avgMonthlyExpense =
     (await pool.query(
       `SELECT COALESCE(AVG(monthly_outflow), 0) AS avg FROM (
-         SELECT EXTRACT(MONTH FROM date) AS m, SUM(-amount) AS monthly_outflow
+         SELECT date_trunc('month', date) AS m, SUM(-amount) AS monthly_outflow
          FROM transactions
-         WHERE ledger = 'business' AND amount < 0 AND EXTRACT(YEAR FROM date) = $1
+         WHERE ledger = 'business' AND amount < 0
+           AND date >= CURRENT_DATE - INTERVAL '12 months'
          GROUP BY m
-       ) sub`,
-      [year]
+       ) sub`
     )).rows[0].avg;
 
   const requiredFloor = Number(avgMonthlyExpense) * bufferPct;
