@@ -23,6 +23,11 @@ const ALREADY_APPLIED_CODES = new Set([
 // a database that already has the value just no-ops.
 const ENUM_ADDITIONS = [
   `ALTER TYPE loan_purpose ADD VALUE IF NOT EXISTS 'mortgage'`,
+  // Four owners: grain, livestock (shown as "Cattle"), jake, ashley.
+  // 'personal' stays in the enum only as a legacy value — Postgres can't
+  // drop enum values — and is reported as Unassigned until retagged.
+  `ALTER TYPE enterprise_segment ADD VALUE IF NOT EXISTS 'jake'`,
+  `ALTER TYPE enterprise_segment ADD VALUE IF NOT EXISTS 'ashley'`,
 ];
 
 async function migrate() {

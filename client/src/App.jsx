@@ -1,5 +1,6 @@
 import { Routes, Route } from 'react-router-dom';
 import Sidebar from './components/Sidebar.jsx';
+import EntityBar from './components/EntityBar.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Accounts from './pages/Accounts.jsx';
 import Bills from './pages/Bills.jsx';
@@ -15,6 +16,7 @@ export default function App() {
     <div className="app-shell">
       <Sidebar />
       <main>
+        <EntityBar />
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/cash-flow" element={<CashFlow />} />

@@ -19,19 +19,17 @@ router.get('/', ah(async (req, res) => {
 router.get('/segment-totals', ah(async (req, res) => {
   const year = Number(req.query.year) || new Date().getFullYear();
   const { rows } = await pool.query(
-    `SELECT amount, segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_personal_pct
+    `SELECT amount, segment, is_segment_split, segment_grain_pct, segment_livestock_pct,
+            segment_jake_pct, segment_ashley_pct
      FROM transactions
      WHERE amount < 0 AND EXTRACT(YEAR FROM date) = $1`,
     [year]
   );
 
-  const totals = { grain: 0, livestock: 0, personal: 0, unassigned: 0 };
+  const totals = { grain: 0, livestock: 0, jake: 0, ashley: 0, unassigned: 0 };
   for (const row of rows) {
     const allocated = allocateBySegment(row.amount, row);
-    totals.grain += allocated.grain;
-    totals.livestock += allocated.livestock;
-    totals.personal += allocated.personal;
-    totals.unassigned += allocated.unassigned;
+    for (const k of Object.keys(totals)) totals[k] += allocated[k] || 0;
   }
   for (const key of Object.keys(totals)) totals[key] = Math.round(totals[key] * 100) / 100;
 

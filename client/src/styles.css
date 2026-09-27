@@ -344,6 +344,77 @@ button:disabled { opacity: 0.4; cursor: not-allowed; filter: none; }
   margin-bottom: 22px;
 }
 
+/* ---------- Entity bar (owner toggle + headline metrics) ---------- */
+
+.entity-bar {
+  margin: -6px 0 30px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--border);
+}
+
+.seg-control {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  margin-bottom: 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.seg-option {
+  background: none;
+  box-shadow: none;
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 6px 16px;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: color var(--ease), background var(--ease);
+}
+.seg-option:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); filter: none; }
+.seg-option:active { transform: none; box-shadow: none; }
+.seg-option.active {
+  color: #171204;
+  background: linear-gradient(180deg, var(--gold-bright), var(--gold));
+  box-shadow: 0 2px 10px rgba(201, 162, 39, 0.25);
+}
+
+.entity-metrics {
+  display: grid;
+  grid-template-columns: 1.25fr 1fr 1fr;
+  gap: 12px;
+}
+
+.entity-card {
+  background: linear-gradient(160deg, var(--panel-raised), var(--panel));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px 14px;
+  min-width: 0;
+}
+.entity-card .metric-value { font-size: 27px; }
+.entity-card .metric-sub { overflow-wrap: anywhere; }
+.entity-card-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+
+.entity-note, .entity-error {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 9px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--gold-soft);
+  border: 1px solid rgba(201, 162, 39, 0.18);
+}
+.entity-error { color: var(--negative); background: rgba(229, 72, 77, 0.08); border-color: rgba(229, 72, 77, 0.2); }
+
+@media (max-width: 960px) {
+  .entity-metrics { grid-template-columns: 1fr; }
+}
+
 /* ---------- Responsive ---------- */
 
 @media (max-width: 760px) {

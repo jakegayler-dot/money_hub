@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
+import { ledgerForSegment } from '../lib/segments.js';
 
 const router = Router();
 
@@ -173,7 +174,7 @@ router.post('/:id/settle', ah(async (req, res) => {
     if (contract.status === 'settled') return contract;
 
     const received = amount != null ? Number(amount) : Number(contract.total_value);
-    const ledger = contract.segment === 'personal' ? 'personal' : 'business';
+    const ledger = ledgerForSegment(contract.segment);
     const { rows: txRows } = await client.query(
       `INSERT INTO transactions (account_id, ledger, date, amount, description, entered_by, segment, cleared, cleared_date)
        VALUES ($1, $2, $3, $4, $5, 'manual', $6, true, $3) RETURNING id`,

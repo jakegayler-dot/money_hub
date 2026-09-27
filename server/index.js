@@ -13,6 +13,7 @@ import drawsRoute from './routes/draws.js';
 import purchaseEvaluatorRoute from './routes/purchase-evaluator.js';
 import billsRoute from './routes/bills.js';
 import contractsRoute from './routes/contracts.js';
+import entityRoute from './routes/entity.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -30,6 +31,7 @@ app.use('/api/draws', drawsRoute);
 app.use('/api/purchase-evaluations', purchaseEvaluatorRoute);
 app.use('/api/bills', billsRoute);
 app.use('/api/contracts', contractsRoute);
+app.use('/api/entity-summary', entityRoute);
 
 // In production, this is the only Railway service — it serves the built
 // client alongside the API so there's nothing extra to deploy or wire up.

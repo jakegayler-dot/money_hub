@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState } from 'react';
 import { money } from '../format.js';
+import { OWNER_LABELS } from '../owners.jsx';
 
 const emptyForm = {
   commodity: '', quantity: '', unit: 'tonnes', price_per_unit: '', total_value: '',
@@ -7,7 +8,7 @@ const emptyForm = {
   segment: 'grain', notes: '',
 };
 
-const SEGMENT_LABELS = { grain: 'Grain', livestock: 'Livestock', personal: 'Personal' };
+const SEGMENT_LABELS = OWNER_LABELS;
 const STATUS_BADGE = {
   open: <span className="badge warn">OPEN</span>,
   delivered: <span className="badge warn">DELIVERED</span>,
@@ -253,7 +254,7 @@ export default function Contracts() {
             Enter at least one of the three dates.
           </p>
           <div className="field">
-            <label>Enterprise</label>
+            <label>Owner</label>
             <select value={form.segment} onChange={(e) => setForm({ ...form, segment: e.target.value })}>
               {Object.entries(SEGMENT_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
             </select>

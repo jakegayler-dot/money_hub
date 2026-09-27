@@ -78,7 +78,7 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- already splits business/personal by cost basis, using the same
 -- single-value-or-percentage-split pattern as `is_mixed_use`.
 DO $$ BEGIN
-  CREATE TYPE enterprise_segment AS ENUM ('grain', 'livestock', 'personal');
+  CREATE TYPE enterprise_segment AS ENUM ('grain', 'livestock', 'personal', 'jake', 'ashley');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS transactions (
@@ -128,6 +128,23 @@ ALTER TABLE transactions ADD COLUMN IF NOT EXISTS segment_grain_pct NUMERIC(5,2)
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS segment_livestock_pct NUMERIC(5,2);
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS segment_personal_pct NUMERIC(5,2);
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_debt_service BOOLEAN NOT NULL DEFAULT false;
+-- Four-owner split: grain / livestock / jake / ashley. segment_personal_pct
+-- is legacy (pre-Jake/Ashley) and counts as Unassigned.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS segment_jake_pct NUMERIC(5,2);
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS segment_ashley_pct NUMERIC(5,2);
+
+-- Account ownership: who owns the balance that was sitting in the account
+-- BEFORE any transactions were recorded here (the "starting share"). An
+-- owner's cash = their share of starting balances + every flow tagged to
+-- them since — derived from tagged flows, not a fixed % of the live
+-- balance. A shared farm account can split its starting balance across
+-- grain and cattle the same way a bill splits its cost.
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS segment enterprise_segment;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS is_segment_split BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS segment_grain_pct NUMERIC(5,2);
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS segment_livestock_pct NUMERIC(5,2);
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS segment_jake_pct NUMERIC(5,2);
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS segment_ashley_pct NUMERIC(5,2);
 CREATE INDEX IF NOT EXISTS idx_transactions_cleared ON transactions (cleared);
 CREATE INDEX IF NOT EXISTS idx_transactions_segment ON transactions (segment);
 
@@ -289,6 +306,8 @@ ALTER TABLE bills ADD COLUMN IF NOT EXISTS is_segment_split BOOLEAN NOT NULL DEF
 ALTER TABLE bills ADD COLUMN IF NOT EXISTS segment_grain_pct NUMERIC(5,2);
 ALTER TABLE bills ADD COLUMN IF NOT EXISTS segment_livestock_pct NUMERIC(5,2);
 ALTER TABLE bills ADD COLUMN IF NOT EXISTS segment_personal_pct NUMERIC(5,2);
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS segment_jake_pct NUMERIC(5,2);
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS segment_ashley_pct NUMERIC(5,2);
 ALTER TABLE bills ADD COLUMN IF NOT EXISTS gst_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
 ALTER TABLE bills ADD COLUMN IF NOT EXISTS subtotal_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
 
@@ -325,6 +344,21 @@ CREATE TABLE IF NOT EXISTS sale_contracts (
 );
 
 ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS contract_period_end DATE;
+
+-- Boot-time enforcement of the payment-date rule for INGESTED contracts
+-- (manual entries are a human's explicit dates and are left alone):
+-- payment = delivery + 7 days, else the contract period's last day. This
+-- runs on every deploy, so rows stored under an older rule — or pushed by
+-- an exporter that fabricated a payment date — are corrected without
+-- waiting for the source system to push again. Idempotent: rows already
+-- matching the rule are untouched. Settled/cancelled rows are history and
+-- are never rewritten.
+UPDATE sale_contracts
+SET expected_payment_date = COALESCE(delivery_date + 7, contract_period_end)
+WHERE source != 'manual'
+  AND status IN ('open', 'delivered')
+  AND COALESCE(delivery_date + 7, contract_period_end) IS NOT NULL
+  AND expected_payment_date IS DISTINCT FROM COALESCE(delivery_date + 7, contract_period_end);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sale_contracts_source_ext
   ON sale_contracts (source, external_id) WHERE external_id IS NOT NULL;

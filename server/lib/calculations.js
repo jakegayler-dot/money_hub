@@ -198,20 +198,20 @@ export async function liquidityFloor() {
        WHERE ledger = 'business' AND status = 'unpaid' AND due_date < $1`,
       [endStr]
     ),
-    // Personal-segment loans (e.g. a home mortgage) post to the personal
-    // ledger when recorded, so they stay out of the business forecast.
+    // Loans owned by Jake/Ashley (e.g. a home mortgage) post to the
+    // personal ledger when recorded, so they stay out of the business forecast.
     pool.query(
       `SELECT lp.due_date, lp.principal_amount + lp.interest_amount AS amount
        FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
        WHERE lp.paid = false AND lp.due_date < $1
-         AND (l.segment IS NULL OR l.segment != 'personal')`,
+         AND (l.segment IS NULL OR l.segment NOT IN ('personal', 'jake', 'ashley'))`,
       [endStr]
     ),
     pool.query(
       `SELECT expected_payment_date AS due_date, total_value AS amount
        FROM sale_contracts
        WHERE status IN ('open', 'delivered') AND expected_payment_date < $1
-         AND segment != 'personal'`,
+         AND segment NOT IN ('personal', 'jake', 'ashley')`,
       [endStr]
     ),
     monthlyAccountFees(y0), // same value every month (monthly fees + annual/12)

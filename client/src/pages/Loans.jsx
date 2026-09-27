@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState } from 'react';
 import { money } from '../format.js';
+import { OWNER_LABELS } from '../owners.jsx';
 
 const emptyForm = {
   name: '', lender: '', purpose: 'term', linked_asset: '', principal: '',
@@ -11,7 +12,7 @@ const emptyForm = {
 const PURPOSE_LABELS = {
   operating: 'Operating', term: 'Term', capital_asset: 'Capital asset', mortgage: 'Mortgage',
 };
-const SEGMENT_LABELS = { grain: 'Grain', livestock: 'Livestock', personal: 'Personal' };
+const SEGMENT_LABELS = OWNER_LABELS;
 
 // For an existing loan (a mortgage you already have, say), "principal" and
 // "term_months" are entered as the CURRENT outstanding balance and the
@@ -198,7 +199,7 @@ export default function Loans() {
         ) : (
           <table>
             <thead>
-              <tr><th>Due</th><th>Loan</th><th>Enterprise</th><th>Principal</th><th>Interest</th><th>Total</th><th></th></tr>
+              <tr><th>Due</th><th>Loan</th><th>Owner</th><th>Principal</th><th>Interest</th><th>Total</th><th></th></tr>
             </thead>
             <tbody>
               {planner.map((p) => {
@@ -262,7 +263,7 @@ export default function Loans() {
             </select>
           </div>
           <div className="field">
-            <label>Enterprise (where its payments count in expenses)</label>
+            <label>Owner (whose payments these are)</label>
             <select value={form.segment} onChange={(e) => setForm({ ...form, segment: e.target.value })}>
               {Object.entries(SEGMENT_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
             </select>
@@ -387,7 +388,7 @@ export default function Loans() {
                               <select value={editForm.purpose} onChange={(e) => setEditForm({ ...editForm, purpose: e.target.value })}>
                                 {Object.entries(PURPOSE_LABELS).map(([v, lab]) => <option key={v} value={v}>{lab}</option>)}
                               </select></div>
-                            <div className="field"><label>Enterprise</label>
+                            <div className="field"><label>Owner</label>
                               <select value={editForm.segment} onChange={(e) => setEditForm({ ...editForm, segment: e.target.value })}>
                                 {Object.entries(SEGMENT_LABELS).map(([v, lab]) => <option key={v} value={v}>{lab}</option>)}
                               </select></div>

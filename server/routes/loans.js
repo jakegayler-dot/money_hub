@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { loanOutstandingBalance } from '../lib/calculations.js';
+import { ledgerForSegment } from '../lib/segments.js';
 
 const router = Router();
 
@@ -50,9 +51,9 @@ router.post('/payments/:paymentId/record', ah(async (req, res) => {
     if (payment.paid) return payment;
 
     const total = Number(payment.principal_amount) + Number(payment.interest_amount);
-    // A personal-segment loan (e.g. a home mortgage) posts to the personal
-    // ledger; everything else is business debt service.
-    const ledger = payment.segment === 'personal' ? 'personal' : 'business';
+    // A loan owned by Jake or Ashley (e.g. a home mortgage) posts to the
+    // personal ledger; grain/cattle loans are business debt service.
+    const ledger = ledgerForSegment(payment.segment);
     const { rows: txRows } = await client.query(
       `INSERT INTO transactions
         (account_id, ledger, date, amount, description, entered_by, is_debt_service, segment, cleared, cleared_date)

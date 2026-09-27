@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
-import { validateSegment } from '../lib/segments.js';
+import { validateSegment, segmentValues, SEGMENT_COLUMNS } from '../lib/segments.js';
 
 const router = Router();
 
@@ -52,11 +52,9 @@ router.post('/', ah(async (req, res) => {
     is_mixed_use = false, mixed_use_business_pct = null,
     is_capex = false, entered_by = 'manual',
     cleared = true,
-    segment = null, is_segment_split = false,
-    segment_grain_pct = null, segment_livestock_pct = null, segment_personal_pct = null,
   } = req.body;
 
-  const segmentError = validateSegment({ segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_personal_pct });
+  const segmentError = validateSegment(req.body);
   if (segmentError) return res.status(400).json({ error: segmentError });
 
   const row = await withTransaction(async (client) => {
@@ -64,12 +62,12 @@ router.post('/', ah(async (req, res) => {
       `INSERT INTO transactions
         (account_id, ledger, date, amount, description, category_id,
          purchase_class, is_mixed_use, mixed_use_business_pct, is_capex, entered_by,
-         cleared, cleared_date, segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_personal_pct)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
+         cleared, cleared_date, ${SEGMENT_COLUMNS.join(', ')})
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,${SEGMENT_COLUMNS.map((_, i) => `$${14 + i}`).join(',')}) RETURNING *`,
       [account_id, ledger, date, amount, description, category_id,
        purchase_class, is_mixed_use, mixed_use_business_pct, is_capex, entered_by,
        !!cleared, cleared ? date : null,
-       segment, !!is_segment_split, segment_grain_pct, segment_livestock_pct, segment_personal_pct]
+       ...segmentValues(req.body)]
     );
     await client.query(
       `UPDATE accounts SET opening_balance = opening_balance + $1 WHERE id = $2`,

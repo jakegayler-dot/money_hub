@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { money } from '../format.js';
+import { OwnerFields, ownerPayload, ownerFieldsFrom, ownerSummary, emptyOwnerFields } from '../owners.jsx';
 
 const ACCOUNT_TYPE_LABELS = {
   operating: 'Operating', reserve: 'Reserve', credit: 'Credit card / line of credit',
@@ -13,27 +14,55 @@ const FEE_FREQUENCY_LABELS = {
 const emptyForm = {
   name: '', ledger: 'business', account_type: 'operating', opening_balance: '',
   fee_amount: '', fee_frequency: 'none', fee_notes: '',
+  ...emptyOwnerFields,
 };
 
 export default function Accounts() {
   const [accounts, setAccounts] = useState([]);
   const [form, setForm] = useState(emptyForm);
+  const [editingId, setEditingId] = useState(null);
+  const [ownerEdit, setOwnerEdit] = useState(null);
+  const [error, setError] = useState(null);
 
   const load = () => { fetch('/api/accounts').then((r) => r.json()).then(setAccounts); };
   useEffect(load, []);
 
   const submit = async (e) => {
     e.preventDefault();
-    await fetch('/api/accounts', {
+    setError(null);
+    const res = await fetch('/api/accounts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...form,
         opening_balance: Number(form.opening_balance),
         fee_amount: form.fee_amount ? Number(form.fee_amount) : 0,
+        ...ownerPayload(form),
       }),
     });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(body?.error || `Could not save account (HTTP ${res.status}).`);
+      return;
+    }
     setForm(emptyForm);
+    load();
+  };
+
+  const saveOwner = async (id) => {
+    setError(null);
+    const res = await fetch(`/api/accounts/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ownerPayload(ownerEdit)),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(body?.error || `Could not save owner (HTTP ${res.status}).`);
+      return;
+    }
+    setEditingId(null);
+    setOwnerEdit(null);
     load();
   };
 
@@ -59,17 +88,47 @@ export default function Accounts() {
         <div className="empty-state">No accounts yet.</div>
       ) : (
         <table>
-          <thead><tr><th>Account</th><th>Type</th><th>Balance</th><th>Fee</th></tr></thead>
+          <thead><tr><th>Account</th><th>Type</th><th>Starting balance owner</th><th>Balance</th><th>Fee</th><th></th></tr></thead>
           <tbody>
             {items.map((a) => (
-              <tr key={a.id}>
-                <td>{a.name}</td>
-                <td>{ACCOUNT_TYPE_LABELS[a.account_type] || a.account_type}</td>
-                <td style={Number(a.opening_balance) < 0 ? { color: 'var(--negative)' } : undefined}>
-                  {money(Number(a.opening_balance))}
-                </td>
-                <td title={a.fee_notes || ''}>{feeDisplay(a)}</td>
-              </tr>
+              <Fragment key={a.id}>
+                <tr>
+                  <td>{a.name}</td>
+                  <td>{ACCOUNT_TYPE_LABELS[a.account_type] || a.account_type}</td>
+                  <td style={ownerSummary(a) === 'Unassigned' ? { color: 'var(--text-faint)' } : undefined}>{ownerSummary(a)}</td>
+                  <td style={Number(a.opening_balance) < 0 ? { color: 'var(--negative)' } : undefined}>
+                    {money(Number(a.opening_balance))}
+                  </td>
+                  <td title={a.fee_notes || ''}>{feeDisplay(a)}</td>
+                  <td>
+                    <button
+                      className="small secondary"
+                      onClick={() => {
+                        if (editingId === a.id) { setEditingId(null); setOwnerEdit(null); }
+                        else { setEditingId(a.id); setOwnerEdit(ownerFieldsFrom(a)); }
+                      }}
+                    >
+                      {editingId === a.id ? 'Close' : 'Set owner'}
+                    </button>
+                  </td>
+                </tr>
+                {editingId === a.id && ownerEdit && (
+                  <tr>
+                    <td colSpan={6} style={{ background: 'var(--panel-alt)' }}>
+                      <div className="form-panel">
+                        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>
+                          Who owned the money that was already in this account before you started recording
+                          transactions here. Everything after that follows each transaction's own owner tag.
+                        </p>
+                        <OwnerFields state={ownerEdit} setState={setOwnerEdit} label="Starting balance belongs to" />
+                        <div>
+                          <button className="small" onClick={() => saveOwner(a.id)}>Save owner</button>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
             ))}
           </tbody>
         </table>
@@ -84,6 +143,13 @@ export default function Accounts() {
         <span className="page-meta">Net {money(netTotal)} · Fees {money(totalAnnualFees)}/yr</span>
       </div>
 
+      {error && (
+        <div className="panel" style={{ borderColor: 'var(--negative)' }}>
+          <div className="panel-header">Something went wrong</div>
+          <p style={{ margin: 0, padding: '12px 20px', color: 'var(--negative)' }}>{error}</p>
+        </div>
+      )}
+
       <div className="panel">
         {renderGroup('Business', business)}
         {renderGroup('Personal', personal)}
@@ -94,7 +160,7 @@ export default function Accounts() {
         <form className="form-panel" onSubmit={submit}>
           <div className="field">
             <label>Account name</label>
-            <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Operating, Personal Credit Card" />
+            <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Farm Operating, Ashley Chequing" />
           </div>
           <div className="field">
             <label>Ledger</label>
@@ -113,6 +179,7 @@ export default function Accounts() {
             <label>Current balance (negative = amount owed, e.g. a credit card)</label>
             <input type="number" step="0.01" required value={form.opening_balance} onChange={(e) => setForm({ ...form, opening_balance: e.target.value })} />
           </div>
+          <OwnerFields state={form} setState={setForm} label="This balance belongs to" />
 
           <div className="field">
             <label>Fee structure</label>

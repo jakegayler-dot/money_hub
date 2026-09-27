@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { money } from '../format.js';
+import { OWNER_KEYS, OWNER_LABELS } from '../owners.jsx';
 
 const CLASS_LABELS = {
   fixed: 'Fixed',
@@ -46,35 +47,29 @@ export default function Expenses() {
       </div>
 
       <div className="panel">
-        <div className="panel-header">Actual spend by enterprise — {year}</div>
+        <div className="panel-header">Actual spend by owner — {year}</div>
         {!segmentTotals ? (
           <div className="empty-state">Loading…</div>
         ) : (
-          <div className="grid">
-            <div className="metric-card">
-              <div className="metric-label">Grain</div>
-              <div className="metric-value">{money(segmentTotals.grain)}</div>
-            </div>
-            <div className="metric-card">
-              <div className="metric-label">Livestock</div>
-              <div className="metric-value">{money(segmentTotals.livestock)}</div>
-            </div>
-            <div className="metric-card">
-              <div className="metric-label">Personal</div>
-              <div className="metric-value">{money(segmentTotals.personal)}</div>
-            </div>
+          <div className="grid" style={{ padding: '16px 20px 0' }}>
+            {OWNER_KEYS.map((k) => (
+              <div className="metric-card" key={k}>
+                <div className="metric-label">{OWNER_LABELS[k]}</div>
+                <div className="metric-value">{money(segmentTotals[k] || 0)}</div>
+              </div>
+            ))}
             {segmentTotals.unassigned > 0 && (
               <div className="metric-card">
                 <div className="metric-label">Unassigned</div>
                 <div className="metric-value">{money(segmentTotals.unassigned)}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Older bills/transactions with no enterprise tag</div>
+                <div className="metric-sub">Untagged or old "Personal" items — retag them</div>
               </div>
             )}
           </div>
         )}
-        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '10px 0 0' }}>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '10px 0 0', padding: '0 20px 16px' }}>
           Actual money spent this year (bills paid + manual ledger entries), not the budget figures below —
-          a bill or transaction split across enterprises counts proportionally toward each.
+          a bill or transaction split between owners counts proportionally toward each.
         </p>
       </div>
 
