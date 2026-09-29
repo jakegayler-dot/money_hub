@@ -11,6 +11,7 @@ import Ledgers from './pages/Ledgers.jsx';
 import Loans from './pages/Loans.jsx';
 import Expenses from './pages/Expenses.jsx';
 import PurchaseEvaluator from './pages/PurchaseEvaluator.jsx';
+import CreditCards from './pages/CreditCards.jsx';
 
 export default function App() {
   return (
@@ -29,6 +30,7 @@ export default function App() {
           <Route path="/assets" element={<Assets />} />
           <Route path="/expenses" element={<Expenses />} />
           <Route path="/purchase-evaluator" element={<PurchaseEvaluator />} />
+          <Route path="/credit-cards" element={<CreditCards />} />
         </Routes>
       </main>
     </div>

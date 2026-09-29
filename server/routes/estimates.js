@@ -69,19 +69,26 @@ router.post('/ingest', requireIngestKey, ah(async (req, res) => {
   if (snapshot && !snapshotSource) return res.status(400).json({ error: 'snapshot mode requires a top-level "source"' });
 
   const results = [];
-  const seen = [];
+  // Every external_id in the payload counts as PRESENT, whether or not it
+  // saved: a snapshot removes only what's absent from the push. An item
+  // that failed validation keeps its previous values instead of being
+  // deleted because of one bad field.
+  const seen = items.map((raw) => raw && raw.external_id).filter(Boolean);
+  let accepted = 0;
   for (const raw of items) {
     const e = { ...raw, source: snapshotSource || raw.source || 'ingest' };
     if (!e.external_id) { results.push({ ok: false, error: 'external_id is required for pushed estimates' }); continue; }
     const err = validate(e);
     if (err) { results.push({ external_id: e.external_id, ok: false, error: err }); continue; }
     const row = await insertOrUpsert(e, { upsert: true });
-    seen.push(e.external_id);
+    accepted++;
     results.push({ external_id: e.external_id, ok: true, id: row.id });
   }
 
+  // A push where nothing was accepted retires nothing.
   let retired = 0;
-  if (snapshot) {
+  const skippedCleanup = snapshot && accepted === 0 && items.length > 0;
+  if (snapshot && !skippedCleanup) {
     const { rowCount } = await pool.query(
       `UPDATE cash_estimates SET status = 'retired', updated_at = now()
        WHERE source = $1 AND status = 'active' AND external_id IS NOT NULL AND NOT (external_id = ANY($2::text[]))`,
@@ -89,7 +96,10 @@ router.post('/ingest', requireIngestKey, ah(async (req, res) => {
     );
     retired = rowCount;
   }
-  res.json({ received: items.length, results, retired_missing_from_snapshot: retired });
+  res.json({
+    received: items.length, results, retired_missing_from_snapshot: retired,
+    ...(skippedCleanup ? { snapshot_cleanup_skipped: 'no items were accepted, so nothing was retired' } : {}),
+  });
 }));
 
 router.post('/', ah(async (req, res) => {

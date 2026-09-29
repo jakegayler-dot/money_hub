@@ -6,7 +6,13 @@ const emptyForm = {
   name: '', lender: '', purpose: 'term', linked_asset: '', principal: '',
   interest_rate_pct: '', rate_type: 'fixed', term_months: '', start_date: '',
   covenant_notes: '', covenant_date: '', asset_id: '',
-  segment: 'grain',
+  segment: 'grain', payment_frequency: 'monthly', first_payment_date: '',
+};
+
+// Payment frequencies offered by typical ag lenders — annual and
+// semi-annual are common, timed to harvest or calf-sale cash.
+const FREQUENCY_LABELS = {
+  monthly: 'Monthly', biweekly: 'Bi-weekly', quarterly: 'Quarterly', semiannual: 'Semi-annual', annual: 'Annual',
 };
 
 const STALE_DAYS = 90;
@@ -83,6 +89,7 @@ export default function Loans() {
         covenant_notes: form.covenant_notes || null,
         covenant_date: form.covenant_date || null,
         asset_id: form.asset_id ? Number(form.asset_id) : null,
+        first_payment_date: form.first_payment_date || null,
       }),
     });
     if (!res.ok) {
@@ -123,6 +130,8 @@ export default function Loans() {
       rate_type: l.rate_type, term_months: l.term_months,
       start_date: l.start_date?.slice(0, 10) || '',
       asset_id: l.asset_id ?? '',
+      payment_frequency: l.payment_frequency || 'monthly',
+      first_payment_date: l.first_payment_date ? String(l.first_payment_date).slice(0, 10) : '',
       covenant_date: l.covenant_date?.slice(0, 10) || '', covenant_notes: l.covenant_notes || '',
     });
     setError(null);
@@ -140,6 +149,7 @@ export default function Loans() {
         term_months: Number(editForm.term_months),
         linked_asset: editForm.linked_asset || null,
         asset_id: editForm.asset_id ? Number(editForm.asset_id) : null,
+        first_payment_date: editForm.first_payment_date || null,
         covenant_date: editForm.covenant_date || null,
         covenant_notes: editForm.covenant_notes || null,
       }),
@@ -346,12 +356,27 @@ export default function Loans() {
             </select>
           </div>
           <div className="field">
-            <label>{usesCurrentState(form.purpose) ? 'Term remaining (months)' : 'Term (months)'}</label>
+            <label>{usesCurrentState(form.purpose) ? 'Amortization remaining (months)' : 'Amortization (months — 20 yr = 240)'}</label>
             <input type="number" required value={form.term_months} onChange={(e) => setForm({ ...form, term_months: e.target.value })} />
           </div>
           <div className="field">
-            <label>{usesCurrentState(form.purpose) ? 'As of / first payment date' : 'Start date'}</label>
+            <label>{usesCurrentState(form.purpose) ? 'As of date' : 'Start (advance) date'}</label>
             <input type="date" required value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>Payment frequency</label>
+            <select value={form.payment_frequency} onChange={(e) => setForm({ ...form, payment_frequency: e.target.value })}>
+              {Object.entries(FREQUENCY_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>First payment date (optional)</label>
+            <input type="date" value={form.first_payment_date} onChange={(e) => setForm({ ...form, first_payment_date: e.target.value })} />
+            <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '4px 0 0' }}>
+              Set this when the first payment isn't one period after the start — e.g. an annual loan advanced in
+              March with its first payment Dec 1. That first payment then carries interest for the actual months
+              elapsed, and every later payment falls on the same calendar day.
+            </p>
           </div>
 
           <div className="field">
@@ -399,7 +424,10 @@ export default function Loans() {
                     </td>
                     <td>{l.lender}</td>
                     <td>{money(Number(l.outstanding_balance))}</td>
-                    <td>{Number(l.interest_rate_pct).toFixed(2)}% <span style={{ color: 'var(--text-faint)' }}>{l.rate_type}</span></td>
+                    <td>
+                      {Number(l.interest_rate_pct).toFixed(2)}% <span style={{ color: 'var(--text-faint)' }}>{l.rate_type}</span>
+                      <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>{FREQUENCY_LABELS[l.payment_frequency] || 'Monthly'} payments</div>
+                    </td>
                     <td>
                       {l.next_payment ? <>{money(l.next_payment.amount)}<div style={{ fontSize: 11, color: 'var(--text-faint)' }}>{l.next_payment.due_date}</div></> : '—'}
                       {l.overdue_unrecorded > 0 && <div style={{ fontSize: 11, color: 'var(--gold-bright)' }}>{l.overdue_unrecorded} past unrecorded</div>}
@@ -446,7 +474,7 @@ export default function Loans() {
                               <input type="number" step="0.01" required value={verifyForm.balance} onChange={(e) => setVerifyForm({ ...verifyForm, balance: e.target.value })} /></div>
                             <div className="field"><label>Rate (%)</label>
                               <input type="number" step="0.001" value={verifyForm.interest_rate_pct} onChange={(e) => setVerifyForm({ ...verifyForm, interest_rate_pct: e.target.value })} /></div>
-                            <div className="field"><label>Payment (optional)</label>
+                            <div className="field"><label>Payment per period (optional)</label>
                               <input type="number" step="0.01" value={verifyForm.payment_amount} onChange={(e) => setVerifyForm({ ...verifyForm, payment_amount: e.target.value })} placeholder="keep payoff date" /></div>
                             <div className="field"><label>Source</label>
                               <select value={verifyForm.source} onChange={(e) => setVerifyForm({ ...verifyForm, source: e.target.value })}>
@@ -498,7 +526,7 @@ export default function Loans() {
                       <td colSpan={9} style={{ background: 'var(--panel-alt, rgba(255,255,255,0.03))' }}>
                         <div style={{ padding: '12px 4px' }}>
                           <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 10px' }}>
-                            Changing balance, rate, term, or start date regenerates this loan's payment
+                            Changing balance, rate, term, start date, frequency or first payment date regenerates this loan's payment
                             schedule from scratch — the old schedule (including which rows were marked paid
                             and any verification adjustments) is replaced. To bring a loan in line with a
                             statement, use Verify instead: it keeps the history and rebases from that date.
@@ -531,6 +559,12 @@ export default function Loans() {
                               <input type="number" value={editForm.term_months} onChange={(e) => setEditForm({ ...editForm, term_months: e.target.value })} /></div>
                             <div className="field"><label>Start / as-of date</label>
                               <input type="date" value={editForm.start_date} onChange={(e) => setEditForm({ ...editForm, start_date: e.target.value })} /></div>
+                            <div className="field"><label>Payment frequency</label>
+                              <select value={editForm.payment_frequency} onChange={(e) => setEditForm({ ...editForm, payment_frequency: e.target.value })}>
+                                {Object.entries(FREQUENCY_LABELS).map(([v, lab]) => <option key={v} value={v}>{lab}</option>)}
+                              </select></div>
+                            <div className="field"><label>First payment date</label>
+                              <input type="date" value={editForm.first_payment_date} onChange={(e) => setEditForm({ ...editForm, first_payment_date: e.target.value })} /></div>
                             <div className="field"><label>Secured by asset</label>
                               <select value={editForm.asset_id} onChange={(e) => setEditForm({ ...editForm, asset_id: e.target.value })}>
                                 <option value="">— none —</option>

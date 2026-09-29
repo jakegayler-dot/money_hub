@@ -8,6 +8,7 @@ const links = [
   { to: '/contracts', label: 'Contracts' },
   { to: '/ledgers', label: 'Ledgers' },
   { to: '/loans', label: 'Loans' },
+  { to: '/credit-cards', label: 'Credit Cards' },
   { to: '/assets', label: 'Assets' },
   { to: '/expenses', label: 'Expenses' },
   { to: '/purchase-evaluator', label: 'Purchase Evaluator' },

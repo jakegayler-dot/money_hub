@@ -30,28 +30,44 @@ Committed money in. Array of contracts (no snapshot mode — cancel explicitly).
 | `status` | | `open` · `delivered` · `cancelled` (never `settled` — that happens in Money Hub when cash lands) |
 | `counterparty`, `segment`, `notes` | | `segment` defaults to `grain` |
 
-## 2. Inventory & livestock — `POST /api/inventory/ingest`
+## 2. Inventory — `POST /api/inventory/ingest`
 
-What's physically on hand, at an estimated market price. **Use snapshot mode** — an emptied bin must stop counting.
+What's physically on hand: grain in bins, bale stacks, livestock. **Use snapshot mode** — an emptied bin or a fed-out stack must stop counting.
 
 | Field | Required | Notes |
 |---|---|---|
-| `external_id` | yes | One per bin / lot / herd group |
-| `item_class` | | `crop` (default) · `market_livestock` · `breeding_livestock` · `other` |
-| `commodity` | yes | `"Canola"`, `"Bred cows"`, `"Calves"` |
-| `quantity`, `unit` | yes | `bu`, `tonnes`, `head` |
-| `price_per_unit` | yes | Current estimated market price per unit |
-| `quantity_contracted` | if you know it | How much of *this bin* is already sold. If omitted for every row of a commodity, Money Hub nets out open contracts of the same commodity + unit instead |
-| `location`, `as_of`, `segment`, `notes` | | `segment` defaults to `grain` for crops, `livestock` for animals |
+| `external_id` | yes | One per bin / stack / lot / herd group — stable across pushes |
+| `item_class` | | `crop` (default) · `forage` (bales, silage) · `market_livestock` · `breeding_livestock` · `other` |
+| `commodity` | yes | `"Canola"`, `"Barley"`, `"Hay"`, `"Straw"`, `"Bred cows"` — must match contract and price-list names |
+| `quantity`, `unit` | yes | `bu` / `tonnes` for grain, `bales` for forage, `head` for animals |
+| `price_per_unit` | only if you actually have one | **Omit it if you don't know it.** Money Hub values the item from its own price list; with no price anywhere it counts at $0 and is flagged — never at a guess |
+| `quantity_contracted` | if you know it | How much of *this bin* is already sold. If omitted for every row of a commodity, Money Hub nets open contracts of the same commodity + unit instead |
+| `location`, `as_of`, `notes` | | |
+| `segment` | | Owner. Defaults: `crop` → grain; `forage` and animals → cattle (hay is produced for the herd). Override per item, e.g. straw sold off the grain side |
 
 Only the **uncontracted** quantity counts toward equity — contracted grain is counted once, as the contract. Breeding stock is never netted.
 
-Safety: an empty snapshot is refused unless the body also has `"confirm_empty": true`.
+**Scoped snapshots:** add `"scope": ["crop"]` (or `["forage"]`, or both) to limit snapshot cleanup to those classes. Without a scope, a snapshot replaces *everything* from that source — so if grain and bales are pushed separately, each push must carry its own scope or the second will delete the first. Items outside a push's scope are rejected.
+
+Safety: an empty snapshot is refused unless the body also has `"confirm_empty": true`. The response lists any commodities still without a price in `needs_price`.
 
 ```json
-{ "source": "quarter-section", "snapshot": true, "items": [
-  { "external_id": "bin-07", "commodity": "Canola", "quantity": 8000, "unit": "bu",
-    "price_per_unit": 14.50, "quantity_contracted": 5000, "location": "Bin 7" }
+{ "source": "quarter-section", "snapshot": true, "scope": ["crop", "forage"], "items": [
+  { "external_id": "bin-07", "item_class": "crop", "commodity": "Canola", "quantity": 8000, "unit": "bu",
+    "quantity_contracted": 5000, "location": "Bin 7" },
+  { "external_id": "stack-north-hay", "item_class": "forage", "commodity": "Hay", "quantity": 640, "unit": "bales",
+    "location": "North yard", "notes": "1,400 lb rounds" }
+]}
+```
+
+### 2a. Prices (optional feed) — `POST /api/inventory/prices/ingest`
+
+If a system has current bids or market prices, it can keep Money Hub's price list up to date. Otherwise prices are maintained by hand on the Assets tab.
+
+```json
+{ "source": "quarter-section", "items": [
+  { "commodity": "Canola", "unit": "bu", "price_per_unit": 14.50, "as_of": "2026-09-28" },
+  { "commodity": "Hay", "unit": "bales", "price_per_unit": 95 }
 ]}
 ```
 
@@ -72,3 +88,19 @@ Money you *expect* but that isn't backed by a contract, invoice or loan schedule
 | `category`, `notes`, `status` | | `status: "retired"` stops it counting |
 
 **Don't double count:** only estimate the *uncommitted* portion. Once production is under contract, push the contract and drop (or reduce) the estimate — in snapshot mode, simply leave it out of the next push and it's retired automatically. Occurrences dated in the past stop counting on their own.
+
+---
+
+## Quarter Section setup brief (paste this to Quarter Section)
+
+> Build an automatic export from Quarter Section to Money Hub's ingest API.
+>
+> - **Endpoint:** `POST {MONEY_HUB_URL}/api/inventory/ingest` with header `X-Api-Key: {INGEST_API_KEY}` — both from environment variables, never hardcoded.
+> - **When:** after any change to bin or bale-stack counts, and once daily as a safety net.
+> - **Payload:** one snapshot of *everything currently on hand* — every grain bin and bale stack that currently holds product (leave empty bins and fed-out stacks out; Money Hub removes them):
+>   `{ "source": "quarter-section", "snapshot": true, "scope": ["crop", "forage"], "items": [...] }`
+> - **Per grain bin:** `external_id` (permanent bin ID), `item_class: "crop"`, `commodity` (same spelling as on contracts, e.g. "Canola"), `quantity`, `unit: "bu"`, `location`, and `quantity_contracted` if Quarter Section knows how much of that bin is committed to a contract.
+> - **Per bale stack:** `external_id` (permanent stack/lot ID), `item_class: "forage"`, `commodity` ("Hay", "Straw", "Greenfeed"...), `quantity`, `unit: "bales"`, `location`, and bale type/weight in `notes`.
+> - **Do not send `price_per_unit` unless Quarter Section has a real price** — Money Hub prices from its own list. Never estimate one.
+> - **Check the response:** each item has `ok: true/false`; log failures. `needs_price` lists anything Money Hub can't value yet.
+> - Contracts keep going to `/api/contracts/ingest` as before — inventory and contracts are separate pushes.

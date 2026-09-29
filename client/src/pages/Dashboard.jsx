@@ -10,7 +10,7 @@ export default function Dashboard() {
     fetch('/api/dashboard')
       .then(async (r) => {
         const body = await r.json().catch(() => null);
-        if (!r.ok || !body || !body.liquidity || !body.dscr || !body.reserve) {
+        if (!r.ok || !body || !body.liquidity || !body.coverage || !body.reserve) {
           throw new Error((body && body.error) || `Server returned ${r.status}`);
         }
         return body;
@@ -22,7 +22,7 @@ export default function Dashboard() {
   if (error) return <div className="empty-state">Could not load dashboard: {error}. Try refreshing — if it persists, check the server's deploy logs.</div>;
   if (!data) return <div className="empty-state">Loading…</div>;
 
-  const { dscr, liquidity, reserve, upcomingDebtService, ownerDrawYTD, bills, annualAccountFees, outstandingChecks, contractedInflows, netWorth, year } = data;
+  const { coverage, liquidity, reserve, upcomingDebtService, ownerDrawYTD, bills, annualAccountFees, outstandingChecks, contractedInflows, creditCards, netWorth, year } = data;
 
   return (
     <>
@@ -36,7 +36,7 @@ export default function Dashboard() {
           <MetricCard
             label="Net worth"
             value={money(netWorth.total)}
-            sub={`Cash ${money(netWorth.cash)} + assets ${money(netWorth.assetValues)} − loans ${money(netWorth.outstandingPrincipal)}`}
+            sub={`Cash ${money(netWorth.cash)} + assets ${money(netWorth.assetValues)} − loans ${money(netWorth.outstandingPrincipal)} − cards ${money(netWorth.creditCardBalances)}`}
             tone={netWorth.total >= 0 ? 'positive' : 'negative'}
           />
         )}
@@ -47,10 +47,10 @@ export default function Dashboard() {
           tone={liquidity.passes ? 'positive' : 'negative'}
         />
         <MetricCard
-          label="DSCR (worst month)"
-          value={dscr.worstMonth ? ratio(dscr.worstMonth.dscr) : '—'}
-          sub={`Threshold ${ratio(dscr.threshold)} · month ${dscr.worstMonth?.month ?? '—'}`}
-          tone={dscr.passes === false ? 'negative' : dscr.passes ? 'positive' : undefined}
+          label="Term debt coverage"
+          value={coverage.projected.ratio != null ? ratio(coverage.projected.ratio) : 'No term debt'}
+          sub={`Next 12 mo · last 12 mo ${coverage.historical.ratio != null ? ratio(coverage.historical.ratio) : '—'} · lender min ${ratio(coverage.threshold)}`}
+          tone={coverage.passes === false ? 'negative' : coverage.passes ? 'positive' : undefined}
         />
         <MetricCard
           label="Reserve"
@@ -91,6 +91,29 @@ export default function Dashboard() {
             : 'None outstanding'}
           tone={outstandingChecks.count > 0 ? 'negative' : undefined}
         />
+        {creditCards && (
+          <MetricCard
+            label="Credit cards"
+            value={money(creditCards.totalBalance)}
+            sub={creditCards.gracePeriodLost > 0
+              ? `${creditCards.gracePeriodLost} of ${creditCards.count} lost its grace period — carrying interest`
+              : creditCards.count > 0 ? `${creditCards.count} card${creditCards.count === 1 ? '' : 's'} · grace periods intact` : 'No cards on file'}
+            tone={creditCards.gracePeriodLost > 0 ? 'negative' : undefined}
+          />
+        )}
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">Term debt coverage — ag lender standard</div>
+        <div className="coverage-grid">
+          <CoverageBuild title="Last 12 months (actual)" period={coverage.historical} threshold={coverage.threshold} />
+          <CoverageBuild title="Next 12 months (projected)" period={coverage.projected} threshold={coverage.threshold} />
+        </div>
+        <p className="coverage-note">
+          Cash available for term debt ÷ scheduled principal + interest on term loans. Operating lines are an
+          expense here (interest only), not term debt. Personal loans are excluded. Seasonal dips are covered by
+          the liquidity floor, not this ratio.
+        </p>
       </div>
 
       <div className="panel">
@@ -150,5 +173,32 @@ export default function Dashboard() {
         )}
       </div>
     </>
+  );
+}
+
+function CoverageBuild({ title, period, threshold }) {
+  const passes = period.ratio == null ? null : period.ratio >= threshold;
+  return (
+    <table className="coverage-build">
+      <thead>
+        <tr><th>{title}</th><th className="num">{period.from} → {period.to}</th></tr>
+      </thead>
+      <tbody>
+        {period.lines.map((l) => (
+          <tr key={l.label}><td>{l.label}</td><td className="num">{money(l.amount)}</td></tr>
+        ))}
+        <tr className="subtotal"><td>Available for term debt</td><td className="num">{money(period.capacity)}</td></tr>
+        <tr><td>Term principal</td><td className="num">{money(period.termPrincipal)}</td></tr>
+        <tr><td>Term interest</td><td className="num">{money(period.termInterest)}</td></tr>
+        <tr className="subtotal"><td>Term payments</td><td className="num">{money(period.termDebtService)}</td></tr>
+        <tr className="subtotal">
+          <td>Coverage</td>
+          <td className="num">
+            {period.ratio == null ? 'No term debt' : ratio(period.ratio)}{' '}
+            {passes != null && <span className={`badge ${passes ? 'pass' : 'fail'}`}>{passes ? 'MEETS' : 'BELOW'} {ratio(threshold)}</span>}
+          </td>
+        </tr>
+      </tbody>
+    </table>
   );
 }

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { computeDSCR, liquidityFloor, reserveStatus, monthlyAccountFees } from '../lib/calculations.js';
+import { termDebtCoverage, liquidityFloor, reserveStatus, monthlyAccountFees } from '../lib/calculations.js';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { loadBalanceSheet } from '../lib/balanceSheet.js';
@@ -9,8 +9,8 @@ const router = Router();
 router.get('/', ah(async (req, res) => {
   const year = Number(req.query.year) || new Date().getFullYear();
 
-  const [dscr, liquidity, reserve, upcomingPayments, drawTotal, unpaidBills, accountFees, outstandingChecks, openContracts] = await Promise.all([
-    computeDSCR(year),
+  const [coverage, liquidity, reserve, upcomingPayments, drawTotal, unpaidBills, accountFees, outstandingChecks, openContracts, activeCards, unpaidCardStatements, lastPaidCardStatements] = await Promise.all([
+    termDebtCoverage(), // trailing and next 12 months, not the calendar year
     liquidityFloor(), // rolling 12-month window from today, not the calendar year
     reserveStatus(year),
     pool.query(
@@ -42,6 +42,17 @@ router.get('/', ah(async (req, res) => {
       `SELECT COUNT(*)::int AS count, COALESCE(SUM(total_value), 0) AS total
        FROM sale_contracts WHERE status IN ('open', 'delivered')`
     ),
+    pool.query(`SELECT * FROM credit_cards WHERE status = 'active'`),
+    pool.query(
+      `SELECT credit_card_id, due_date, GREATEST(statement_balance - COALESCE(paid_amount, 0), 0) AS amount
+       FROM credit_card_statements WHERE paid = false`
+    ),
+    // Most recent PAID statement per card — whether it was paid in full by
+    // its due date is what decides if the grace period survived.
+    pool.query(
+      `SELECT DISTINCT ON (credit_card_id) credit_card_id, paid_in_full
+       FROM credit_card_statements WHERE paid = true ORDER BY credit_card_id, due_date DESC`
+    ),
   ]);
 
   // Net worth = all account balances (both ledgers — net worth is the whole
@@ -56,8 +67,9 @@ router.get('/', ah(async (req, res) => {
     cash: Number(cashRow.rows[0].total),
     assetValues: sheet.assets.reduce((s, a) => s + a.value_now, 0) + sheet.inventoryRows.reduce((s, i) => s + i.counted_value, 0),
     outstandingPrincipal: sheet.loans.reduce((s, l) => s + l.outstanding, 0),
+    creditCardBalances: sheet.creditCards.reduce((s, c) => s + c.outstanding, 0),
   };
-  netWorth.total = netWorth.cash + netWorth.assetValues - netWorth.outstandingPrincipal;
+  netWorth.total = netWorth.cash + netWorth.assetValues - netWorth.outstandingPrincipal - netWorth.creditCardBalances;
 
   const totalUnpaidBills = unpaidBills.rows.reduce((s, b) => s + Number(b.amount), 0);
   const totalUnpaidGst = unpaidBills.rows.reduce((s, b) => s + Number(b.gst_amount || 0), 0);
@@ -65,7 +77,7 @@ router.get('/', ah(async (req, res) => {
 
   res.json({
     year,
-    dscr,
+    coverage,
     liquidity,
     reserve,
     upcomingDebtService: upcomingPayments.rows,
@@ -84,6 +96,19 @@ router.get('/', ah(async (req, res) => {
     contractedInflows: {
       count: openContracts.rows[0].count,
       total: Number(openContracts.rows[0].total),
+    },
+    creditCards: {
+      count: activeCards.rows.length,
+      totalBalance: sheet.creditCards.reduce((s, c) => s + c.outstanding, 0),
+      dueSoon: unpaidCardStatements.rows
+        .sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)))
+        .slice(0, 5)
+        .map((r) => ({ ...r, amount: Number(r.amount) })),
+      // A card whose last recorded statement wasn't paid in full by its due
+      // date has lost its grace period — new purchases now accrue interest
+      // from the transaction date, not the due date, until a full-balance
+      // payment resets it.
+      gracePeriodLost: lastPaidCardStatements.rows.filter((r) => r.paid_in_full === false).length,
     },
     netWorth,
   });

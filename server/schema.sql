@@ -485,7 +485,7 @@ WHERE a.migrated_from_loan_id = l.id AND l.asset_id IS NULL;
 -- doesn't, Money Hub derives it from open contracts for the same commodity
 -- and unit.
 DO $$ BEGIN
-  CREATE TYPE inventory_class AS ENUM ('crop', 'market_livestock', 'breeding_livestock', 'other');
+  CREATE TYPE inventory_class AS ENUM ('crop', 'forage', 'market_livestock', 'breeding_livestock', 'other');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE TABLE IF NOT EXISTS inventory_items (
@@ -538,6 +538,122 @@ CREATE TABLE IF NOT EXISTS loan_verifications (
 -- picks it up automatically; debt-service and forecast queries exclude it
 -- because no money moved.
 ALTER TABLE loan_payments ADD COLUMN IF NOT EXISTS is_adjustment BOOLEAN NOT NULL DEFAULT false;
+
+-- ---- Payment frequency ------------------------------------------------
+-- Ag lenders commonly schedule annual or semi-annual payments timed to
+-- harvest/calf-sale cash, alongside the usual monthly/quarterly/biweekly
+-- options. term_months stays the amortization length; the number of
+-- payments = term_months × payments-per-year / 12. first_payment_date
+-- (optional) pins when the first payment falls — e.g. a loan advanced in
+-- March with its first annual payment due December 1 — and the schedule
+-- steps from there; without it, the first payment is one period after
+-- start_date.
+DO $$ BEGIN
+  CREATE TYPE payment_frequency AS ENUM ('biweekly', 'monthly', 'quarterly', 'semiannual', 'annual');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS payment_frequency payment_frequency NOT NULL DEFAULT 'monthly';
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS first_payment_date DATE;
+
+-- ---- Inventory: forage and a price list -------------------------------
+-- Source systems (Quarter Section) know bushels and bale counts but often
+-- not market prices. price_per_unit on an item is therefore optional: when
+-- it's missing, the item is valued from commodity_prices (maintained in
+-- Money Hub or pushed separately); when neither exists, the item counts at
+-- $0 and is flagged as needing a price — never valued at a guess.
+ALTER TABLE inventory_items ALTER COLUMN price_per_unit DROP NOT NULL;
+
+CREATE TABLE IF NOT EXISTS commodity_prices (
+  id              SERIAL PRIMARY KEY,
+  commodity       TEXT NOT NULL,
+  unit            TEXT NOT NULL,
+  price_per_unit  NUMERIC(14,4) NOT NULL,
+  as_of           DATE NOT NULL DEFAULT CURRENT_DATE,
+  source          TEXT NOT NULL DEFAULT 'manual',
+  notes           TEXT,
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_commodity_prices_key
+  ON commodity_prices (lower(commodity), lower(unit));
+
+-- ---- Credit cards ------------------------------------------------------
+-- A card is revolving debt, not a loan with an amortization schedule: what
+-- Money Hub tracks is its terms (rates, fee, rewards) and, cycle by cycle,
+-- what the issuer says you owe and by when — logged by hand, the same way
+-- a loan verification is, since there's no live bank feed for a card.
+DO $$ BEGIN
+  CREATE TYPE credit_card_status AS ENUM ('active', 'closed');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+CREATE TABLE IF NOT EXISTS credit_cards (
+  id                    SERIAL PRIMARY KEY,
+  name                  TEXT NOT NULL,  -- yours to pick, e.g. "Capital One Gold"
+  issuer                TEXT,
+  last4                 TEXT,
+  credit_limit          NUMERIC(14,2),
+  apr_purchase          NUMERIC(6,3) NOT NULL,
+  apr_cash_advance      NUMERIC(6,3),
+  annual_fee            NUMERIC(14,2) NOT NULL DEFAULT 0,
+  annual_fee_month      INTEGER,  -- 1-12, the month the fee typically posts
+  grace_period_days     INTEGER NOT NULL DEFAULT 21,
+  status                credit_card_status NOT NULL DEFAULT 'active',
+  -- Same enterprise-segment tagging as loans/bills/accounts — whose card
+  -- this is, so its balance and payments count in the right owner's cash
+  -- flow, equity and net worth.
+  segment               enterprise_segment,
+  -- What you currently owe, entered by hand whenever you check the card —
+  -- mirrors the issuer's own "Current Balance", which can run ahead of the
+  -- last statement if new purchases posted since. NULL falls back to the
+  -- latest unpaid statement's balance.
+  current_balance       NUMERIC(14,2),
+  current_balance_as_of DATE,
+  notes                 TEXT,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Structured reward rate by spending category, e.g. Groceries 5%, Fuel 2%,
+-- "Everything else" 1% — lets cards be compared side by side and backs a
+-- rewards estimate for a hypothetical purchase. Money Hub doesn't know
+-- which card paid for which ledger transaction, so this doesn't total
+-- rewards actually earned from your spending — only what a purchase in a
+-- category WOULD earn on this card.
+CREATE TABLE IF NOT EXISTS credit_card_reward_categories (
+  id              SERIAL PRIMARY KEY,
+  credit_card_id  INTEGER NOT NULL REFERENCES credit_cards(id) ON DELETE CASCADE,
+  category        TEXT NOT NULL,
+  rate_pct        NUMERIC(6,3) NOT NULL,
+  notes           TEXT
+);
+
+-- One row per billing cycle: the statement Money Hub was told about, and
+-- (once paid) the payment against it — same paid/paid_date/
+-- linked_transaction_id pattern as loan_payments, since a row IS the next
+-- scheduled due amount until it's recorded paid.
+CREATE TABLE IF NOT EXISTS credit_card_statements (
+  id                    SERIAL PRIMARY KEY,
+  credit_card_id        INTEGER NOT NULL REFERENCES credit_cards(id) ON DELETE CASCADE,
+  statement_date        DATE,
+  due_date              DATE NOT NULL,
+  statement_balance     NUMERIC(14,2) NOT NULL,
+  minimum_payment       NUMERIC(14,2),
+  -- Interest the issuer actually charged this cycle, if any. Already
+  -- folded into statement_balance — kept separately only so carrying a
+  -- balance shows up as a real, visible cost rather than just a bigger
+  -- number.
+  interest_amount       NUMERIC(14,2),
+  paid                  BOOLEAN NOT NULL DEFAULT false,
+  -- Was the FULL statement_balance paid by due_date — the grace-period
+  -- test: miss this once and interest starts accruing from the purchase
+  -- date next cycle, not the due date.
+  paid_in_full          BOOLEAN,
+  paid_date             DATE,
+  paid_amount           NUMERIC(14,2),
+  account_id            INTEGER REFERENCES accounts(id),
+  linked_transaction_id INTEGER REFERENCES transactions(id),
+  notes                 TEXT,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cc_statements_due_date ON credit_card_statements (due_date);
+CREATE INDEX IF NOT EXISTS idx_cc_statements_card ON credit_card_statements (credit_card_id);
 
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);
 CREATE INDEX IF NOT EXISTS idx_transactions_ledger ON transactions (ledger);

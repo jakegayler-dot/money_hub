@@ -28,6 +28,8 @@ const ENUM_ADDITIONS = [
   // drop enum values — and is reported as Unassigned until retagged.
   `ALTER TYPE enterprise_segment ADD VALUE IF NOT EXISTS 'jake'`,
   `ALTER TYPE enterprise_segment ADD VALUE IF NOT EXISTS 'ashley'`,
+  // Bales / silage — hay and straw inventory.
+  `ALTER TYPE inventory_class ADD VALUE IF NOT EXISTS 'forage' BEFORE 'market_livestock'`,
 ];
 
 async function migrate() {

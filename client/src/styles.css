@@ -133,7 +133,9 @@ body {
   background: var(--gold);
 }
 
-main { padding: 30px 36px 60px; max-width: 1240px; }
+/* min-width: 0 lets the grid column shrink to the screen; a wide table
+   then scrolls inside its panel instead of widening the whole page. */
+main { padding: 30px 36px 60px; max-width: 1240px; min-width: 0; }
 
 /* ---------- Page header ---------- */
 
@@ -213,6 +215,7 @@ main { padding: 30px 36px 60px; max-width: 1240px; }
   border-radius: var(--radius);
   margin-bottom: 22px;
   overflow: hidden;
+  overflow-x: auto;
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset;
 }
 
@@ -247,6 +250,19 @@ th {
 tbody tr { transition: background var(--ease); }
 tbody tr:hover { background: rgba(255, 255, 255, 0.022); }
 tr:last-child td { border-bottom: none; }
+
+/* ---------- Coverage build ---------- */
+
+.coverage-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+.coverage-build th { white-space: normal; }
+.coverage-grid > table + table { border-left: 1px solid var(--border); }
+.coverage-build th.num, .coverage-build td.num { text-align: right; white-space: nowrap; }
+.coverage-build tr.subtotal td { color: var(--text); font-weight: 600; border-top: 1px solid var(--border-strong, var(--border)); }
+.coverage-note { font-size: 12px; color: var(--text-faint); margin: 0; padding: 12px 20px 16px; border-top: 1px solid var(--border); }
+@media (max-width: 960px) {
+  .coverage-grid { grid-template-columns: minmax(0, 1fr); }
+  .coverage-grid > table + table { border-left: none; border-top: 1px solid var(--border); }
+}
 
 /* ---------- Badges ---------- */
 
@@ -444,5 +460,6 @@ button:disabled { opacity: 0.4; cursor: not-allowed; filter: none; }
   .sidebar nav { display: flex; gap: 2px; }
   .nav-link { white-space: nowrap; padding: 7px 11px; }
   main { padding: 20px 16px 48px; }
+  th, td { padding: 9px 12px; }
   .page-title { font-size: 24px; }
 }

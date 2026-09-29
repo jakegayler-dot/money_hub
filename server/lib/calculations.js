@@ -1,113 +1,9 @@
 import { pool, getSetting } from '../db.js';
 import { activeEstimates, occurrences, signedAmount } from './estimates.js';
 import { ownerWeights } from './segments.js';
-import { monthIndex, todayISO } from './dates.js';
+import { monthIndex, todayISO, toISODate, addMonths, addDays } from './dates.js';
 
 const MONTHS = 12;
-
-/**
- * Net Operating Income per month for a given year, business ledger only.
- * NOI = actual business transactions this month (excluding capex and debt
- * service) + forecasted expense-category outflows not yet booked.
- * For v1 (manual entry, no forecast-vs-actual reconciliation yet) this
- * uses booked transactions where present.
- */
-export async function monthlyNOI(year) {
-  // is_debt_service excluded: NOI is income before debt service by
-  // definition. Recorded loan payments live on the loan schedule side of
-  // the DSCR ratio (and of the liquidity forecast), so counting them here
-  // too would subtract the same dollars twice.
-  const { rows } = await pool.query(
-    `SELECT EXTRACT(MONTH FROM date)::int AS month, SUM(amount) AS net
-     FROM transactions
-     WHERE ledger = 'business'
-       AND is_capex = false
-       AND is_debt_service = false
-       AND EXTRACT(YEAR FROM date) = $1
-     GROUP BY month`,
-    [year]
-  );
-  const byMonth = Array(MONTHS).fill(0);
-  for (const r of rows) byMonth[r.month - 1] = Number(r.net);
-  return byMonth;
-}
-
-/** Total scheduled debt service (principal + interest) per month, all loans. */
-export async function monthlyDebtService(year) {
-  const { rows } = await pool.query(
-    `SELECT EXTRACT(MONTH FROM due_date)::int AS month,
-            SUM(principal_amount + interest_amount) AS total
-     FROM loan_payments
-     WHERE EXTRACT(YEAR FROM due_date) = $1
-       AND is_adjustment = false  -- verification adjustments aren't payments; no money moved
-     GROUP BY month`,
-    [year]
-  );
-  const byMonth = Array(MONTHS).fill(0);
-  for (const r of rows) byMonth[r.month - 1] = Number(r.total);
-  return byMonth;
-}
-
-/**
- * Scheduled debt service still owed (paid = false) per month. This is what
- * the liquidity forecast subtracts: a payment already recorded as paid has
- * become a real transaction (and already left the balance), so only the
- * still-upcoming scheduled payments are future outflows.
- */
-export async function monthlyUnpaidDebtService(year) {
-  const { rows } = await pool.query(
-    `SELECT EXTRACT(MONTH FROM due_date)::int AS month,
-            SUM(principal_amount + interest_amount) AS total
-     FROM loan_payments
-     WHERE paid = false AND EXTRACT(YEAR FROM due_date) = $1
-     GROUP BY month`,
-    [year]
-  );
-  const byMonth = Array(MONTHS).fill(0);
-  for (const r of rows) byMonth[r.month - 1] = Number(r.total);
-  return byMonth;
-}
-
-/**
- * Expected contract inflows per month: unsettled sale contracts (open or
- * delivered-but-unpaid) at their expected payment month. Settled contracts
- * are excluded — their money has become a real transaction and already
- * flows through NOI, so counting them here would double it.
- */
-export async function monthlyContractInflows(year) {
-  const { rows } = await pool.query(
-    `SELECT EXTRACT(MONTH FROM expected_payment_date)::int AS month, SUM(total_value) AS total
-     FROM sale_contracts
-     WHERE status IN ('open', 'delivered')
-       AND EXTRACT(YEAR FROM expected_payment_date) = $1
-     GROUP BY month`,
-    [year]
-  );
-  const byMonth = Array(MONTHS).fill(0);
-  for (const r of rows) byMonth[r.month - 1] = Number(r.total);
-  return byMonth;
-}
-
-/**
- * Known unpaid bills (accounts payable) per month, business ledger only,
- * grouped by due date. These aren't in `transactions` yet — the money
- * hasn't moved — but they're a known obligation, so the liquidity forecast
- * treats them as a committed outflow in their due month rather than
- * waiting until they're actually paid to notice them.
- */
-export async function monthlyUnpaidBills(year) {
-  const { rows } = await pool.query(
-    `SELECT EXTRACT(MONTH FROM due_date)::int AS month, SUM(amount) AS total
-     FROM bills
-     WHERE ledger = 'business' AND status = 'unpaid'
-       AND EXTRACT(YEAR FROM due_date) = $1
-     GROUP BY month`,
-    [year]
-  );
-  const byMonth = Array(MONTHS).fill(0);
-  for (const r of rows) byMonth[r.month - 1] = Number(r.total);
-  return byMonth;
-}
 
 /** Recurring account fees per month, business ledger only. Monthly fees hit
  * every month; annual fees are spread evenly across 12 (approximation —
@@ -131,33 +27,214 @@ export async function monthlyAccountFees(year) {
   return byMonth;
 }
 
+const BILL_STEP_MONTHS = { monthly: 1, quarterly: 3 };
+
 /**
- * DSCR = NOI / Total Debt Service, computed per month.
- * The gating number is the worst month, not the annual average —
- * an annual DSCR hides seasonal troughs.
+ * Dates an unpaid bill will be owed before `toExclusive`: the bill itself
+ * (even if overdue — it still hasn't been paid) plus, for a recurring bill,
+ * the later instances the app creates as each one is paid. Only one
+ * instance of a recurring bill exists at a time, so without this a monthly
+ * bill would count once in a 12-month forecast instead of every month.
+ * Later instances are counted only from tomorrow on.
  */
-export async function computeDSCR(year) {
-  const [noi, debtService] = await Promise.all([monthlyNOI(year), monthlyDebtService(year)]);
-  const threshold = Number(await getSetting('dscr_threshold', 1.25));
+export function billDates(bill, todayStr, toExclusive) {
+  const first = toISODate(bill.due_date);
+  const out = first < toExclusive ? [first] : [];
+  const step = BILL_STEP_MONTHS[bill.frequency];
+  if (!step || !out.length) return out;
+  for (let k = 1; k < 600; k++) {
+    const d = addMonths(first, k * step);
+    if (d >= toExclusive) break;
+    if (d > todayStr) out.push(d);
+  }
+  return out;
+}
 
-  const monthly = noi.map((n, i) => {
-    const ds = debtService[i];
-    const ratio = ds === 0 ? null : n / ds;
-    return { month: i + 1, noi: n, debtService: ds, dscr: ratio };
-  });
+/**
+ * TERM DEBT COVERAGE RATIO — the repayment-capacity test ag lenders
+ * underwrite on (Farm Financial Standards Council definition; the same
+ * measure FCC and the banks' ag desks use, typically with a 1.25x minimum):
+ *
+ *            capacity available for term debt
+ *   TDCR = ───────────────────────────────────────────────
+ *           scheduled principal + interest on TERM debt
+ *
+ *   capacity = operating income before debt service
+ *              − operating-line interest   (an operating expense)
+ *              − owner withdrawals          (family living)
+ *
+ * Measured over a full year, twice: HISTORICAL (the trailing 12 months of
+ * actuals) and PROJECTED (the next 12 months). The projection is the gate —
+ * a lender approving new debt asks whether next year's income carries next
+ * year's payments. It's annual on purpose: seasonal troughs are a
+ * liquidity question, answered by the liquidity floor, not by this ratio.
+ *
+ * Money Hub is cash basis, so "income" here is business cash in − cash out
+ * excluding capital purchases (not an expense — the lender's depreciation
+ * add-back nets out the same way) and loan payments (the denominator).
+ * Income tax isn't tracked, so it isn't deducted. Operating lines are
+ * excluded from the denominator: they revolve within the year and are
+ * repaid from the crop, not from surplus. Loans owned by Jake or Ashley
+ * personally (a house mortgage) are outside the farm business and don't
+ * count on either side.
+ */
+const BUSINESS_LOAN = `(l.segment IS NULL OR l.segment NOT IN ('personal', 'jake', 'ashley'))`;
+const BUSINESS_SEGMENT = `segment NOT IN ('personal', 'jake', 'ashley')`;
 
-  const withRatio = monthly.filter((m) => m.dscr !== null);
-  const worst = withRatio.length
-    ? withRatio.reduce((a, b) => (b.dscr < a.dscr ? b : a))
-    : null;
+/** Scheduled loan payments due in (from, to], split term vs operating. */
+async function scheduledServiceBetween(fromExclusive, toInclusive) {
+  const { rows } = await pool.query(
+    `SELECT (l.purpose = 'operating') AS operating,
+            COALESCE(SUM(lp.principal_amount), 0) AS principal,
+            COALESCE(SUM(lp.interest_amount), 0) AS interest
+     FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
+     WHERE lp.is_adjustment = false            -- verification corrections aren't payments
+       AND lp.due_date > $1 AND lp.due_date <= $2
+       AND ${BUSINESS_LOAN}
+     GROUP BY 1`,
+    [fromExclusive, toInclusive]
+  );
+  const out = { termPrincipal: 0, termInterest: 0, operatingInterest: 0 };
+  for (const r of rows) {
+    if (r.operating) out.operatingInterest += Number(r.interest);
+    else { out.termPrincipal += Number(r.principal); out.termInterest += Number(r.interest); }
+  }
+  return out;
+}
 
+function coverageResult({ from, to, lines, service, threshold }) {
+  const capacity = lines.reduce((s, l) => s + l.amount, 0);
+  const termDebtService = service.termPrincipal + service.termInterest;
+  const ratio = termDebtService > 0 ? capacity / termDebtService : null;
   return {
-    threshold,
-    monthly,
-    worstMonth: worst,
-    passes: worst ? worst.dscr >= threshold : null,
+    from, to, lines, capacity,
+    termPrincipal: service.termPrincipal,
+    termInterest: service.termInterest,
+    termDebtService,
+    ratio,
+    // No term debt scheduled = nothing to cover: not a fail, not a pass.
+    passes: ratio == null ? null : ratio >= threshold,
   };
 }
+
+/**
+ * Historical and projected TDCR. `projected` is the gating figure.
+ * Returns { threshold, historical, projected, ratio, passes }, each period
+ * carrying its line-by-line build so the number can be checked by hand.
+ */
+export async function termDebtCoverage() {
+  const threshold = Number(await getSetting('dscr_threshold', 1.25));
+  const today = todayISO();
+  const histFrom = addMonths(today, -12);
+  const projTo = addMonths(today, 12);
+
+  // ---- Historical: trailing 12 months of actuals -------------------------
+  const [txRow, histDraws, histService] = await Promise.all([
+    pool.query(
+      `SELECT COALESCE(SUM(amount) FILTER (WHERE amount > 0), 0) AS cash_in,
+              COALESCE(SUM(amount) FILTER (WHERE amount < 0), 0) AS cash_out
+       FROM transactions
+       WHERE ledger = 'business' AND is_capex = false AND is_debt_service = false
+         AND date > $1 AND date <= $2`,
+      [histFrom, today]
+    ),
+    pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM owner_draws WHERE date > $1 AND date <= $2`, [histFrom, today]),
+    scheduledServiceBetween(histFrom, today),
+  ]);
+  const drawsTrailing = Number(histDraws.rows[0].total);
+  const historical = coverageResult({
+    from: addDays(histFrom, 1), to: today, threshold,
+    service: histService,
+    lines: [
+      { label: 'Business receipts', amount: Number(txRow.rows[0].cash_in) },
+      { label: 'Operating expenses paid', amount: Number(txRow.rows[0].cash_out) },
+      { label: 'Operating-line interest', amount: -histService.operatingInterest },
+      { label: 'Owner draws', amount: -drawsTrailing },
+    ],
+  });
+
+  // ---- Projected: next 12 months --------------------------------------------
+  // Committed flows (contracts, bills, fees) plus the business share of
+  // active estimates — the same inputs as the default forecast basis.
+  // Unsettled contracts and unpaid bills count even if their date has
+  // passed: the money still hasn't moved, so it lands in this period.
+  const [contractRow, billRow, fees, projService, cardRow] = await Promise.all([
+    pool.query(
+      `SELECT COALESCE(SUM(total_value), 0) AS total FROM sale_contracts
+       WHERE status IN ('open', 'delivered') AND expected_payment_date <= $1 AND ${BUSINESS_SEGMENT}`,
+      [projTo]
+    ),
+    pool.query(
+      `SELECT due_date, amount, frequency FROM bills
+       WHERE ledger = 'business' AND status = 'unpaid' AND due_date <= $1`,
+      [projTo]
+    ),
+    monthlyAccountFees(),
+    scheduledServiceBetween(today, projTo),
+    // Credit card statements not yet paid, due within the window — a
+    // committed outflow, same standing as an unpaid bill. Business cards
+    // only; personal (Jake/Ashley) cards are outside the farm business.
+    pool.query(
+      `SELECT COALESCE(SUM(GREATEST(s.statement_balance - COALESCE(s.paid_amount, 0), 0)), 0) AS total
+       FROM credit_card_statements s JOIN credit_cards cc ON cc.id = s.credit_card_id
+       WHERE s.paid = false AND s.due_date > $1 AND s.due_date <= $2
+         AND (cc.segment IS NULL OR cc.segment NOT IN ('personal', 'jake', 'ashley'))`,
+      [today, projTo]
+    ),
+  ]);
+  let estIn = 0;
+  let estOut = 0;
+  const estFrom = addDays(today, 1);
+  const estToExclusive = addDays(projTo, 1);
+  for (const est of await activeEstimates()) {
+    const w = ownerWeights(est);
+    const businessShare = 1 - w.jake - w.ashley;
+    if (businessShare <= 0) continue;
+    const n = occurrences(est, estFrom, estToExclusive).length;
+    const amt = n * signedAmount(est) * businessShare;
+    if (amt >= 0) estIn += amt; else estOut += -amt;
+  }
+  const billsTotal = billRow.rows.reduce(
+    (s, b) => s + billDates(b, today, estToExclusive).length * Number(b.amount), 0
+  );
+  // No draw budget is stored, so next year's withdrawals are assumed to
+  // match the last 12 months' — lenders use the family-living budget here,
+  // and the trailing actual is the evidence-based stand-in for one.
+  const projected = coverageResult({
+    from: estFrom, to: projTo, threshold,
+    service: projService,
+    lines: [
+      { label: 'Contracted receipts', amount: Number(contractRow.rows[0].total) },
+      { label: 'Estimated receipts', amount: estIn },
+      { label: 'Bills (incl. recurring)', amount: -billsTotal },
+      { label: 'Estimated expenses', amount: -estOut },
+      { label: 'Account fees', amount: -fees.reduce((a, b) => a + b, 0) },
+      { label: 'Credit card payments due', amount: -Number(cardRow.rows[0].total) },
+      { label: 'Operating-line interest', amount: -projService.operatingInterest },
+      { label: 'Owner draws (at last 12 months’ pace)', amount: -drawsTrailing },
+    ],
+  });
+
+  return {
+    standard: 'FFSC term debt coverage ratio',
+    threshold,
+    historical,
+    projected,
+    ratio: projected.ratio,
+    passes: projected.passes,
+  };
+}
+
+/**
+ * Projected TDCR with extra annual term payments layered on — how a
+ * financed purchase is tested. Returns null when there'd still be no term
+ * debt to cover.
+ */
+export function coverageWithAddedDebt(coverage, addedAnnualService) {
+  const service = coverage.projected.termDebtService + Math.max(0, Number(addedAnnualService) || 0);
+  return service > 0 ? coverage.projected.capacity / service : null;
+}
+
 
 /**
  * Liquidity floor: ROLLING 12-month projection of business cash, starting
@@ -192,9 +269,9 @@ export async function liquidityFloor() {
   // Bucket a due date into the window; anything overdue clamps to month 0.
   const idxFor = (d) => Math.max(0, monthIndex(d, y0, m0));
 
-  const [billRows, debtRows, contractRows, fees] = await Promise.all([
+  const [billRows, debtRows, contractRows, fees, cardRows] = await Promise.all([
     pool.query(
-      `SELECT due_date, amount FROM bills
+      `SELECT due_date, amount, frequency FROM bills
        WHERE ledger = 'business' AND status = 'unpaid' AND due_date < $1`,
       [endStr]
     ),
@@ -215,6 +292,15 @@ export async function liquidityFloor() {
       [endStr]
     ),
     monthlyAccountFees(y0), // same value every month (monthly fees + annual/12)
+    // Credit card statements not yet paid — a scheduled outflow at their
+    // due date, same treatment as an unpaid bill. Business-owned cards only.
+    pool.query(
+      `SELECT s.due_date, GREATEST(s.statement_balance - COALESCE(s.paid_amount, 0), 0) AS amount
+       FROM credit_card_statements s JOIN credit_cards cc ON cc.id = s.credit_card_id
+       WHERE s.paid = false AND s.due_date < $1
+         AND (cc.segment IS NULL OR cc.segment NOT IN ('personal', 'jake', 'ashley'))`,
+      [endStr]
+    ),
   ]);
   const feesPerMonth = fees[0] || 0;
 
@@ -235,11 +321,15 @@ export async function liquidityFloor() {
   }
 
   const billsBy = Array(MONTHS).fill(0);
-  for (const r of billRows.rows) billsBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
+  for (const r of billRows.rows) {
+    for (const d of billDates(r, todayISO(), endStr)) billsBy[Math.min(idxFor(d), MONTHS - 1)] += Number(r.amount);
+  }
   const debtBy = Array(MONTHS).fill(0);
   for (const r of debtRows.rows) debtBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
   const contractsBy = Array(MONTHS).fill(0);
   for (const r of contractRows.rows) contractsBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
+  const cardsBy = Array(MONTHS).fill(0);
+  for (const r of cardRows.rows) cardsBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
 
   // Two projections from the same starting balance. COMMITTED uses only
   // documented flows (contracts, bills, loan schedules, fees). WITH
@@ -251,7 +341,7 @@ export async function liquidityFloor() {
   let committedRunning = startingBalance;
   let running = startingBalance;
   const trajectory = monthsMeta.map((meta, i) => {
-    const committedNet = contractsBy[i] - billsBy[i] - debtBy[i] - feesPerMonth;
+    const committedNet = contractsBy[i] - billsBy[i] - debtBy[i] - feesPerMonth - cardsBy[i];
     committedRunning += committedNet;
     running += committedNet + estInBy[i] - estOutBy[i];
     return {
@@ -263,6 +353,7 @@ export async function liquidityFloor() {
       unpaidBillsDue: billsBy[i],
       debtServiceDue: debtBy[i],
       accountFees: feesPerMonth,
+      creditCardDue: cardsBy[i],
       estimatedInflows: estInBy[i],
       estimatedOutflows: estOutBy[i],
     };

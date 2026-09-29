@@ -7,7 +7,13 @@ const CATEGORY_LABELS = {
   land: 'Land', buildings: 'Buildings', machinery: 'Machinery & equipment', vehicles: 'Vehicles & trucks',
   breeding_livestock: 'Breeding livestock', investments: 'Investments', other: 'Other',
 };
-const CLASS_LABELS = { crop: 'Crop in storage', market_livestock: 'Market livestock', breeding_livestock: 'Breeding livestock', other: 'Other' };
+const CLASS_LABELS = { crop: 'Grain in storage', forage: 'Forage (bales)', market_livestock: 'Market livestock', breeding_livestock: 'Breeding livestock', other: 'Other' };
+const CLASS_DEFAULTS = {
+  crop: { unit: 'bu', segment: 'grain' }, forage: { unit: 'bales', segment: 'livestock' },
+  market_livestock: { unit: 'head', segment: 'livestock' }, breeding_livestock: { unit: 'head', segment: 'livestock' },
+  other: { unit: 'units', segment: 'grain' },
+};
+const emptyPrice = { commodity: '', unit: 'bu', price_per_unit: '', as_of: new Date().toISOString().slice(0, 10) };
 
 // Typical CCA declining-balance rates, as a starting point. The CCA class
 // that applies to a specific asset is a tax question — confirm with your
@@ -118,12 +124,27 @@ export default function Assets() {
   const [editingId, setEditingId] = useState(null);
   const [adding, setAdding] = useState(false);
   const [item, setItem] = useState(emptyItem);
+  const [prices, setPrices] = useState([]);
+  const [priceForm, setPriceForm] = useState(emptyPrice);
   const [error, setError] = useState(null);
 
   const load = () => {
     fetch('/api/assets').then((r) => r.json()).then((d) => setAssets(Array.isArray(d) ? d : []));
     fetch('/api/inventory').then((r) => r.json()).then((d) => setInventory(d && d.groups ? d : { groups: [], items: [] }));
     fetch('/api/loans').then((r) => r.json()).then((d) => setLoans(Array.isArray(d) ? d : []));
+    fetch('/api/inventory/prices').then((r) => r.json()).then((d) => setPrices(Array.isArray(d) ? d : []));
+  };
+
+  const savePrice = async (e) => {
+    e.preventDefault();
+    setError(null);
+    const res = await fetch('/api/inventory/prices', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...priceForm, price_per_unit: Number(priceForm.price_per_unit) }),
+    });
+    if (!res.ok) { const b = await res.json().catch(() => ({})); setError(b.error || `HTTP ${res.status}`); return; }
+    setPriceForm(emptyPrice);
+    load();
   };
   useEffect(load, []);
 
@@ -140,7 +161,7 @@ export default function Assets() {
     const res = await fetch('/api/inventory', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        ...item, quantity: Number(item.quantity), price_per_unit: Number(item.price_per_unit),
+        ...item, quantity: Number(item.quantity), price_per_unit: item.price_per_unit === '' ? null : Number(item.price_per_unit),
         quantity_contracted: item.quantity_contracted === '' ? null : Number(item.quantity_contracted),
       }),
     });
@@ -161,6 +182,7 @@ export default function Assets() {
     .map((c) => ({ c, rows: assets.filter((a) => a.category === c) }))
     .filter((g) => g.rows.length);
   const unsecuredLoans = loans.filter((l) => !l.asset_id);
+  const unpricedGroups = inventory.groups.filter((g) => g.needs_price > 0);
 
   return (
     <>
@@ -177,7 +199,11 @@ export default function Assets() {
 
       <div className="grid">
         <MetricCard label="Capital assets" value={money(totals.value)} sub={`${money(totals.value12)} in 12 months at their rates`} />
-        <MetricCard label="Inventory (estimated)" value={money(totals.inventory)} sub="Uncontracted only, at market price" />
+        <MetricCard
+          label="Inventory (estimated)"
+          value={money(totals.inventory)}
+          sub={unpricedGroups.length ? `${unpricedGroups.length} item${unpricedGroups.length > 1 ? 's' : ''} need a price — counted at $0` : 'Uncontracted only, at market price'}
+        />
         <MetricCard label="Loans on assets" value={money(totals.loans)} sub={unsecuredLoans.length ? `+ ${unsecuredLoans.length} loan${unsecuredLoans.length > 1 ? 's' : ''} not tied to an asset` : 'Every loan is tied to an asset'} />
         <MetricCard
           label="Equity in assets"
@@ -293,7 +319,14 @@ export default function Assets() {
                         <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>{g.contracted_basis}</div>
                       </td>
                       <td>{Number(g.uncontracted).toLocaleString()} {g.unit}</td>
-                      <td>{unitPrice(g.avg_price)}/{g.unit}</td>
+                      <td>
+                        {g.needs_price > 0 ? (
+                          <button className="small" onClick={() => setPriceForm({ ...emptyPrice, commodity: g.commodity, unit: g.unit })}>Set price</button>
+                        ) : <>{unitPrice(g.avg_price)}/{g.unit}</>}
+                        <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>
+                          {g.needs_price > 0 ? 'no price yet' : g.items.every((i) => i.price_basis === 'price list') ? 'price list' : g.items.every((i) => i.price_basis === 'source') ? 'from source' : 'mixed'}
+                        </div>
+                      </td>
                       <td>{money(g.counted_value)}</td>
                       <td>{[...new Set(g.items.map((i) => i.source))].join(', ')}</td>
                     </tr>
@@ -325,7 +358,7 @@ export default function Assets() {
           <div className="field"><label>Type</label>
             <select value={item.item_class} onChange={(e) => {
               const c = e.target.value;
-              setItem({ ...item, item_class: c, unit: c === 'crop' ? 'bu' : 'head', segment: c === 'crop' ? 'grain' : 'livestock' });
+              setItem({ ...item, item_class: c, ...CLASS_DEFAULTS[c] });
             }}>
               {Object.entries(CLASS_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
             </select></div>
@@ -338,10 +371,52 @@ export default function Assets() {
           <div className="field"><label>Contracted (optional)</label>
             <input type="number" step="0.001" value={item.quantity_contracted} onChange={(e) => setItem({ ...item, quantity_contracted: e.target.value })} placeholder="auto from contracts" /></div>
           <div className="field"><label>Est. price / unit</label>
-            <input type="number" step="0.01" required value={item.price_per_unit} onChange={(e) => setItem({ ...item, price_per_unit: e.target.value })} /></div>
+            <input type="number" step="0.01" value={item.price_per_unit} onChange={(e) => setItem({ ...item, price_per_unit: e.target.value })} placeholder="blank = price list" /></div>
           <div className="field"><label>Location</label>
             <input value={item.location} onChange={(e) => setItem({ ...item, location: e.target.value })} placeholder="Bin 4" /></div>
           <div className="field" style={{ alignSelf: 'end' }}><button type="submit">Add manually</button></div>
+        </form>
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">Price list — market value per unit</div>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0, padding: '12px 20px 0' }}>
+          Used for any inventory item whose source didn't send its own price — Quarter Section counts bushels and
+          bales, this is where their value comes from. Matched on item name and unit (Canola + bu, Hay + bales).
+          Update it when bids move; every item priced from it revalues immediately.
+        </p>
+        {prices.length > 0 && (
+          <table style={{ marginTop: 12 }}>
+            <thead><tr><th>Item</th><th>Unit</th><th>Price</th><th>As of</th><th>Source</th><th></th></tr></thead>
+            <tbody>
+              {prices.map((p) => (
+                <tr key={p.id}>
+                  <td>{p.commodity}</td>
+                  <td>{p.unit}</td>
+                  <td>{unitPrice(Number(p.price_per_unit))}</td>
+                  <td>{String(p.as_of).slice(0, 10)}</td>
+                  <td>{p.source === 'manual' ? '—' : p.source}</td>
+                  <td>
+                    <span style={{ display: 'inline-flex', gap: 4 }}>
+                      <button className="small secondary" onClick={() => setPriceForm({ commodity: p.commodity, unit: p.unit, price_per_unit: String(Number(p.price_per_unit)), as_of: new Date().toISOString().slice(0, 10) })}>Update</button>
+                      <button className="small secondary" onClick={() => remove(`/api/inventory/prices/${p.id}`)}>Delete</button>
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <form className="form-panel" onSubmit={savePrice} style={{ maxWidth: 'none', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
+          <div className="field"><label>Item</label>
+            <input required value={priceForm.commodity} onChange={(e) => setPriceForm({ ...priceForm, commodity: e.target.value })} placeholder="Canola, Hay…" /></div>
+          <div className="field"><label>Unit</label>
+            <input required value={priceForm.unit} onChange={(e) => setPriceForm({ ...priceForm, unit: e.target.value })} /></div>
+          <div className="field"><label>Price / unit</label>
+            <input type="number" step="0.01" min="0" required value={priceForm.price_per_unit} onChange={(e) => setPriceForm({ ...priceForm, price_per_unit: e.target.value })} /></div>
+          <div className="field"><label>As of</label>
+            <input type="date" value={priceForm.as_of} onChange={(e) => setPriceForm({ ...priceForm, as_of: e.target.value })} /></div>
+          <div className="field" style={{ alignSelf: 'end' }}><button type="submit">Save price</button></div>
         </form>
       </div>
     </>

@@ -7,8 +7,11 @@ test:
 
 1. **Liquidity floor** — projected minimum monthly cash balance (net of
    known unpaid bills), with a 15% buffer
-2. **Debt Service Coverage Ratio (DSCR)** — Net Operating Income ÷ Total
-   Debt Service, computed **monthly** (worst month binds), gated at **1.25x**
+2. **Term Debt Coverage Ratio (TDCR)** — the ag-lender standard (FFSC):
+   business cash income before debt service − operating-line interest −
+   owner draws, ÷ scheduled principal + interest on **term** debt. Annual,
+   shown for the trailing 12 months and the next 12; the projection gates
+   at **1.25x**. Seasonal troughs are the liquidity floor's job.
 3. **Opportunity cost** — purchase price converted into units of the core
    return-generating asset, not evaluated as a raw dollar figure
 4. **Reversibility** — resale/exit-cost weighting if the decision proves wrong
@@ -37,7 +40,7 @@ the client and serves it alongside the API.
   no CSV/API ingestion yet.
 - Mixed-use asset allocation is a **user-set percentage on a cost basis**
   only (no mileage/usage-log methodology).
-- Business and personal ledgers are **structurally separate** — DSCR and
+- Business and personal ledgers are **structurally separate** — debt coverage and
   liquidity calculations run against the business ledger only.
 - Milestone/strategic-date tracking is **not** part of v1.
 - **Bills (accounts payable)**: invoices received but not yet paid are
@@ -86,4 +89,3 @@ LIQUIDITY_BUFFER_PCT=0.15
 DSCR_THRESHOLD=1.25
 RESERVE_TARGET_MONTHS=2
 ```
-</content>

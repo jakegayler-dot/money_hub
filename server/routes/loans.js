@@ -2,8 +2,8 @@ import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { ledgerForSegment } from '../lib/segments.js';
-import { buildSchedule } from '../lib/amortization.js';
-import { addMonths, toISODate, todayISO } from '../lib/dates.js';
+import { buildSchedule, scheduleFromTerms, dueDateFor, FREQUENCIES } from '../lib/amortization.js';
+import { toISODate, todayISO } from '../lib/dates.js';
 import { assetValueAt, outstandingAt, loadBalanceSheet } from '../lib/balanceSheet.js';
 
 const router = Router();
@@ -86,21 +86,25 @@ router.post('/payments/:paymentId/unrecord', ah(async (req, res) => {
     const payment = rows[0];
     if (!payment.paid || payment.is_adjustment) return payment;
 
+    let txToDelete = null;
     if (payment.linked_transaction_id) {
       const { rows: txRows } = await client.query('SELECT * FROM transactions WHERE id = $1', [payment.linked_transaction_id]);
-      if (txRows.length) {
-        const tx = txRows[0];
-        await client.query(
-          `UPDATE accounts SET opening_balance = opening_balance - $1 WHERE id = $2`,
-          [tx.amount, tx.account_id]
-        );
-        await client.query('DELETE FROM transactions WHERE id = $1', [tx.id]);
-      }
+      if (txRows.length) txToDelete = txRows[0];
     }
+    // Null the FK reference before deleting the transaction it points to —
+    // otherwise the DELETE trips the foreign key immediately, before this
+    // row ever stops pointing at it.
     const { rows: updated } = await client.query(
       `UPDATE loan_payments SET paid = false, paid_date = NULL, linked_transaction_id = NULL WHERE id = $1 RETURNING *`,
       [payment.id]
     );
+    if (txToDelete) {
+      await client.query(
+        `UPDATE accounts SET opening_balance = opening_balance - $1 WHERE id = $2`,
+        [txToDelete.amount, txToDelete.account_id]
+      );
+      await client.query('DELETE FROM transactions WHERE id = $1', [txToDelete.id]);
+    }
     return updated[0];
   });
 
@@ -316,18 +320,22 @@ router.post('/:id/verify', ah(async (req, res) => {
         `DELETE FROM loan_payments WHERE loan_id = $1 AND paid = false AND is_adjustment = false AND due_date > $2`,
         [loan.id, verified_on]
       );
-      // Re-anchor to the loan's own payment day (from its start date), not
-      // to the old rows' dates — schedules built by the earlier code drifted
-      // off month-end days (Jan 31 → Mar 3 → Mar 31 → May 1...), and
-      // copying those dates forward would preserve the drift.
-      let k = 1;
-      while (addMonths(toISODate(loan.start_date), k) <= verified_on && k < 1200) k++;
+      // Re-anchor to the loan's own payment calendar (its first payment
+      // date, or its start date + one period), not to the old rows' dates —
+      // schedules built by the earlier code drifted off month-end days
+      // (Jan 31 → Mar 3 → Mar 31 → May 1...), and copying those dates
+      // forward would preserve the drift. Frequency is kept.
+      const frequency = loan.payment_frequency || 'monthly';
+      const anchor = toISODate(loan.first_payment_date || loan.start_date);
+      let k = loan.first_payment_date ? 0 : 1;
+      while (dueDateFor(anchor, frequency, k) <= verified_on && k < 5000) k++;
       try {
         newSchedule = buildSchedule({
           balance: B,
           ratePct: R,
-          months: Math.max(1, future.length),
-          anchor: toISODate(loan.start_date),
+          periods: Math.max(1, future.length),
+          frequency,
+          anchor,
           anchorOffset: k,
           payment: P,
         });
@@ -390,14 +398,12 @@ router.get('/:id/verifications', ah(async (req, res) => {
 
 // ---- Create / edit / delete ---------------------------------------------
 
-function scheduleFromTerms({ principal, interest_rate_pct, term_months, start_date }) {
-  return buildSchedule({
-    balance: Number(principal),
-    ratePct: Number(interest_rate_pct),
-    months: Number(term_months),
-    anchor: toISODate(start_date),
-    anchorOffset: 1,
-  });
+function checkFrequency(f) {
+  if (f != null && !FREQUENCIES.includes(f)) {
+    const err = new Error(`payment_frequency must be one of ${FREQUENCIES.join(', ')}`);
+    err.status = 400;
+    throw err;
+  }
 }
 
 router.post('/', ah(async (req, res) => {
@@ -405,7 +411,9 @@ router.post('/', ah(async (req, res) => {
     name, lender, purpose, linked_asset = null, principal, interest_rate_pct,
     rate_type = 'fixed', term_months, start_date, covenant_notes = null,
     covenant_date = null, custom_schedule = null, segment = null, asset_id = null,
+    payment_frequency = 'monthly', first_payment_date = null,
   } = req.body;
+  checkFrequency(payment_frequency);
   // A blank name falls back to the lender name so two loans at the same
   // lender are never indistinguishable.
   const resolvedName = (name && name.trim()) || lender;
@@ -414,16 +422,20 @@ router.post('/', ah(async (req, res) => {
     const { rows } = await client.query(
       `INSERT INTO loans
         (name, lender, purpose, linked_asset, principal, interest_rate_pct, rate_type,
-         term_months, start_date, covenant_notes, covenant_date, segment, asset_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+         term_months, start_date, covenant_notes, covenant_date, segment, asset_id,
+         payment_frequency, first_payment_date)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
       [resolvedName, lender, purpose, linked_asset, principal, interest_rate_pct, rate_type,
-       term_months, start_date, covenant_notes, covenant_date, segment, asset_id || null]
+       term_months, start_date, covenant_notes, covenant_date, segment, asset_id || null,
+       payment_frequency, first_payment_date || null]
     );
     const created = rows[0];
     // `custom_schedule` lets a loan mirror seasonal income (larger payments
     // after harvest, smaller off-season) — an array of
     // { due_date, principal_amount, interest_amount }.
-    const schedule = custom_schedule || scheduleFromTerms({ principal, interest_rate_pct, term_months, start_date });
+    const schedule = custom_schedule || scheduleFromTerms({
+      principal, interest_rate_pct, term_months, start_date, payment_frequency, first_payment_date,
+    });
     for (const row of schedule) {
       await client.query(
         `INSERT INTO loan_payments (loan_id, due_date, principal_amount, interest_amount) VALUES ($1,$2,$3,$4)`,
@@ -436,12 +448,14 @@ router.post('/', ah(async (req, res) => {
 }));
 
 // Full loan edit. Cosmetic fields update in place. Changing the financial
-// terms — principal, rate, term, start date — REGENERATES the schedule
+// terms — principal, rate, term, start date, payment frequency, first
+// payment date — REGENERATES the schedule
 // from the new terms (including dropping verification adjustments; the
 // verification history itself is kept). To correct a loan against a
 // statement, use Verify instead — it rebases without discarding history.
 router.patch('/:id', ah(async (req, res) => {
   const b = req.body;
+  checkFrequency(b.payment_frequency);
   const loan = await withTransaction(async (client) => {
     const { rows: currentRows } = await client.query('SELECT * FROM loans WHERE id = $1', [req.params.id]);
     if (!currentRows.length) return null;
@@ -453,17 +467,23 @@ router.patch('/:id', ah(async (req, res) => {
       rate_type: pick('rate_type'), term_months: pick('term_months'), start_date: toISODate(pick('start_date')),
       covenant_notes: pick('covenant_notes'), covenant_date: pick('covenant_date'),
       asset_id: b.asset_id !== undefined ? (b.asset_id || null) : cur.asset_id,
+      payment_frequency: pick('payment_frequency') || 'monthly',
+      first_payment_date: b.first_payment_date !== undefined
+        ? (b.first_payment_date || null)
+        : (cur.first_payment_date ? toISODate(cur.first_payment_date) : null),
     };
 
     const { rows: updatedRows } = await client.query(
       `UPDATE loans SET
          name = $1, lender = $2, purpose = $3, linked_asset = $4, segment = $5,
          principal = $6, interest_rate_pct = $7, rate_type = $8, term_months = $9, start_date = $10,
-         covenant_notes = $11, covenant_date = $12, asset_id = $13
-       WHERE id = $14 RETURNING *`,
+         covenant_notes = $11, covenant_date = $12, asset_id = $13,
+         payment_frequency = $14, first_payment_date = $15
+       WHERE id = $16 RETURNING *`,
       [next.name, next.lender, next.purpose, next.linked_asset, next.segment,
        next.principal, next.interest_rate_pct, next.rate_type, next.term_months, next.start_date,
-       next.covenant_notes, next.covenant_date, next.asset_id, req.params.id]
+       next.covenant_notes, next.covenant_date, next.asset_id,
+       next.payment_frequency, next.first_payment_date, req.params.id]
     );
     const updated = updatedRows[0];
 
@@ -471,7 +491,9 @@ router.patch('/:id', ah(async (req, res) => {
       Number(next.principal) !== Number(cur.principal) ||
       Number(next.interest_rate_pct) !== Number(cur.interest_rate_pct) ||
       Number(next.term_months) !== Number(cur.term_months) ||
-      next.start_date !== toISODate(cur.start_date);
+      next.start_date !== toISODate(cur.start_date) ||
+      next.payment_frequency !== (cur.payment_frequency || 'monthly') ||
+      (next.first_payment_date || null) !== (cur.first_payment_date ? toISODate(cur.first_payment_date) : null);
 
     if (termsChanged) {
       await client.query('DELETE FROM loan_payments WHERE loan_id = $1', [updated.id]);

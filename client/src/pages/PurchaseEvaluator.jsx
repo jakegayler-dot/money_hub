@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { money } from '../format.js';
+import { money, ratio } from '../format.js';
 
 const emptyForm = {
   name: '', price: '', purchase_class: 'productive_tool',
   is_mixed_use: false, mixed_use_business_pct: '',
-  unit_value: '', reversibility_score: '3', added_monthly_debt_service: '0', notes: '',
+  unit_value: '', reversibility_score: '3', added_annual_debt_service: '0', notes: '',
 };
 
 export default function PurchaseEvaluator() {
@@ -26,7 +26,7 @@ export default function PurchaseEvaluator() {
         unit_value: form.unit_value ? Number(form.unit_value) : null,
         mixed_use_business_pct: form.is_mixed_use ? Number(form.mixed_use_business_pct) : null,
         reversibility_score: Number(form.reversibility_score),
-        added_monthly_debt_service: Number(form.added_monthly_debt_service),
+        added_annual_debt_service: Number(form.added_annual_debt_service) || 0,
       }),
     });
     const json = await res.json();
@@ -40,7 +40,7 @@ export default function PurchaseEvaluator() {
 
       <div className="panel">
         <div className="panel-header">
-          Five-gate test: liquidity floor · DSCR · opportunity cost · reversibility
+          Gates: liquidity floor · term debt coverage · opportunity cost · reversibility
         </div>
         <form className="form-panel" onSubmit={submit}>
           <div className="field">
@@ -76,8 +76,8 @@ export default function PurchaseEvaluator() {
             <input type="number" step="0.01" value={form.unit_value} onChange={(e) => setForm({ ...form, unit_value: e.target.value })} />
           </div>
           <div className="field">
-            <label>Added monthly debt service if financed</label>
-            <input type="number" step="0.01" value={form.added_monthly_debt_service} onChange={(e) => setForm({ ...form, added_monthly_debt_service: e.target.value })} />
+            <label>If financed: total payments per year (principal + interest)</label>
+            <input type="number" step="0.01" min="0" value={form.added_annual_debt_service} onChange={(e) => setForm({ ...form, added_annual_debt_service: e.target.value })} />
           </div>
           <div className="field">
             <label>Reversibility (1 = illiquid, 5 = highly liquid)</label>
@@ -108,10 +108,20 @@ export default function PurchaseEvaluator() {
               </span>
             </div>
             <div className="metric-card">
-              <div className="metric-label">DSCR gate</div>
-              <span className={`badge ${result.result.dscr_pass ? 'pass' : 'fail'}`}>
-                {result.result.dscr_pass ? 'CLEARS' : 'FAILS'}
-              </span>
+              <div className="metric-label">Term debt coverage</div>
+              {result.result.dscr_pass == null ? (
+                <span className="badge">NO TERM DEBT</span>
+              ) : (
+                <span className={`badge ${result.result.dscr_pass ? 'pass' : 'fail'}`}>
+                  {result.result.dscr_pass ? 'CLEARS' : 'FAILS'}
+                </span>
+              )}
+              {result.detail?.coverage && (
+                <div className="metric-sub">
+                  Next 12 mo {ratio(result.detail.coverage.projected.ratio)} → {ratio(result.detail.coverageAfter)} with this
+                  loan · min {ratio(result.detail.coverage.threshold)}
+                </div>
+              )}
             </div>
             <div className="metric-card">
               <div className="metric-label">Opportunity cost</div>

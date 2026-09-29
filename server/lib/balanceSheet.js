@@ -32,13 +32,24 @@ export async function loadBalanceSheet() {
   const today = todayISO();
   const in12 = addMonths(today, 12);
 
-  const [assetRows, loanRows, paymentRows, invRows, contractRows] = await Promise.all([
+  const [assetRows, loanRows, paymentRows, invRows, contractRows, priceRows, cardRows, cardStmtRows] = await Promise.all([
     pool.query(`SELECT * FROM assets ORDER BY category, name`),
     pool.query(`SELECT * FROM loans`),
     pool.query(`SELECT loan_id, due_date, principal_amount, paid FROM loan_payments`),
     pool.query(`SELECT * FROM inventory_items ORDER BY item_class, commodity`),
     pool.query(`SELECT commodity, unit, quantity FROM sale_contracts WHERE status = 'open' AND quantity IS NOT NULL`),
+    pool.query(`SELECT * FROM commodity_prices`),
+    pool.query(`SELECT * FROM credit_cards WHERE status = 'active'`),
+    // Every unpaid statement per card, summed — what it owes right now if
+    // `current_balance` hasn't been kept up to date by hand. Summed, not
+    // just the soonest one, so a card behind by more than one cycle isn't
+    // undercounted.
+    pool.query(`
+      SELECT credit_card_id, SUM(GREATEST(statement_balance - COALESCE(paid_amount, 0), 0)) AS balance
+      FROM credit_card_statements WHERE paid = false GROUP BY credit_card_id
+    `),
   ]);
+  const priceList = new Map(priceRows.rows.map((p) => [`${p.commodity.toLowerCase()}|${p.unit.toLowerCase()}`, p]));
 
   const paymentsByLoan = new Map();
   for (const p of paymentRows.rows) {
@@ -108,15 +119,29 @@ export async function loadBalanceSheet() {
     }
     const uncontracted = Math.max(0, onHand - contracted);
     const fraction = onHand > 0 ? uncontracted / onHand : 0;
+    // Price per item: the source's own price if it sent one, else the
+    // Money Hub price list for that commodity + unit, else none — valued at
+    // $0 and flagged, never at a guess.
+    const listed = priceList.get(`${g.commodity.toLowerCase()}|${g.unit.toLowerCase()}`) || null;
     let value = 0;
     let grossValue = 0;
+    let pricedQty = 0;
+    let needsPrice = 0;
+    const enriched = [];
     for (const i of g.items) {
-      const gross = Number(i.quantity) * Number(i.price_per_unit);
+      const price = i.price_per_unit != null ? Number(i.price_per_unit) : listed ? Number(listed.price_per_unit) : null;
+      const priceBasis = i.price_per_unit != null ? 'source' : listed ? 'price list' : 'missing';
+      if (price == null) needsPrice++;
+      const gross = price == null ? 0 : Number(i.quantity) * price;
       const counted = gross * fraction;
       grossValue += gross;
       value += counted;
-      inventoryRows.push({ ...i, counted_value: counted });
+      if (price != null) pricedQty += Number(i.quantity);
+      const row = { ...i, effective_price: price, price_basis: priceBasis, counted_value: counted };
+      enriched.push(row);
+      inventoryRows.push(row);
     }
+    g.items = enriched;
     inventoryGroups.push({
       ...g,
       on_hand: onHand,
@@ -125,15 +150,33 @@ export async function loadBalanceSheet() {
       uncontracted,
       gross_value: grossValue,
       counted_value: value,
-      avg_price: onHand > 0 ? grossValue / onHand : 0,
+      avg_price: pricedQty > 0 ? grossValue / pricedQty : null,
+      needs_price: needsPrice,
+      list_price: listed ? { price_per_unit: Number(listed.price_per_unit), as_of: listed.as_of, source: listed.source } : null,
     });
   }
 
-  return { today, in12, assets, loans, inventoryGroups, inventoryRows };
+  // Credit cards: revolving debt, not amortized — there's no schedule to
+  // project forward, so outstanding is treated as constant (same
+  // simplification as an asset's value between valuations). `current_balance`
+  // (kept up to date by hand) wins when set; otherwise the latest unpaid
+  // statement's balance; otherwise the card owes nothing on file.
+  const unpaidByCard = new Map(cardStmtRows.rows.map((r) => [r.credit_card_id, r]));
+  const creditCards = cardRows.rows.map((c) => {
+    const unpaid = unpaidByCard.get(c.id);
+    const outstanding = c.current_balance != null
+      ? Number(c.current_balance)
+      : unpaid ? Number(unpaid.balance) : 0;
+    return { ...c, outstanding };
+  });
+
+  return { today, in12, assets, loans, inventoryGroups, inventoryRows, creditCards };
 }
 
 /** Default owner for an inventory row when the source didn't say. */
 export function inventoryOwnerRow(item) {
   if (item.segment) return { segment: item.segment };
+  // Crops belong to grain; forage (bales) and animals to cattle — hay is
+  // produced for the herd. A source can override per item with `segment`.
   return { segment: item.item_class === 'crop' ? 'grain' : item.item_class === 'other' ? null : 'livestock' };
 }

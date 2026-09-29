@@ -5,6 +5,7 @@ import { OWNERS, ownerWeights } from '../lib/segments.js';
 import { activeEstimates, occurrences, signedAmount } from '../lib/estimates.js';
 import { loadBalanceSheet, inventoryOwnerRow } from '../lib/balanceSheet.js';
 import { todayISO, addMonths, monthIndex } from '../lib/dates.js';
+import { billDates } from '../lib/calculations.js';
 
 const router = Router();
 const HORIZON = 12;
@@ -50,7 +51,7 @@ router.get('/', ah(async (req, res) => {
   const endStr = addMonths(`${today.slice(0, 7)}-01`, HORIZON); // exclusive
   const ytdStart = `${y0}-01-01`;
 
-  const [accounts, txSums, allTx, ytdTx, bills, loanPays, contracts, estimates, sheet] = await Promise.all([
+  const [accounts, txSums, allTx, ytdTx, bills, loanPays, cardStatements, contracts, estimates, sheet] = await Promise.all([
     pool.query(`SELECT * FROM accounts`),
     pool.query(`SELECT account_id, COALESCE(SUM(amount), 0) AS total FROM transactions GROUP BY account_id`),
     pool.query(`SELECT amount, segment, is_segment_split, segment_grain_pct, segment_livestock_pct,
@@ -65,7 +66,7 @@ router.get('/', ah(async (req, res) => {
       [ytdStart]
     ),
     pool.query(
-      `SELECT due_date, amount, segment, is_segment_split, segment_grain_pct, segment_livestock_pct,
+      `SELECT due_date, amount, frequency, segment, is_segment_split, segment_grain_pct, segment_livestock_pct,
               segment_jake_pct, segment_ashley_pct
        FROM bills WHERE status = 'unpaid' AND due_date < $1`,
       [endStr]
@@ -74,6 +75,12 @@ router.get('/', ah(async (req, res) => {
       `SELECT lp.due_date, lp.principal_amount + lp.interest_amount AS amount, l.segment
        FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
        WHERE lp.paid = false AND lp.is_adjustment = false AND lp.due_date < $1`,
+      [endStr]
+    ),
+    pool.query(
+      `SELECT s.due_date, GREATEST(s.statement_balance - COALESCE(s.paid_amount, 0), 0) AS amount, cc.segment
+       FROM credit_card_statements s JOIN credit_cards cc ON cc.id = s.credit_card_id
+       WHERE s.paid = false AND s.due_date < $1`,
       [endStr]
     ),
     pool.query(
@@ -104,8 +111,11 @@ router.get('/', ah(async (req, res) => {
   const committed = Array(HORIZON).fill(0);
   const estimated = Array(HORIZON).fill(0);
   for (const c of contracts.rows) committed[idx(c.due_date)] += Number(c.amount) * w({ segment: c.segment });
-  for (const b of bills.rows) committed[idx(b.due_date)] -= Number(b.amount) * w(b);
+  for (const b of bills.rows) {
+    for (const d of billDates(b, today, endStr)) committed[idx(d)] -= Number(b.amount) * w(b);
+  }
   for (const p of loanPays.rows) committed[idx(p.due_date)] -= Number(p.amount) * w({ segment: p.segment });
+  for (const s of cardStatements.rows) committed[idx(s.due_date)] -= Number(s.amount) * w({ segment: s.segment });
   let feesPerMonth = 0;
   for (const a of accounts.rows) {
     const amt = Number(a.fee_amount) || 0;
@@ -156,6 +166,8 @@ router.get('/', ah(async (req, res) => {
   for (const it of sheet.inventoryRows) inventoryValue += it.counted_value * w(inventoryOwnerRow(it));
   let loanPrincipal = 0;
   for (const l of sheet.loans) loanPrincipal += l.outstanding * w({ segment: l.segment });
+  let cardBalance = 0;
+  for (const c of sheet.creditCards) cardBalance += c.outstanding * w({ segment: c.segment });
 
   const r2 = (n) => Math.round(n * 100) / 100;
   const shape = (p) => ({
@@ -175,11 +187,12 @@ router.get('/', ah(async (req, res) => {
     },
     earningsYTD: { total: r2(revenue - costs), revenue: r2(revenue), costs: r2(costs), from: ytdStart },
     equity: {
-      total: r2(cash + assetValue + inventoryValue - loanPrincipal),
+      total: r2(cash + assetValue + inventoryValue - loanPrincipal - cardBalance),
       cash: r2(cash),
       assets: r2(assetValue),
       inventory: r2(inventoryValue),
       loans: r2(loanPrincipal),
+      creditCards: r2(cardBalance),
     },
     unassignedCash: entity === 'all' ? r2(unassignedCash) : undefined,
   });

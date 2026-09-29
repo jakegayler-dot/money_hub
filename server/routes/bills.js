@@ -154,24 +154,27 @@ router.post('/:id/unpay', ah(async (req, res) => {
     const bill = rows[0];
     if (bill.status !== 'paid') return bill;
 
+    let txToDelete = null;
     if (bill.linked_transaction_id) {
       const { rows: txRows } = await client.query(
         'SELECT * FROM transactions WHERE id = $1', [bill.linked_transaction_id]
       );
-      if (txRows.length) {
-        const tx = txRows[0];
-        await client.query(
-          `UPDATE accounts SET opening_balance = opening_balance - $1 WHERE id = $2`,
-          [tx.amount, tx.account_id]
-        );
-        await client.query('DELETE FROM transactions WHERE id = $1', [tx.id]);
-      }
+      if (txRows.length) txToDelete = txRows[0];
     }
-
+    // Null the FK reference before deleting the transaction it points to —
+    // otherwise the DELETE trips the foreign key immediately, before this
+    // row ever stops pointing at it.
     const { rows: updated } = await client.query(
       `UPDATE bills SET status = 'unpaid', paid_date = NULL, linked_transaction_id = NULL WHERE id = $1 RETURNING *`,
       [bill.id]
     );
+    if (txToDelete) {
+      await client.query(
+        `UPDATE accounts SET opening_balance = opening_balance - $1 WHERE id = $2`,
+        [txToDelete.amount, txToDelete.account_id]
+      );
+      await client.query('DELETE FROM transactions WHERE id = $1', [txToDelete.id]);
+    }
     return updated[0];
   });
 
