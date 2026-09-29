@@ -2,6 +2,9 @@ import { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { OWNERS, ownerWeights } from '../lib/segments.js';
+import { activeEstimates, occurrences, signedAmount } from '../lib/estimates.js';
+import { loadBalanceSheet, inventoryOwnerRow } from '../lib/balanceSheet.js';
+import { todayISO, addMonths, monthIndex } from '../lib/dates.js';
 
 const router = Router();
 const HORIZON = 12;
@@ -10,30 +13,28 @@ const HORIZON = 12;
  * The three headline numbers for one owner (grain / livestock / jake /
  * ashley) or for everything combined ('all').
  *
- * CASH — derived from tagged flows, per the design decision: an owner's
- * cash = their share of each account's STARTING balance (the balance
- * before any transactions were recorded there, owned per the account's
- * owner tag) + every transaction tagged to them since. Because every
- * row's weights sum to 1 (with 'unassigned' catching untagged rows), the
- * four owners plus unassigned add up exactly to the combined total of all
- * account balances. An enterprise's cash CAN be negative — that's the
- * honest signal that it has spent more than it brought in and is being
- * carried by another owner's money.
+ * CASH — derived from tagged flows: an owner's share of each account's
+ * STARTING balance (before any transactions were recorded there, owned per
+ * the account's owner tag) + every transaction tagged to them since. Every
+ * row's weights sum to 1 (untagged → 'unassigned'), so the four owners
+ * plus unassigned reconcile exactly to Combined. An enterprise's cash CAN
+ * go negative — that's it being carried by someone else's money.
  *
- * CASH FLOW — from that cash, walks the next 12 months of known future
- * flows attributed to the owner: unsettled contract inflows, unpaid bills,
- * unpaid scheduled loan payments, recurring account fees. Overdue-but-
- * unpaid items land in the current month.
+ * CASH FLOW — two 12-month projections from that cash:
+ *   committed:      contracts, bills, loan schedules, account fees
+ *   withEstimates:  committed + the owner's active cash estimates (default)
+ * Overdue committed items land in the current month; past-dated estimate
+ * occurrences drop out (an estimate nobody is owed can't be overdue).
  *
- * EARNINGS YTD — Jan 1 to today, accrual-lite: every transaction tagged to
- * the owner, EXCEPT capital purchases (capex is an asset, not an expense)
- * and the principal portion of loan payments (repaying principal isn't a
- * cost; interest is). No depreciation yet. For Jake/Ashley this reads as
- * net savings: income in minus spending out.
+ * EARNINGS YTD — Jan 1 to today: every transaction tagged to the owner,
+ * except capital purchases (an asset, not an expense) and the principal
+ * portion of loan payments (repaying principal isn't a cost; interest is).
+ * No depreciation yet. For Jake/Ashley it reads as net savings.
  *
- * EQUITY — cash + the owner's loan-backed asset values − the outstanding
- * principal on those loans. Assets without a loan against them aren't
- * tracked in the app yet, so this is equity in what the app knows about.
+ * EQUITY — cash + capital assets (valued today by their appreciation/CCA
+ * rate) + uncontracted inventory at estimated market price − outstanding
+ * loan principal. Contracted grain is counted once, as the contract's
+ * receivable in cash flow, never also as inventory.
  */
 router.get('/', ah(async (req, res) => {
   const entity = String(req.query.entity || 'all');
@@ -43,14 +44,13 @@ router.get('/', ah(async (req, res) => {
   const w = (row) => (entity === 'all' ? 1 : ownerWeights(row)[entity]);
   const wUnassigned = (row) => ownerWeights(row).unassigned;
 
-  const now = new Date();
-  const y0 = now.getFullYear();
-  const m0 = now.getMonth();
-  const windowEnd = new Date(y0, m0 + HORIZON, 1);
-  const endStr = `${windowEnd.getFullYear()}-${String(windowEnd.getMonth() + 1).padStart(2, '0')}-01`;
+  const today = todayISO();
+  const [y0, m1] = today.split('-').map(Number);
+  const m0 = m1 - 1;
+  const endStr = addMonths(`${today.slice(0, 7)}-01`, HORIZON); // exclusive
   const ytdStart = `${y0}-01-01`;
 
-  const [accounts, txSums, allTx, ytdTx, loans, bills, loanPays, contracts] = await Promise.all([
+  const [accounts, txSums, allTx, ytdTx, bills, loanPays, contracts, estimates, sheet] = await Promise.all([
     pool.query(`SELECT * FROM accounts`),
     pool.query(`SELECT account_id, COALESCE(SUM(amount), 0) AS total FROM transactions GROUP BY account_id`),
     pool.query(`SELECT amount, segment, is_segment_split, segment_grain_pct, segment_livestock_pct,
@@ -64,16 +64,6 @@ router.get('/', ah(async (req, res) => {
        WHERE t.date >= $1 AND t.date <= CURRENT_DATE`,
       [ytdStart]
     ),
-    pool.query(`
-      SELECT l.id, l.segment, l.asset_value,
-             GREATEST(l.principal - COALESCE(paid.principal_paid, 0), 0) AS outstanding
-      FROM loans l
-      LEFT JOIN LATERAL (
-        SELECT SUM(CASE WHEN lp.paid = true OR lp.due_date <= CURRENT_DATE
-                        THEN lp.principal_amount ELSE 0 END) AS principal_paid
-        FROM loan_payments lp WHERE lp.loan_id = l.id
-      ) paid ON true
-    `),
     pool.query(
       `SELECT due_date, amount, segment, is_segment_split, segment_grain_pct, segment_livestock_pct,
               segment_jake_pct, segment_ashley_pct
@@ -83,7 +73,7 @@ router.get('/', ah(async (req, res) => {
     pool.query(
       `SELECT lp.due_date, lp.principal_amount + lp.interest_amount AS amount, l.segment
        FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
-       WHERE lp.paid = false AND lp.due_date < $1`,
+       WHERE lp.paid = false AND lp.is_adjustment = false AND lp.due_date < $1`,
       [endStr]
     ),
     pool.query(
@@ -91,6 +81,8 @@ router.get('/', ah(async (req, res) => {
        FROM sale_contracts WHERE status IN ('open', 'delivered') AND expected_payment_date < $1`,
       [endStr]
     ),
+    activeEstimates(),
+    loadBalanceSheet(),
   ]);
 
   // ---- Cash (derived from tagged flows) ----
@@ -107,34 +99,41 @@ router.get('/', ah(async (req, res) => {
     unassignedCash += Number(t.amount) * wUnassigned(t);
   }
 
-  // ---- 12-month forward flows ----
-  const idxFor = (dateStr) => {
-    const d = new Date(dateStr);
-    const idx = (d.getFullYear() - y0) * 12 + (d.getMonth() - m0);
-    return Math.min(Math.max(0, idx), HORIZON - 1);
-  };
-  const flows = Array(HORIZON).fill(0);
-  for (const c of contracts.rows) flows[idxFor(c.due_date)] += Number(c.amount) * w({ segment: c.segment });
-  for (const b of bills.rows) flows[idxFor(b.due_date)] -= Number(b.amount) * w(b);
-  for (const p of loanPays.rows) flows[idxFor(p.due_date)] -= Number(p.amount) * w({ segment: p.segment });
+  // ---- 12-month forward flows: committed and estimated kept apart ----
+  const idx = (d) => Math.min(Math.max(0, monthIndex(d, y0, m0)), HORIZON - 1);
+  const committed = Array(HORIZON).fill(0);
+  const estimated = Array(HORIZON).fill(0);
+  for (const c of contracts.rows) committed[idx(c.due_date)] += Number(c.amount) * w({ segment: c.segment });
+  for (const b of bills.rows) committed[idx(b.due_date)] -= Number(b.amount) * w(b);
+  for (const p of loanPays.rows) committed[idx(p.due_date)] -= Number(p.amount) * w({ segment: p.segment });
   let feesPerMonth = 0;
   for (const a of accounts.rows) {
     const amt = Number(a.fee_amount) || 0;
     const monthly = a.fee_frequency === 'monthly' ? amt : a.fee_frequency === 'annual' ? amt / 12 : 0;
     feesPerMonth += monthly * w(a);
   }
-  for (let i = 0; i < HORIZON; i++) flows[i] -= feesPerMonth;
+  for (let i = 0; i < HORIZON; i++) committed[i] -= feesPerMonth;
+  for (const e of estimates) {
+    const weight = w(e);
+    if (!weight) continue;
+    for (const d of occurrences(e, today, endStr)) estimated[idx(d)] += signedAmount(e) * weight;
+  }
 
-  let running = cash;
-  let low = { balance: cash, year: y0, month: m0 + 1 };
-  const trajectory = flows.map((f, i) => {
-    running += f;
-    const d = new Date(y0, m0 + i, 1);
-    const point = { year: d.getFullYear(), month: d.getMonth() + 1, balance: running, net: f };
-    if (running < low.balance) low = point;
-    return point;
-  });
-  const projectedNet12 = flows.reduce((s, f) => s + f, 0);
+  const project = (includeEstimates) => {
+    let running = cash;
+    let low = { year: y0, month: m1, balance: cash };
+    const trajectory = committed.map((c, i) => {
+      const net = c + (includeEstimates ? estimated[i] : 0);
+      running += net;
+      const [yy, mm] = addMonths(`${today.slice(0, 7)}-01`, i).split('-').map(Number);
+      const point = { year: yy, month: mm, balance: running, net };
+      if (running < low.balance) low = point;
+      return point;
+    });
+    return { trajectory, lowPoint: low, projectedNet12: trajectory.reduce((s, p) => s + p.net, 0), projectedEnd: running };
+  };
+  const withEst = project(true);
+  const committedOnly = project(false);
 
   // ---- Earnings YTD ----
   let revenue = 0;
@@ -143,8 +142,6 @@ router.get('/', ah(async (req, res) => {
     if (t.is_capex) continue;
     const weight = w(t);
     if (!weight) continue;
-    // Debt service counts only its interest as a cost — principal
-    // repayment reduces a liability, it doesn't reduce earnings.
     const amount = t.is_debt_service
       ? (t.interest_amount != null ? -Number(t.interest_amount) : 0)
       : Number(t.amount);
@@ -153,38 +150,37 @@ router.get('/', ah(async (req, res) => {
   }
 
   // ---- Equity ----
-  let assets = 0;
+  let assetValue = 0;
+  for (const a of sheet.assets) assetValue += a.value_now * w(a);
+  let inventoryValue = 0;
+  for (const it of sheet.inventoryRows) inventoryValue += it.counted_value * w(inventoryOwnerRow(it));
   let loanPrincipal = 0;
-  for (const l of loans.rows) {
-    const weight = w({ segment: l.segment });
-    assets += (Number(l.asset_value) || 0) * weight;
-    loanPrincipal += Number(l.outstanding) * weight;
-  }
+  for (const l of sheet.loans) loanPrincipal += l.outstanding * w({ segment: l.segment });
 
   const r2 = (n) => Math.round(n * 100) / 100;
+  const shape = (p) => ({
+    projectedNet12: r2(p.projectedNet12),
+    projectedEnd: r2(p.projectedEnd),
+    lowPoint: { ...p.lowPoint, balance: r2(p.lowPoint.balance) },
+    trajectory: p.trajectory.map((x) => ({ ...x, balance: r2(x.balance), net: r2(x.net) })),
+  });
+
   res.json({
     entity,
     cashFlow: {
       cashNow: r2(cash),
-      projectedNet12: r2(projectedNet12),
-      projectedEnd: r2(running),
-      lowPoint: { ...low, balance: r2(low.balance) },
-      trajectory: trajectory.map((p) => ({ ...p, balance: r2(p.balance), net: r2(p.net) })),
+      withEstimates: shape(withEst),
+      committed: shape(committedOnly),
+      estimatedNet12: r2(estimated.reduce((s, x) => s + x, 0)),
     },
-    earningsYTD: {
-      total: r2(revenue - costs),
-      revenue: r2(revenue),
-      costs: r2(costs),
-      from: ytdStart,
-    },
+    earningsYTD: { total: r2(revenue - costs), revenue: r2(revenue), costs: r2(costs), from: ytdStart },
     equity: {
-      total: r2(cash + assets - loanPrincipal),
+      total: r2(cash + assetValue + inventoryValue - loanPrincipal),
       cash: r2(cash),
-      assets: r2(assets),
+      assets: r2(assetValue),
+      inventory: r2(inventoryValue),
       loans: r2(loanPrincipal),
     },
-    // Only meaningful in the Combined view: money nobody has been tagged
-    // as owning yet. Shrinks to zero as accounts/transactions get owners.
     unassignedCash: entity === 'all' ? r2(unassignedCash) : undefined,
   });
 }));

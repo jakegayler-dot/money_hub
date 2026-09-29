@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { ledgerForSegment } from '../lib/segments.js';
+import { requireIngestKey } from '../lib/ingestAuth.js';
 
 const router = Router();
 
@@ -62,15 +63,7 @@ router.get('/', ah(async (req, res) => {
 // UPDATES that contract instead of duplicating it, so the source can
 // re-send its full contract list as often as it likes. A contract already
 // settled here is left alone — its money has been received and booked.
-router.post('/ingest', ah(async (req, res) => {
-  const configuredKey = process.env.INGEST_API_KEY;
-  if (!configuredKey) {
-    return res.status(503).json({ error: 'Ingest is not enabled: set the INGEST_API_KEY environment variable on the server first.' });
-  }
-  if (req.get('x-api-key') !== configuredKey) {
-    return res.status(401).json({ error: 'Invalid or missing X-Api-Key header.' });
-  }
-
+router.post('/ingest', requireIngestKey, ah(async (req, res) => {
   const items = Array.isArray(req.body) ? req.body : [req.body];
   const results = [];
   for (const item of items) {

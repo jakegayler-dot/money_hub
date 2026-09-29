@@ -14,6 +14,9 @@ import purchaseEvaluatorRoute from './routes/purchase-evaluator.js';
 import billsRoute from './routes/bills.js';
 import contractsRoute from './routes/contracts.js';
 import entityRoute from './routes/entity.js';
+import assetsRoute from './routes/assets.js';
+import inventoryRoute from './routes/inventory.js';
+import estimatesRoute from './routes/estimates.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -32,12 +35,18 @@ app.use('/api/purchase-evaluations', purchaseEvaluatorRoute);
 app.use('/api/bills', billsRoute);
 app.use('/api/contracts', contractsRoute);
 app.use('/api/entity-summary', entityRoute);
+app.use('/api/assets', assetsRoute);
+app.use('/api/inventory', inventoryRoute);
+app.use('/api/estimates', estimatesRoute);
 
 // In production, this is the only Railway service — it serves the built
 // client alongside the API so there's nothing extra to deploy or wire up.
 if (process.env.NODE_ENV === 'production') {
   const clientDist = join(__dirname, '..', 'client', 'dist');
-  app.use(express.static(clientDist));
+  // redirect: false — the build keeps its JS/CSS in dist/assets/, which
+  // collides with the /assets page route. Without this, visiting /assets
+  // triggers a directory redirect to /assets/ instead of loading the page.
+  app.use(express.static(clientDist, { redirect: false }));
   app.get('*', (req, res) => {
     if (req.path.startsWith('/api')) return res.status(404).json({ error: 'not found' });
     res.sendFile(join(clientDist, 'index.html'));
@@ -49,7 +58,9 @@ if (process.env.NODE_ENV === 'production') {
 // unhandled rejection — a single bad query should never take the app down.
 app.use((err, req, res, next) => {
   console.error('Request error:', err);
-  res.status(500).json({ error: err.message || 'Internal server error' });
+  // Routes can throw an error carrying .status (e.g. 400 for a loan
+  // payment that doesn't cover interest) to report a user-fixable problem.
+  res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
 });
 
 process.on('unhandledRejection', (reason) => {

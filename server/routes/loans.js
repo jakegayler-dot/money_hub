@@ -1,10 +1,13 @@
 import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
-import { loanOutstandingBalance } from '../lib/calculations.js';
 import { ledgerForSegment } from '../lib/segments.js';
+import { buildSchedule } from '../lib/amortization.js';
+import { addMonths, toISODate, todayISO } from '../lib/dates.js';
+import { assetValueAt, outstandingAt, loadBalanceSheet } from '../lib/balanceSheet.js';
 
 const router = Router();
+const round2 = (n) => Math.round(n * 100) / 100;
 
 // ---- Payment planner -------------------------------------------------
 // Every still-unpaid scheduled payment across all loans, soonest first —
@@ -16,7 +19,7 @@ router.get('/payments/upcoming', ah(async (req, res) => {
     `SELECT lp.*, l.name AS loan_name, l.lender, l.segment
      FROM loan_payments lp
      JOIN loans l ON l.id = lp.loan_id
-     WHERE lp.paid = false
+     WHERE lp.paid = false AND lp.is_adjustment = false
        AND lp.due_date <= CURRENT_DATE + ($1 || ' months')::interval
      ORDER BY lp.due_date ASC`,
     [months]
@@ -26,15 +29,12 @@ router.get('/payments/upcoming', ah(async (req, res) => {
 
 // Records a scheduled payment as actually made: creates the ledger
 // transaction (flagged is_debt_service so NOI/DSCR don't double-count it,
-// tagged with the loan's enterprise segment so Expenses buckets it right),
-// moves the account balance, and marks the schedule row paid — all in one
-// DB transaction. This is the "automatically updates ledger, expenses, and
-// cash flow forecast" path: the forecast subtracts only unpaid scheduled
-// payments, so recording one shifts it from forecast to actuals.
+// tagged with the loan's owner so Expenses buckets it right), moves the
+// account balance, and marks the schedule row paid — one DB transaction.
 router.post('/payments/:paymentId/record', ah(async (req, res) => {
   const {
     account_id,
-    paid_date = new Date().toISOString().slice(0, 10),
+    paid_date = todayISO(),
     paid_by_check = false,
   } = req.body;
   if (!account_id) return res.status(400).json({ error: 'account_id is required — which account is this payment coming out of?' });
@@ -48,7 +48,7 @@ router.post('/payments/:paymentId/record', ah(async (req, res) => {
     );
     if (!rows.length) return null;
     const payment = rows[0];
-    if (payment.paid) return payment;
+    if (payment.paid || payment.is_adjustment) return payment;
 
     const total = Number(payment.principal_amount) + Number(payment.interest_amount);
     // A loan owned by Jake or Ashley (e.g. a home mortgage) posts to the
@@ -77,14 +77,14 @@ router.post('/payments/:paymentId/record', ah(async (req, res) => {
   res.json(result);
 }));
 
-// Reverses a recorded payment (mirrors bills /unpay): deletes the linked
-// transaction, restores the account balance, reopens the schedule row.
+// Reverses a recorded payment: deletes the linked transaction, restores
+// the account balance, reopens the schedule row.
 router.post('/payments/:paymentId/unrecord', ah(async (req, res) => {
   const result = await withTransaction(async (client) => {
     const { rows } = await client.query('SELECT * FROM loan_payments WHERE id = $1', [req.params.paymentId]);
     if (!rows.length) return null;
     const payment = rows[0];
-    if (!payment.paid) return payment;
+    if (!payment.paid || payment.is_adjustment) return payment;
 
     if (payment.linked_transaction_id) {
       const { rows: txRows } = await client.query('SELECT * FROM transactions WHERE id = $1', [payment.linked_transaction_id]);
@@ -108,246 +108,380 @@ router.post('/payments/:paymentId/unrecord', ah(async (req, res) => {
   res.json(result);
 }));
 
-// principal_paid_to_date: sum of principal from payments that are marked
-// paid, OR whose due date has already passed (matches loanOutstandingBalance's
-// assumption that a scheduled payment happened on time unless told otherwise).
-// outstanding_balance and equity (when asset_value is set) are computed here
-// so the loan list can show them without a separate round trip per loan.
+// Loan book: outstanding balance (schedule rows marked paid or already due
+// count as paid), the secured asset and its equity (asset value today minus
+// every loan secured by it), current payment, and verification age.
 router.get('/', ah(async (req, res) => {
-  const { rows } = await pool.query(`
-    SELECT l.*,
-      COALESCE(SUM(
-        CASE WHEN lp.paid = true OR lp.due_date <= CURRENT_DATE
-             THEN lp.principal_amount ELSE 0 END
-      ), 0) AS principal_paid_to_date
-    FROM loans l
-    LEFT JOIN loan_payments lp ON lp.loan_id = l.id
-    GROUP BY l.id
-    ORDER BY l.start_date DESC
-  `);
-  const withBalances = rows.map((l) => {
-    const outstanding_balance = Math.max(Number(l.principal) - Number(l.principal_paid_to_date), 0);
-    const equity = l.asset_value != null ? Number(l.asset_value) - outstanding_balance : null;
-    return { ...l, outstanding_balance, equity };
-  });
-  res.json(withBalances);
+  const { loans, assets } = await loadBalanceSheet();
+  const assetById = new Map(assets.map((a) => [a.id, a]));
+  // Next UPCOMING payment (today or later), plus a separate count of past
+  // payments never recorded — those still sit in the forecast as overdue
+  // until they're recorded (or a verification confirms the balance).
+  const [{ rows: nextPays }, { rows: overdue }] = await Promise.all([
+    pool.query(`
+      SELECT DISTINCT ON (loan_id) loan_id, principal_amount + interest_amount AS amount, due_date
+      FROM loan_payments WHERE paid = false AND is_adjustment = false AND due_date >= CURRENT_DATE
+      ORDER BY loan_id, due_date
+    `),
+    pool.query(`
+      SELECT loan_id, COUNT(*)::int AS n FROM loan_payments
+      WHERE paid = false AND is_adjustment = false AND due_date < CURRENT_DATE
+      GROUP BY loan_id
+    `),
+  ]);
+  const nextByLoan = new Map(nextPays.map((p) => [p.loan_id, p]));
+  const overdueByLoan = new Map(overdue.map((o) => [o.loan_id, o.n]));
+  const today = todayISO();
+
+  const out = loans
+    .sort((a, b) => toISODate(b.start_date).localeCompare(toISODate(a.start_date)))
+    .map((l) => {
+      const asset = l.asset_id ? assetById.get(l.asset_id) : null;
+      const next = nextByLoan.get(l.id);
+      const verifiedDays = l.last_verified_on
+        ? Math.floor((Date.parse(today) - Date.parse(toISODate(l.last_verified_on))) / 86400000)
+        : null;
+      return {
+        ...l,
+        outstanding_balance: round2(l.outstanding),
+        asset_name: asset ? asset.name : null,
+        asset_value_now: asset ? round2(asset.value_now) : null,
+        equity: asset ? round2(asset.equity_now) : null,
+        asset_loan_count: asset ? asset.loans.length : 0,
+        next_payment: next ? { amount: Number(next.amount), due_date: toISODate(next.due_date) } : null,
+        overdue_unrecorded: overdueByLoan.get(l.id) || 0,
+        days_since_verified: verifiedDays,
+      };
+    });
+  res.json(out);
 }));
 
-// Full schedule for one loan, with a running balance and running equity
-// (if asset_value is set) after each payment — this is the interest/
-// principal breakdown plus equity build-up over the life of the loan.
+// Full schedule for one loan: running balance after each row, and running
+// equity in its secured asset (asset value projected to that date by its
+// appreciation/depreciation rate, minus this loan's balance, minus any
+// other loans on the same asset at their current balances). Verification
+// adjustment rows appear in place, flagged.
 router.get('/:id/payments', ah(async (req, res) => {
   const { rows: loanRows } = await pool.query('SELECT * FROM loans WHERE id = $1', [req.params.id]);
   if (!loanRows.length) return res.status(404).json({ error: 'not found' });
   const loan = loanRows[0];
 
-  const { rows: payments } = await pool.query(
-    'SELECT * FROM loan_payments WHERE loan_id = $1 ORDER BY due_date ASC',
-    [req.params.id]
-  );
+  const [{ rows: payments }, { rows: verifications }] = await Promise.all([
+    pool.query('SELECT * FROM loan_payments WHERE loan_id = $1 ORDER BY due_date ASC, is_adjustment DESC, id ASC', [loan.id]),
+    pool.query('SELECT * FROM loan_verifications WHERE loan_id = $1 ORDER BY verified_on DESC, id DESC', [loan.id]),
+  ]);
+
+  let asset = null;
+  let otherLoansOnAsset = 0;
+  if (loan.asset_id) {
+    const { assets } = await loadBalanceSheet();
+    asset = assets.find((a) => a.id === loan.asset_id) || null;
+    if (asset) otherLoansOnAsset = asset.loans.filter((x) => x.id !== loan.id).reduce((s, x) => s + x.outstanding, 0);
+  }
 
   let balance = Number(loan.principal);
   const schedule = payments.map((p) => {
     balance = Math.max(balance - Number(p.principal_amount), 0);
     return {
       ...p,
-      balance_after: Math.round(balance * 100) / 100,
-      equity_after: loan.asset_value != null ? Number(loan.asset_value) - balance : null,
+      due_date: toISODate(p.due_date),
+      balance_after: round2(balance),
+      equity_after: asset ? round2(assetValueAt(asset, toISODate(p.due_date)) - balance - otherLoansOnAsset) : null,
     };
   });
 
-  res.json({ loan, payments: schedule });
+  res.json({ loan, asset, payments: schedule, verifications });
 }));
 
-// Estimated payment and balance/equity as of an arbitrary date — "what's
-// the payment around this date, and what would I owe / have in equity at
-// that point" — using the closest scheduled payment on or after the date.
+// Balance/equity on an arbitrary date, using the nearest scheduled payment
+// on or after it.
 router.get('/:id/estimate', ah(async (req, res) => {
-  const { date } = req.query;
+  const date = req.query.date;
   if (!date) return res.status(400).json({ error: 'date query param is required (YYYY-MM-DD)' });
 
   const { rows: loanRows } = await pool.query('SELECT * FROM loans WHERE id = $1', [req.params.id]);
   if (!loanRows.length) return res.status(404).json({ error: 'not found' });
   const loan = loanRows[0];
-
   const { rows: payments } = await pool.query(
-    'SELECT * FROM loan_payments WHERE loan_id = $1 ORDER BY due_date ASC',
-    [req.params.id]
+    'SELECT * FROM loan_payments WHERE loan_id = $1 AND is_adjustment = false ORDER BY due_date ASC', [loan.id]
   );
   if (!payments.length) return res.status(404).json({ error: 'no payment schedule on file for this loan' });
+  const { rows: allRows } = await pool.query('SELECT * FROM loan_payments WHERE loan_id = $1', [loan.id]);
 
-  const asOf = new Date(date);
-  const nearestPayment =
-    payments.find((p) => new Date(p.due_date) >= asOf) || payments[payments.length - 1];
-
-  const balanceAsOf = loanOutstandingBalance(loan, payments, asOf);
-  const balanceAfterPayment = Math.max(
-    balanceAsOf - Number(nearestPayment.principal_amount),
+  const nearest = payments.find((p) => toISODate(p.due_date) >= date) || payments[payments.length - 1];
+  const nd = toISODate(nearest.due_date);
+  // Balance just before that payment: principal minus every row (payments
+  // and verification adjustments) dated before it — same basis as the
+  // running balance in the schedule view.
+  const before = Math.max(
+    Number(loan.principal) - allRows.filter((p) => toISODate(p.due_date) < nd).reduce((s, p) => s + Number(p.principal_amount), 0),
     0
   );
+  const after = Math.max(before - Number(nearest.principal_amount), 0);
+
+  let assetNow = null;
+  let others = 0;
+  if (loan.asset_id) {
+    const { assets } = await loadBalanceSheet();
+    const a = assets.find((x) => x.id === loan.asset_id);
+    if (a) {
+      assetNow = assetValueAt(a, date);
+      others = a.loans.filter((x) => x.id !== loan.id).reduce((s, x) => s + x.outstanding, 0);
+    }
+  }
 
   res.json({
     asOfDate: date,
-    payment: nearestPayment,
-    balanceBeforePayment: Math.round(balanceAsOf * 100) / 100,
-    balanceAfterPayment: Math.round(balanceAfterPayment * 100) / 100,
-    equityBeforePayment: loan.asset_value != null ? Number(loan.asset_value) - balanceAsOf : null,
-    equityAfterPayment: loan.asset_value != null ? Number(loan.asset_value) - balanceAfterPayment : null,
+    payment: { ...nearest, due_date: toISODate(nearest.due_date) },
+    balanceBeforePayment: round2(before),
+    balanceAfterPayment: round2(after),
+    equityBeforePayment: assetNow != null ? round2(assetNow - before - others) : null,
+    equityAfterPayment: assetNow != null ? round2(assetNow - after - others) : null,
   });
 }));
 
-/** Standard fixed-rate amortization; produces one row per month. */
-function buildAmortizationSchedule({ principal, interest_rate_pct, term_months, start_date }) {
-  const monthlyRate = interest_rate_pct / 100 / 12;
-  const payment =
-    monthlyRate === 0
-      ? principal / term_months
-      : (principal * monthlyRate) / (1 - Math.pow(1 + monthlyRate, -term_months));
-
-  let balance = principal;
-  const schedule = [];
-  const start = new Date(start_date);
-
-  for (let i = 0; i < term_months; i++) {
-    const interest = balance * monthlyRate;
-    const principalPortion = payment - interest;
-    balance -= principalPortion;
-
-    const dueDate = new Date(start);
-    dueDate.setMonth(dueDate.getMonth() + i + 1);
-
-    schedule.push({
-      due_date: dueDate.toISOString().slice(0, 10),
-      principal_amount: Math.round(principalPortion * 100) / 100,
-      interest_amount: Math.round(interest * 100) / 100,
-    });
+// ---- Verification -----------------------------------------------------
+// Records what a statement or the lender says the loan looks like on a
+// date, compares it to what the schedule expected, and — when they differ
+// — rebases the schedule:
+//   1. A principal-only adjustment row dated the verification day closes
+//      the balance gap (positive = lender says you owe less than expected).
+//   2. Every unpaid schedule row after that date is replaced by a new
+//      schedule built from the verified balance and rate:
+//        - payment given  → keep that payment, let the payoff date move
+//                            (how lenders usually handle a rate change);
+//        - payment blank  → keep the original payoff date, recompute payment.
+// Unpaid rows due ON or BEFORE the verification date are left alone and
+// reported back: if they were paid outside the app, record them in the
+// planner so the cash actually leaves the account they came from.
+router.post('/:id/verify', ah(async (req, res) => {
+  const {
+    verified_on = todayISO(),
+    balance,
+    interest_rate_pct,
+    payment_amount = null,
+    source = null,
+    note = null,
+    rebase = true,
+    // The verified balance is proof the payments due before it were made.
+    // If they came out by auto-debit and your account balances already
+    // reflect them, set this so they stop sitting in the forecast as
+    // overdue — they're closed with no transaction (no cash moves twice).
+    prior_paid_outside_app = false,
+  } = req.body;
+  if (balance == null || Number.isNaN(Number(balance)) || Number(balance) < 0) {
+    return res.status(400).json({ error: 'balance (from the statement or lender) is required' });
   }
-  return schedule;
+
+  const outcome = await withTransaction(async (client) => {
+    const { rows: loanRows } = await client.query('SELECT * FROM loans WHERE id = $1 FOR UPDATE', [req.params.id]);
+    if (!loanRows.length) return null;
+    const loan = loanRows[0];
+    const { rows: rows } = await client.query('SELECT * FROM loan_payments WHERE loan_id = $1 ORDER BY due_date', [loan.id]);
+
+    const B = Number(balance);
+    const R = interest_rate_pct != null && interest_rate_pct !== '' ? Number(interest_rate_pct) : Number(loan.interest_rate_pct);
+    const P = payment_amount != null && payment_amount !== '' ? Number(payment_amount) : null;
+    const expected = outstandingAt(loan, rows, verified_on);
+    const expectedRate = Number(loan.interest_rate_pct);
+    const future = rows.filter((p) => !p.paid && !p.is_adjustment && toISODate(p.due_date) > verified_on);
+    const nextScheduled = future[0] ? Number(future[0].principal_amount) + Number(future[0].interest_amount) : null;
+
+    const balanceGap = round2(expected - B);
+    const rateChanged = Math.abs(R - expectedRate) >= 0.0005;
+    const paymentChanged = P != null && nextScheduled != null && Math.abs(P - nextScheduled) >= 0.01;
+    const drift = Math.abs(balanceGap) >= 0.01 || rateChanged || paymentChanged;
+    const unrecordedPastDue = rows.filter((p) => !p.paid && !p.is_adjustment && toISODate(p.due_date) <= verified_on);
+    let closedOutsideApp = 0;
+    if (prior_paid_outside_app && unrecordedPastDue.length) {
+      const { rowCount } = await client.query(
+        `UPDATE loan_payments SET paid = true, paid_date = due_date
+         WHERE loan_id = $1 AND paid = false AND is_adjustment = false AND due_date <= $2`,
+        [loan.id, verified_on]
+      );
+      closedOutsideApp = rowCount;
+    }
+
+    let rebased = false;
+    let newSchedule = [];
+    if (rebase && drift) {
+      if (Math.abs(balanceGap) >= 0.01) {
+        await client.query(
+          `INSERT INTO loan_payments (loan_id, due_date, principal_amount, interest_amount, paid, paid_date, is_adjustment)
+           VALUES ($1, $2, $3, 0, true, $2, true)`,
+          [loan.id, verified_on, balanceGap]
+        );
+      }
+      await client.query(
+        `DELETE FROM loan_payments WHERE loan_id = $1 AND paid = false AND is_adjustment = false AND due_date > $2`,
+        [loan.id, verified_on]
+      );
+      // Re-anchor to the loan's own payment day (from its start date), not
+      // to the old rows' dates — schedules built by the earlier code drifted
+      // off month-end days (Jan 31 → Mar 3 → Mar 31 → May 1...), and
+      // copying those dates forward would preserve the drift.
+      let k = 1;
+      while (addMonths(toISODate(loan.start_date), k) <= verified_on && k < 1200) k++;
+      try {
+        newSchedule = buildSchedule({
+          balance: B,
+          ratePct: R,
+          months: Math.max(1, future.length),
+          anchor: toISODate(loan.start_date),
+          anchorOffset: k,
+          payment: P,
+        });
+      } catch (e) {
+        const err = new Error(e.message);
+        err.status = 400;
+        throw err;
+      }
+      for (const row of newSchedule) {
+        await client.query(
+          `INSERT INTO loan_payments (loan_id, due_date, principal_amount, interest_amount) VALUES ($1,$2,$3,$4)`,
+          [loan.id, row.due_date, row.principal_amount, row.interest_amount]
+        );
+      }
+      rebased = true;
+    }
+
+    const effectivePayment = P ?? (newSchedule[0] ? newSchedule[0].principal_amount + newSchedule[0].interest_amount : nextScheduled);
+    await client.query(
+      `UPDATE loans SET
+         interest_rate_pct = $1,
+         verified_payment = $2,
+         last_verified_on = GREATEST(COALESCE(last_verified_on, $3::date), $3::date)
+       WHERE id = $4`,
+      [rebase ? R : expectedRate, effectivePayment != null ? round2(effectivePayment) : null, verified_on, loan.id]
+    );
+    const { rows: vRows } = await client.query(
+      `INSERT INTO loan_verifications
+         (loan_id, verified_on, balance, interest_rate_pct, payment_amount, source, note, expected_balance, expected_rate_pct, rebased)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [loan.id, verified_on, B, R, P, source, note, round2(expected), expectedRate, rebased]
+    );
+
+    return {
+      verification: vRows[0],
+      expected_balance: round2(expected),
+      balance_gap: balanceGap,
+      rate_changed: rateChanged,
+      payment_changed: paymentChanged,
+      matched: !drift,
+      rebased,
+      new_payment: effectivePayment != null ? round2(effectivePayment) : null,
+      remaining_payments: rebased ? newSchedule.length : future.length,
+      new_payoff_date: rebased && newSchedule.length ? newSchedule[newSchedule.length - 1].due_date : null,
+      closed_as_paid_outside_app: closedOutsideApp,
+      unrecorded_past_due: closedOutsideApp ? [] : unrecordedPastDue.map((p) => ({ id: p.id, due_date: toISODate(p.due_date) })),
+    };
+  });
+
+  if (!outcome) return res.status(404).json({ error: 'not found' });
+  res.json(outcome);
+}));
+
+router.get('/:id/verifications', ah(async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT * FROM loan_verifications WHERE loan_id = $1 ORDER BY verified_on DESC, id DESC', [req.params.id]
+  );
+  res.json(rows);
+}));
+
+// ---- Create / edit / delete ---------------------------------------------
+
+function scheduleFromTerms({ principal, interest_rate_pct, term_months, start_date }) {
+  return buildSchedule({
+    balance: Number(principal),
+    ratePct: Number(interest_rate_pct),
+    months: Number(term_months),
+    anchor: toISODate(start_date),
+    anchorOffset: 1,
+  });
 }
 
 router.post('/', ah(async (req, res) => {
   const {
     name, lender, purpose, linked_asset = null, principal, interest_rate_pct,
     rate_type = 'fixed', term_months, start_date, covenant_notes = null,
-    covenant_date = null, custom_schedule = null,
-    asset_value = null, asset_value_date = null, segment = null,
+    covenant_date = null, custom_schedule = null, segment = null, asset_id = null,
   } = req.body;
-  // A blank name falls back to the lender name, same as the backfill for
-  // rows that predate this field — never leaves a loan with nothing to
-  // tell it apart from another one at the same lender.
+  // A blank name falls back to the lender name so two loans at the same
+  // lender are never indistinguishable.
   const resolvedName = (name && name.trim()) || lender;
 
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  const loan = await withTransaction(async (client) => {
     const { rows } = await client.query(
       `INSERT INTO loans
         (name, lender, purpose, linked_asset, principal, interest_rate_pct, rate_type,
-         term_months, start_date, covenant_notes, covenant_date, asset_value, asset_value_date, segment)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+         term_months, start_date, covenant_notes, covenant_date, segment, asset_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
       [resolvedName, lender, purpose, linked_asset, principal, interest_rate_pct, rate_type,
-       term_months, start_date, covenant_notes, covenant_date, asset_value, asset_value_date, segment]
+       term_months, start_date, covenant_notes, covenant_date, segment, asset_id || null]
     );
-    const loan = rows[0];
-
+    const created = rows[0];
     // `custom_schedule` lets a loan mirror seasonal income (larger payments
-    // after harvest/sale, smaller or skipped off-season) instead of an even
-    // monthly amount — pass an array of { due_date, principal_amount, interest_amount }.
-    const schedule =
-      custom_schedule ||
-      buildAmortizationSchedule({ principal, interest_rate_pct, term_months, start_date });
-
+    // after harvest, smaller off-season) — an array of
+    // { due_date, principal_amount, interest_amount }.
+    const schedule = custom_schedule || scheduleFromTerms({ principal, interest_rate_pct, term_months, start_date });
     for (const row of schedule) {
       await client.query(
-        `INSERT INTO loan_payments (loan_id, due_date, principal_amount, interest_amount)
-         VALUES ($1,$2,$3,$4)`,
-        [loan.id, row.due_date, row.principal_amount, row.interest_amount]
+        `INSERT INTO loan_payments (loan_id, due_date, principal_amount, interest_amount) VALUES ($1,$2,$3,$4)`,
+        [created.id, row.due_date, row.principal_amount, row.interest_amount]
       );
     }
-
-    await client.query('COMMIT');
-    res.status(201).json(loan);
-  } catch (err) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
-  }
+    return created;
+  });
+  res.status(201).json(loan);
 }));
 
-// Full loan edit. Cosmetic fields (name, lender, asset value, covenant,
-// segment, linked asset) update in place. Changing the financial terms —
-// principal, rate, term, start date — REGENERATES the amortization
-// schedule from the new terms: the old schedule's rows are deleted,
-// including their paid/unpaid flags, because a schedule amortized from
-// different terms is a different schedule, not the old one edited.
-// (Payments already recorded as transactions keep their ledger entries and
-// balance effects — only the schedule-side history resets.)
+// Full loan edit. Cosmetic fields update in place. Changing the financial
+// terms — principal, rate, term, start date — REGENERATES the schedule
+// from the new terms (including dropping verification adjustments; the
+// verification history itself is kept). To correct a loan against a
+// statement, use Verify instead — it rebases without discarding history.
 router.patch('/:id', ah(async (req, res) => {
-  const {
-    name, lender, purpose, linked_asset, segment,
-    principal, interest_rate_pct, rate_type, term_months, start_date,
-    asset_value, asset_value_date, covenant_notes, covenant_date,
-  } = req.body;
-
+  const b = req.body;
   const loan = await withTransaction(async (client) => {
     const { rows: currentRows } = await client.query('SELECT * FROM loans WHERE id = $1', [req.params.id]);
     if (!currentRows.length) return null;
-    const current = currentRows[0];
-
+    const cur = currentRows[0];
+    const pick = (k) => (b[k] !== undefined ? b[k] : cur[k]);
     const next = {
-      name: name ?? current.name,
-      lender: lender ?? current.lender,
-      purpose: purpose ?? current.purpose,
-      linked_asset: linked_asset ?? current.linked_asset,
-      segment: segment ?? current.segment,
-      principal: principal ?? current.principal,
-      interest_rate_pct: interest_rate_pct ?? current.interest_rate_pct,
-      rate_type: rate_type ?? current.rate_type,
-      term_months: term_months ?? current.term_months,
-      start_date: start_date ?? current.start_date,
-      asset_value: asset_value ?? current.asset_value,
-      asset_value_date: asset_value_date ?? current.asset_value_date,
-      covenant_notes: covenant_notes ?? current.covenant_notes,
-      covenant_date: covenant_date ?? current.covenant_date,
+      name: pick('name'), lender: pick('lender'), purpose: pick('purpose'), linked_asset: pick('linked_asset'),
+      segment: pick('segment'), principal: pick('principal'), interest_rate_pct: pick('interest_rate_pct'),
+      rate_type: pick('rate_type'), term_months: pick('term_months'), start_date: toISODate(pick('start_date')),
+      covenant_notes: pick('covenant_notes'), covenant_date: pick('covenant_date'),
+      asset_id: b.asset_id !== undefined ? (b.asset_id || null) : cur.asset_id,
     };
 
     const { rows: updatedRows } = await client.query(
       `UPDATE loans SET
          name = $1, lender = $2, purpose = $3, linked_asset = $4, segment = $5,
          principal = $6, interest_rate_pct = $7, rate_type = $8, term_months = $9, start_date = $10,
-         asset_value = $11, asset_value_date = $12, covenant_notes = $13, covenant_date = $14
-       WHERE id = $15 RETURNING *`,
+         covenant_notes = $11, covenant_date = $12, asset_id = $13
+       WHERE id = $14 RETURNING *`,
       [next.name, next.lender, next.purpose, next.linked_asset, next.segment,
        next.principal, next.interest_rate_pct, next.rate_type, next.term_months, next.start_date,
-       next.asset_value, next.asset_value_date, next.covenant_notes, next.covenant_date,
-       req.params.id]
+       next.covenant_notes, next.covenant_date, next.asset_id, req.params.id]
     );
     const updated = updatedRows[0];
 
     const termsChanged =
-      Number(next.principal) !== Number(current.principal) ||
-      Number(next.interest_rate_pct) !== Number(current.interest_rate_pct) ||
-      Number(next.term_months) !== Number(current.term_months) ||
-      String(next.start_date).slice(0, 10) !== String(current.start_date instanceof Date ? current.start_date.toISOString() : current.start_date).slice(0, 10);
+      Number(next.principal) !== Number(cur.principal) ||
+      Number(next.interest_rate_pct) !== Number(cur.interest_rate_pct) ||
+      Number(next.term_months) !== Number(cur.term_months) ||
+      next.start_date !== toISODate(cur.start_date);
 
     if (termsChanged) {
       await client.query('DELETE FROM loan_payments WHERE loan_id = $1', [updated.id]);
-      const schedule = buildAmortizationSchedule({
-        principal: Number(next.principal),
-        interest_rate_pct: Number(next.interest_rate_pct),
-        term_months: Number(next.term_months),
-        start_date: next.start_date,
-      });
-      for (const row of schedule) {
+      for (const row of scheduleFromTerms(next)) {
         await client.query(
-          `INSERT INTO loan_payments (loan_id, due_date, principal_amount, interest_amount)
-           VALUES ($1,$2,$3,$4)`,
+          `INSERT INTO loan_payments (loan_id, due_date, principal_amount, interest_amount) VALUES ($1,$2,$3,$4)`,
           [updated.id, row.due_date, row.principal_amount, row.interest_amount]
         );
       }
     }
-
     return { ...updated, schedule_regenerated: termsChanged };
   });
 
@@ -355,9 +489,9 @@ router.patch('/:id', ah(async (req, res) => {
   res.json(loan);
 }));
 
-// Deleting a loan removes its schedule with it (ON DELETE CASCADE).
+// Deleting a loan removes its schedule and verification history with it.
 // Ledger transactions from payments already recorded are left alone — the
-// money really moved; deleting the loan doesn't un-spend it.
+// money really moved.
 router.delete('/:id', ah(async (req, res) => {
   const { rowCount } = await pool.query('DELETE FROM loans WHERE id = $1', [req.params.id]);
   if (!rowCount) return res.status(404).json({ error: 'not found' });

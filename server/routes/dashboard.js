@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { computeDSCR, liquidityFloor, reserveStatus, monthlyAccountFees } from '../lib/calculations.js';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
+import { loadBalanceSheet } from '../lib/balanceSheet.js';
 
 const router = Router();
 
@@ -44,30 +45,17 @@ router.get('/', ah(async (req, res) => {
   ]);
 
   // Net worth = all account balances (both ledgers — net worth is the whole
-  // person) + underlying asset values on loans − outstanding loan principal.
-  // Outstanding principal uses the same paid-or-past-due assumption as the
-  // loan book. Assets with no loan aren't tracked yet, so this is net worth
-  // of what the app knows about, not an appraisal of everything owned.
-  const [cashRow, loanAgg] = await Promise.all([
+  // household) + capital assets valued today + uncontracted inventory −
+  // outstanding loan principal. Same valuation as the Assets tab and the
+  // Combined equity card (lib/balanceSheet.js), so the numbers always agree.
+  const [cashRow, sheet] = await Promise.all([
     pool.query(`SELECT COALESCE(SUM(opening_balance), 0) AS total FROM accounts`),
-    pool.query(`
-      SELECT
-        COALESCE(SUM(l.asset_value), 0) AS asset_values,
-        COALESCE(SUM(GREATEST(l.principal - paid.principal_paid, 0)), 0) AS outstanding_principal
-      FROM loans l
-      LEFT JOIN LATERAL (
-        SELECT COALESCE(SUM(
-          CASE WHEN lp.paid = true OR lp.due_date <= CURRENT_DATE
-               THEN lp.principal_amount ELSE 0 END
-        ), 0) AS principal_paid
-        FROM loan_payments lp WHERE lp.loan_id = l.id
-      ) paid ON true
-    `),
+    loadBalanceSheet(),
   ]);
   const netWorth = {
     cash: Number(cashRow.rows[0].total),
-    assetValues: Number(loanAgg.rows[0].asset_values),
-    outstandingPrincipal: Number(loanAgg.rows[0].outstanding_principal),
+    assetValues: sheet.assets.reduce((s, a) => s + a.value_now, 0) + sheet.inventoryRows.reduce((s, i) => s + i.counted_value, 0),
+    outstandingPrincipal: sheet.loans.reduce((s, l) => s + l.outstanding, 0),
   };
   netWorth.total = netWorth.cash + netWorth.assetValues - netWorth.outstandingPrincipal;
 

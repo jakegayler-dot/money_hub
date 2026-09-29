@@ -1,4 +1,7 @@
 import { pool, getSetting } from '../db.js';
+import { activeEstimates, occurrences, signedAmount } from './estimates.js';
+import { ownerWeights } from './segments.js';
+import { monthIndex, todayISO } from './dates.js';
 
 const MONTHS = 12;
 
@@ -36,6 +39,7 @@ export async function monthlyDebtService(year) {
             SUM(principal_amount + interest_amount) AS total
      FROM loan_payments
      WHERE EXTRACT(YEAR FROM due_date) = $1
+       AND is_adjustment = false  -- verification adjustments aren't payments; no money moved
      GROUP BY month`,
     [year]
   );
@@ -186,11 +190,7 @@ export async function liquidityFloor() {
   const endStr = `${windowEnd.getFullYear()}-${String(windowEnd.getMonth() + 1).padStart(2, '0')}-01`;
 
   // Bucket a due date into the window; anything overdue clamps to month 0.
-  const idxFor = (dateStr) => {
-    const d = new Date(dateStr);
-    const idx = (d.getFullYear() - y0) * 12 + (d.getMonth() - m0);
-    return Math.max(0, idx);
-  };
+  const idxFor = (d) => Math.max(0, monthIndex(d, y0, m0));
 
   const [billRows, debtRows, contractRows, fees] = await Promise.all([
     pool.query(
@@ -218,6 +218,22 @@ export async function liquidityFloor() {
   ]);
   const feesPerMonth = fees[0] || 0;
 
+  // Estimates: the business share of each active estimate (everything not
+  // owned by Jake or Ashley), at each occurrence from today through the
+  // window. Past occurrences never count — see lib/estimates.js.
+  const estInBy = Array(MONTHS).fill(0);
+  const estOutBy = Array(MONTHS).fill(0);
+  for (const est of await activeEstimates()) {
+    const w = ownerWeights(est);
+    const businessShare = 1 - w.jake - w.ashley;
+    if (businessShare <= 0) continue;
+    for (const d of occurrences(est, todayISO(), endStr)) {
+      const amt = signedAmount(est) * businessShare;
+      const i = Math.min(idxFor(d), MONTHS - 1);
+      if (amt >= 0) estInBy[i] += amt; else estOutBy[i] += -amt;
+    }
+  }
+
   const billsBy = Array(MONTHS).fill(0);
   for (const r of billRows.rows) billsBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
   const debtBy = Array(MONTHS).fill(0);
@@ -225,21 +241,35 @@ export async function liquidityFloor() {
   const contractsBy = Array(MONTHS).fill(0);
   for (const r of contractRows.rows) contractsBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
 
+  // Two projections from the same starting balance. COMMITTED uses only
+  // documented flows (contracts, bills, loan schedules, fees). WITH
+  // ESTIMATES adds the operator's own estimated inflows/outflows — and is
+  // the default everywhere, including the purchase gate, because this
+  // operation's cash arrives in large lumps between long dry stretches: a
+  // big balance today is not spendable if months of estimated costs with
+  // no committed income follow it.
+  let committedRunning = startingBalance;
   let running = startingBalance;
   const trajectory = monthsMeta.map((meta, i) => {
-    running += contractsBy[i] - billsBy[i] - debtBy[i] - feesPerMonth;
+    const committedNet = contractsBy[i] - billsBy[i] - debtBy[i] - feesPerMonth;
+    committedRunning += committedNet;
+    running += committedNet + estInBy[i] - estOutBy[i];
     return {
       year: meta.year,
       month: meta.month,
       balance: running,
+      committedBalance: committedRunning,
       contractInflows: contractsBy[i],
       unpaidBillsDue: billsBy[i],
       debtServiceDue: debtBy[i],
       accountFees: feesPerMonth,
+      estimatedInflows: estInBy[i],
+      estimatedOutflows: estOutBy[i],
     };
   });
 
   const floorMonth = trajectory.reduce((a, b) => (b.balance < a.balance ? b : a));
+  const committedFloor = trajectory.reduce((a, b) => (b.committedBalance < a.committedBalance ? b : a));
 
   // Buffer benchmark: average monthly business outflow over the trailing
   // 12 months of actuals (not the calendar year to date).
@@ -260,6 +290,7 @@ export async function liquidityFloor() {
     startingBalance,
     trajectory,
     floorMonth,
+    committedFloorMonth: { year: committedFloor.year, month: committedFloor.month, balance: committedFloor.committedBalance },
     bufferPct,
     requiredFloor,
     passes: floorMonth.balance >= requiredFloor,

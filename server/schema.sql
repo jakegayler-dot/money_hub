@@ -365,6 +365,180 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sale_contracts_source_ext
 CREATE INDEX IF NOT EXISTS idx_sale_contracts_status ON sale_contracts (status);
 CREATE INDEX IF NOT EXISTS idx_sale_contracts_payment ON sale_contracts (expected_payment_date);
 
+-- =====================================================================
+-- CERTAINTY MODEL
+-- Every number in the app sits at one of three certainty levels:
+--   ACTUAL     — money has moved (transactions; `cleared` adds the bank
+--                statement confirmation on top).
+--   COMMITTED  — money hasn't moved but the amount comes from a real
+--                document with a counterparty: bills received, sale
+--                contracts, loan schedules.
+--   ESTIMATED  — the operator's own assumptions (cash_estimates below),
+--                plus market-price valuations of inventory and assets.
+-- Forecasts are produced twice — committed only, and with estimates — and
+-- the gap between the two is exposure to the operator's own assumptions.
+-- =====================================================================
+
+-- ---- Estimated cash flows -------------------------------------------
+-- One-off or recurring. `amount` is per occurrence and always positive;
+-- `direction` says which way it moves. Occurrences dated before today
+-- drop out of every forecast: an estimate whose date passed without the
+-- money moving is stale, not an obligation (unlike an overdue bill).
+-- source + external_id allow idempotent pushes from outside systems.
+DO $$ BEGIN
+  CREATE TYPE flow_direction AS ENUM ('inflow', 'outflow');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  CREATE TYPE estimate_frequency AS ENUM ('one_time', 'monthly', 'quarterly', 'annual');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  CREATE TYPE estimate_status AS ENUM ('active', 'retired');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+CREATE TABLE IF NOT EXISTS cash_estimates (
+  id                    SERIAL PRIMARY KEY,
+  source                TEXT NOT NULL DEFAULT 'manual',
+  external_id           TEXT,
+  name                  TEXT NOT NULL,
+  category              TEXT,
+  direction             flow_direction NOT NULL,
+  amount                NUMERIC(14,2) NOT NULL CHECK (amount >= 0),
+  frequency             estimate_frequency NOT NULL DEFAULT 'one_time',
+  start_date            DATE NOT NULL,       -- first (or only) occurrence
+  end_date              DATE,                -- last possible occurrence for recurring; NULL = open-ended
+  status                estimate_status NOT NULL DEFAULT 'active',
+  segment               enterprise_segment,
+  is_segment_split      BOOLEAN NOT NULL DEFAULT false,
+  segment_grain_pct     NUMERIC(5,2),
+  segment_livestock_pct NUMERIC(5,2),
+  segment_jake_pct      NUMERIC(5,2),
+  segment_ashley_pct    NUMERIC(5,2),
+  notes                 TEXT,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_estimates_source_ext
+  ON cash_estimates (source, external_id) WHERE external_id IS NOT NULL;
+
+-- ---- Capital assets -------------------------------------------------
+-- Land, buildings, machinery, vehicles, breeding stock, investments.
+-- Value is rolled forward from value_date by annual_change_pct,
+-- compounded: negative = declining-balance depreciation (the CCA method,
+-- e.g. -30 for a Class 10 truck), positive = appreciation (land). The
+-- CCA half-year rule is a tax-year convention and isn't applied to
+-- market-value projections. Owners use the same four-way split as
+-- everything else, so a shared truck can be 50/50 grain/cattle.
+DO $$ BEGIN
+  CREATE TYPE asset_category AS ENUM ('land', 'buildings', 'machinery', 'vehicles', 'breeding_livestock', 'investments', 'other');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+CREATE TABLE IF NOT EXISTS assets (
+  id                    SERIAL PRIMARY KEY,
+  name                  TEXT NOT NULL,
+  category              asset_category NOT NULL DEFAULT 'other',
+  value                 NUMERIC(14,2) NOT NULL,
+  value_date            DATE NOT NULL DEFAULT CURRENT_DATE,
+  annual_change_pct     NUMERIC(6,2) NOT NULL DEFAULT 0,
+  cca_class             TEXT,
+  segment               enterprise_segment,
+  is_segment_split      BOOLEAN NOT NULL DEFAULT false,
+  segment_grain_pct     NUMERIC(5,2),
+  segment_livestock_pct NUMERIC(5,2),
+  segment_jake_pct      NUMERIC(5,2),
+  segment_ashley_pct    NUMERIC(5,2),
+  notes                 TEXT,
+  migrated_from_loan_id INTEGER,           -- set only by the one-time migration below
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- A loan can be secured by one asset; an asset can carry several loans
+-- (land with two mortgages). Deleting an asset unlinks its loans.
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS asset_id INTEGER REFERENCES assets(id) ON DELETE SET NULL;
+
+-- One-time move of asset values that used to live on loan rows into real
+-- asset records. Idempotent: only touches loans with a legacy value and
+-- no linked asset yet. Category is a starting guess (mortgage → land,
+-- everything else → other) and meant to be corrected on the Assets tab.
+INSERT INTO assets (name, category, value, value_date, segment, notes, migrated_from_loan_id)
+SELECT COALESCE(NULLIF(l.linked_asset, ''), l.name, l.lender),
+       CASE WHEN l.purpose = 'mortgage' THEN 'land'::asset_category ELSE 'other'::asset_category END,
+       l.asset_value,
+       COALESCE(l.asset_value_date, l.created_at::date),
+       l.segment,
+       'Moved from loan "' || COALESCE(NULLIF(l.name, ''), l.lender) || '" — check category and depreciation rate.',
+       l.id
+FROM loans l
+WHERE l.asset_value IS NOT NULL AND l.asset_id IS NULL
+  AND NOT EXISTS (SELECT 1 FROM assets a WHERE a.migrated_from_loan_id = l.id);
+
+UPDATE loans l SET asset_id = a.id
+FROM assets a
+WHERE a.migrated_from_loan_id = l.id AND l.asset_id IS NULL;
+
+-- ---- Inventory & livestock --------------------------------------------
+-- Grain in the bin, market cattle, breeding herd — fed from source systems
+-- (Quarter Section, Livestock Manager) via /api/inventory/ingest, or added
+-- by hand. Valued at an estimated market price, so it's ESTIMATED
+-- certainty. Only the UNCONTRACTED quantity counts toward equity: grain
+-- already under an open sale contract is counted once, as that contract's
+-- receivable. quantity_contracted, when the source sends it, wins; when it
+-- doesn't, Money Hub derives it from open contracts for the same commodity
+-- and unit.
+DO $$ BEGIN
+  CREATE TYPE inventory_class AS ENUM ('crop', 'market_livestock', 'breeding_livestock', 'other');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+CREATE TABLE IF NOT EXISTS inventory_items (
+  id                    SERIAL PRIMARY KEY,
+  source                TEXT NOT NULL DEFAULT 'manual',
+  external_id           TEXT,
+  item_class            inventory_class NOT NULL DEFAULT 'crop',
+  commodity             TEXT NOT NULL,          -- 'Canola', 'Bred heifers'
+  quantity              NUMERIC(14,3) NOT NULL,
+  unit                  TEXT NOT NULL,          -- 'bu', 'tonnes', 'head'
+  quantity_contracted   NUMERIC(14,3),          -- NULL = let Money Hub derive it
+  price_per_unit        NUMERIC(14,4) NOT NULL, -- estimated market price
+  location              TEXT,                   -- bin / yard / pasture
+  as_of                 DATE NOT NULL DEFAULT CURRENT_DATE,
+  segment               enterprise_segment,
+  notes                 TEXT,
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_source_ext
+  ON inventory_items (source, external_id) WHERE external_id IS NOT NULL;
+
+-- ---- Loan verification ------------------------------------------------
+-- Payments and rates change for reasons the app can't see (variable
+-- rates, lender re-amortization, missed or extra payments). Each loan
+-- carries when it was last checked against a statement or the lender,
+-- and every check is kept as history. A verification that disagrees with
+-- the schedule rebases it: an adjustment row reconciles the balance and
+-- the remaining schedule is rebuilt from the verified figures.
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS last_verified_on DATE;
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS verified_payment NUMERIC(14,2);
+
+CREATE TABLE IF NOT EXISTS loan_verifications (
+  id                  SERIAL PRIMARY KEY,
+  loan_id             INTEGER NOT NULL REFERENCES loans(id) ON DELETE CASCADE,
+  verified_on         DATE NOT NULL,
+  balance             NUMERIC(14,2) NOT NULL,
+  interest_rate_pct   NUMERIC(6,3) NOT NULL,
+  payment_amount      NUMERIC(14,2),
+  source              TEXT,                   -- statement / lender / online banking / other
+  note                TEXT,
+  expected_balance    NUMERIC(14,2) NOT NULL, -- what the schedule said on that date
+  expected_rate_pct   NUMERIC(6,3) NOT NULL,
+  rebased             BOOLEAN NOT NULL DEFAULT false,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Adjustment rows: a principal-only, already-"paid" schedule row that
+-- closes the gap between what the schedule expected and what the lender
+-- confirmed. Being principal-only and paid, every balance calculation
+-- picks it up automatically; debt-service and forecast queries exclude it
+-- because no money moved.
+ALTER TABLE loan_payments ADD COLUMN IF NOT EXISTS is_adjustment BOOLEAN NOT NULL DEFAULT false;
+
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);
 CREATE INDEX IF NOT EXISTS idx_transactions_ledger ON transactions (ledger);
 CREATE INDEX IF NOT EXISTS idx_loan_payments_due_date ON loan_payments (due_date);

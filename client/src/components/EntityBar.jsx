@@ -6,14 +6,18 @@ import { OWNER_KEYS, OWNER_LABELS } from '../owners.jsx';
 const VIEWS = [{ key: 'all', label: 'Combined' }, ...OWNER_KEYS.map((k) => ({ key: k, label: OWNER_LABELS[k] }))];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const STORAGE_KEY = 'moneyhub.entity';
+const BASIS_KEY = 'moneyhub.forecastBasis';
 
-function readSaved() {
+function readSaved(key, allowed, fallback) {
   try {
-    const v = window.localStorage.getItem(STORAGE_KEY);
-    return VIEWS.some((x) => x.key === v) ? v : 'all';
+    const v = window.localStorage.getItem(key);
+    return allowed.includes(v) ? v : fallback;
   } catch {
-    return 'all';
+    return fallback;
   }
+}
+function save(key, value) {
+  try { window.localStorage.setItem(key, value); } catch { /* storage unavailable — selection just won't persist */ }
 }
 
 const signed = (n) => `${n >= 0 ? '+' : '−'}${money(Math.abs(Math.round(n)))}`;
@@ -44,13 +48,17 @@ function Spark({ points }) {
 }
 
 export default function EntityBar() {
-  const [entity, setEntity] = useState(readSaved);
+  const [entity, setEntity] = useState(() => readSaved(STORAGE_KEY, VIEWS.map((v) => v.key), 'all'));
+  // Estimates are the default basis: cash here arrives in big lumps between
+  // long dry stretches, so a committed-only view makes a large balance look
+  // spendable when months of estimated costs follow it.
+  const [basis, setBasis] = useState(() => readSaved(BASIS_KEY, ['estimates', 'committed'], 'estimates'));
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const location = useLocation();
 
   useEffect(() => {
-    try { window.localStorage.setItem(STORAGE_KEY, entity); } catch { /* storage unavailable — selection just won't persist */ }
+    save(STORAGE_KEY, entity);
     let cancelled = false;
     setError(null);
     fetch(`/api/entity-summary?entity=${entity}`)
@@ -66,24 +74,37 @@ export default function EntityBar() {
     // recorded on the page you came from.
   }, [entity, location.pathname]);
 
+  useEffect(() => save(BASIS_KEY, basis), [basis]);
+
   const cf = data?.cashFlow;
-  const low = cf?.lowPoint;
+  const proj = cf ? (basis === 'estimates' ? cf.withEstimates : cf.committed) : null;
+  const low = proj?.lowPoint;
   const lowLabel = low ? `${MONTHS[low.month - 1]} ’${String(low.year).slice(2)}` : '';
 
   return (
     <section className="entity-bar" aria-label="Owner view and headline metrics">
-      <div className="seg-control" role="tablist" aria-label="Whose financials">
-        {VIEWS.map((v) => (
-          <button
-            key={v.key}
-            role="tab"
-            aria-selected={entity === v.key}
-            className={`seg-option${entity === v.key ? ' active' : ''}`}
-            onClick={() => setEntity(v.key)}
-          >
-            {v.label}
-          </button>
-        ))}
+      <div className="entity-controls">
+        <div className="seg-control" role="tablist" aria-label="Whose financials">
+          {VIEWS.map((v) => (
+            <button
+              key={v.key}
+              role="tab"
+              aria-selected={entity === v.key}
+              className={`seg-option${entity === v.key ? ' active' : ''}`}
+              onClick={() => setEntity(v.key)}
+            >
+              {v.label}
+            </button>
+          ))}
+        </div>
+        <div className="seg-control seg-control-sm" role="radiogroup" aria-label="Forecast basis">
+          {[['estimates', 'With estimates'], ['committed', 'Committed only']].map(([k, l]) => (
+            <button key={k} role="radio" aria-checked={basis === k}
+              className={`seg-option${basis === k ? ' active' : ''}`} onClick={() => setBasis(k)}>
+              {l}
+            </button>
+          ))}
+        </div>
       </div>
 
       {error ? (
@@ -91,15 +112,15 @@ export default function EntityBar() {
       ) : (
         <div className="entity-metrics">
           <div className="entity-card">
-            <div className="metric-label">Cash flow</div>
+            <div className="metric-label">Cash flow — {basis === 'estimates' ? 'with estimates' : 'committed only'}</div>
             <div className="entity-card-row">
               <div>
-                <div className={`metric-value${cf && low.balance < 0 ? ' negative' : ''}`}>{cf ? money(cf.cashNow) : '—'}</div>
+                <div className={`metric-value${proj && low.balance < 0 ? ' negative' : ''}`}>{cf ? money(cf.cashNow) : '—'}</div>
                 <div className="metric-sub">
-                  {cf ? <>Next 12 mo {signed(cf.projectedNet12)} · low {money(low.balance)} in {lowLabel}</> : 'Loading…'}
+                  {proj ? <>Next 12 mo {signed(proj.projectedNet12)} · low {money(low.balance)} in {lowLabel}</> : 'Loading…'}
                 </div>
               </div>
-              {cf && <Spark points={cf.trajectory} />}
+              {proj && <Spark points={proj.trajectory} />}
             </div>
           </div>
 
@@ -119,7 +140,7 @@ export default function EntityBar() {
               {data ? money(data.equity.total) : '—'}
             </div>
             <div className="metric-sub">
-              {data ? <>Cash {money(data.equity.cash)} + assets {money(data.equity.assets)} − loans {money(data.equity.loans)}</> : 'Loading…'}
+              {data ? <>Cash {money(data.equity.cash)} + assets {money(data.equity.assets)} + inventory {money(data.equity.inventory)} − loans {money(data.equity.loans)}</> : 'Loading…'}
             </div>
           </div>
         </div>
