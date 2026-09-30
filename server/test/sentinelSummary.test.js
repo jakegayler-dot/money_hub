@@ -77,7 +77,7 @@ test('forecast floor breach drives the status line (first month below floor)', (
   assert.equal(s.forecast_90d.breaches_floor, true);
   assert.equal(s.forecast_90d.min_balance_cents, -100000);
   assert.equal(s.forecast_90d.min_date, '2026-12-31');
-  assert.equal(s.status_line, 'Cash dips below the floor in November');
+  assert.equal(s.status_line, 'Cash dips below the floor in November 2026');
 });
 
 test('floor breach across a year boundary names the year; below now says so', () => {
@@ -193,6 +193,24 @@ test('ROA uses farm-business assets only (splits honoured, personal excluded)', 
 test('unpriced inventory gets a note', () => {
   const s = buildSummary(baseInputs({ balance: { ...baseInputs().balance, needsPrice: 2 } }), { now: NOON }).summary;
   assert.ok(s.notes.includes('Equity: 2 inventory items have no price and count as $0.'));
+});
+
+test('status uses the dashboard 12-month floor check even when the 90-day chart is clear', () => {
+  const inputs = baseInputs({
+    liquidity: { startingBalance: 50000, bufferPct: 0.15, requiredFloor: 3000, passes: false,
+      trajectory: trajectory([48000, 40000, 30000, 20000, 10000, 5000, 2999.99, 1000, 60000]) },
+  });
+  const s = buildSummary(inputs, { now: NOON }).summary;
+  assert.equal(s.forecast_90d.breaches_floor, false); // chart stays 90 days
+  assert.equal(s.forecast_90d.points.at(-1).date, '2026-12-31');
+  assert.equal(s.status_line, 'Cash dips below the floor in March 2027'); // earliest breach, not the lowest month
+});
+
+test('coverage fails on the unrounded ratio, like the dashboard', () => {
+  const s = buildSummary(baseInputs({ coverage: { threshold: 1.25, projected: { ratio: 1.2496, passes: false } } }),
+    { now: NOON }).summary;
+  assert.equal(s.performance.dscr, 1.25);
+  assert.equal(s.status_line, 'Debt coverage 1.25× — below 1.25×');
 });
 
 test('fmtDollars rounds to whole dollars with separators', () => {

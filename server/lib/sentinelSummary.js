@@ -208,18 +208,26 @@ export function buildSummary(inputs, { now = new Date() } = {}) {
     notes.push('ROA: trailing-12-month cash-basis net income (after scheduled loan interest, before depreciation and tax) ÷ farm-business assets today (not an average).');
   }
 
-  // Status line: the most pressing issue first.
+  // Status line: the most pressing issue first. Floor and coverage use the
+  // same pass/fail tests as the Money Hub dashboard (unrounded), so the tile
+  // never says all is well while the dashboard shows a problem.
+  const liq = inputs.liquidity || {};
+  const floorBreach12 = liq.passes === false || (liq.trajectory || []).some((m) => Number(m.balance) < Number(liq.requiredFloor))
+    ? (liq.trajectory || []).find((m) => Number(m.balance) < Number(liq.requiredFloor)) || liq.floorMonth || null
+    : null;
+  const coverageFails = proj.passes === false
+    || (proj.ratio != null && Number.isFinite(Number(proj.ratio)) && Number(proj.ratio) < dscr_threshold);
   const overdue = overdueSummary(inputs.overdue, today);
   let status_line = 'Nothing needs attention';
   if (overdue.count > 0) {
     status_line = `${overdue.count} bill${overdue.count === 1 ? '' : 's'} overdue (${fmtDollars(overdue.total_cents)})`;
+  } else if (floorBreach12) {
+    // The Money Hub dashboard's own check: any month-end in its rolling
+    // 12-month forecast below the required floor (liquidityFloor().passes).
+    status_line = `Cash dips below the floor in ${MONTH_NAMES[floorBreach12.month - 1]} ${floorBreach12.year}`;
   } else if (firstBreach) {
-    if (firstBreach.date === today) status_line = 'Cash is below the floor now';
-    else {
-      const [y, m] = firstBreach.date.split('-').map(Number);
-      status_line = `Cash dips below the floor in ${MONTH_NAMES[m - 1]}${String(y) !== today.slice(0, 4) ? ` ${y}` : ''}`;
-    }
-  } else if (dscr != null && dscr < dscr_threshold) {
+    status_line = 'Cash is below the floor now'; // only today's balance can be below here
+  } else if (coverageFails) {
     status_line = `Debt coverage ${dscr.toFixed(2)}× — below ${dscr_threshold}×`;
   } else if (eq.equity_cents < 0) {
     status_line = `Liabilities exceed assets by ${fmtDollars(-eq.equity_cents)}`;

@@ -124,9 +124,8 @@ function coverageResult({ from, to, lines, service, threshold }) {
  * Returns { threshold, historical, projected, ratio, passes }, each period
  * carrying its line-by-line build so the number can be checked by hand.
  */
-export async function termDebtCoverage() {
+export async function termDebtCoverage(today = todayISO()) {
   const threshold = Number(await getSetting('dscr_threshold', 1.25));
-  const today = todayISO();
   const histFrom = addMonths(today, -12);
   const projTo = addMonths(today, 12);
 
@@ -255,7 +254,7 @@ export function coverageWithAddedDebt(coverage, addedAnnualService) {
  * month: past its due date or not, it still hasn't moved. The floor is the
  * lowest point in the projection, not the current balance.
  */
-export async function liquidityFloor() {
+export async function liquidityFloor(today = todayISO()) {
   const bufferPct = Number(await getSetting('liquidity_buffer_pct', 0.15));
 
   const { rows: accountRows } = await pool.query(
@@ -264,9 +263,10 @@ export async function liquidityFloor() {
   );
   const startingBalance = Number(accountRows[0].total);
 
-  const now = new Date();
-  const y0 = now.getFullYear();
-  const m0 = now.getMonth(); // 0-based
+  // `today` ('YYYY-MM-DD') anchors the window, so a caller can pass a date
+  // in a specific time zone (Sentinel passes America/Regina's today).
+  const [y0, m1] = today.split('-').map(Number);
+  const m0 = m1 - 1; // 0-based
   const monthsMeta = Array.from({ length: MONTHS }, (_, i) => {
     const d = new Date(y0, m0 + i, 1);
     return { year: d.getFullYear(), month: d.getMonth() + 1 };
@@ -322,7 +322,7 @@ export async function liquidityFloor() {
     const w = ownerWeights(est);
     const businessShare = 1 - w.jake - w.ashley;
     if (businessShare <= 0) continue;
-    for (const d of occurrences(est, todayISO(), endStr)) {
+    for (const d of occurrences(est, today, endStr)) {
       const amt = signedAmount(est) * businessShare;
       const i = Math.min(idxFor(d), MONTHS - 1);
       if (amt >= 0) estInBy[i] += amt; else estOutBy[i] += -amt;
@@ -331,7 +331,7 @@ export async function liquidityFloor() {
 
   const billsBy = Array(MONTHS).fill(0);
   for (const r of billRows.rows) {
-    for (const d of billDates(r, todayISO(), endStr)) billsBy[Math.min(idxFor(d), MONTHS - 1)] += Number(r.amount);
+    for (const d of billDates(r, today, endStr)) billsBy[Math.min(idxFor(d), MONTHS - 1)] += Number(r.amount);
   }
   const debtBy = Array(MONTHS).fill(0);
   for (const r of debtRows.rows) debtBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
@@ -379,9 +379,10 @@ export async function liquidityFloor() {
          SELECT date_trunc('month', date) AS m, SUM(-amount) AS monthly_outflow
          FROM transaction_lines
          WHERE ledger = 'business' AND amount < 0 AND is_transfer = false
-           AND date >= CURRENT_DATE - INTERVAL '12 months'
+           AND date >= $1::date - INTERVAL '12 months'
          GROUP BY m
-       ) sub`
+       ) sub`,
+      [today]
     )).rows[0].avg;
 
   const requiredFloor = Number(avgMonthlyExpense) * bufferPct;
