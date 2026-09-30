@@ -4,6 +4,7 @@ import { ah } from '../lib/asyncHandler.js';
 import { requireIngestKey } from '../lib/ingestAuth.js';
 import { validateSegment, segmentValues, SEGMENT_COLUMNS } from '../lib/segments.js';
 import { occurrences } from '../lib/estimates.js';
+import { inventorySales } from '../lib/inventoryForecast.js';
 import { todayISO, addMonths, toISODate } from '../lib/dates.js';
 
 const router = Router();
@@ -36,17 +37,23 @@ router.get('/', ah(async (req, res) => {
   }));
 }));
 
+// What the forecast adds automatically from uncontracted inventory, with
+// where each sale date came from, plus anything left out for lack of one.
+router.get('/from-inventory', ah(async (req, res) => {
+  res.json(await inventorySales());
+}));
+
 async function insertOrUpsert(e, { upsert }) {
-  const cols = `source, external_id, name, category, direction, amount, frequency, start_date, end_date, status, notes, ${SEG_COLS}`;
+  const cols = `source, external_id, name, category, commodity, direction, amount, frequency, start_date, end_date, status, notes, ${SEG_COLS}`;
   const vals = [
-    e.source || 'manual', e.external_id || null, e.name, e.category || null, e.direction, Number(e.amount),
+    e.source || 'manual', e.external_id || null, e.name, e.category || null, e.commodity || null, e.direction, Number(e.amount),
     e.frequency || 'one_time', e.start_date, e.end_date || null, e.status === 'retired' ? 'retired' : 'active',
     e.notes || null, ...segmentValues(e),
   ];
   const placeholders = vals.map((_, i) => `$${i + 1}`).join(',');
   const conflict = upsert
     ? `ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL DO UPDATE SET
-         name = EXCLUDED.name, category = EXCLUDED.category, direction = EXCLUDED.direction,
+         name = EXCLUDED.name, category = EXCLUDED.category, commodity = EXCLUDED.commodity, direction = EXCLUDED.direction,
          amount = EXCLUDED.amount, frequency = EXCLUDED.frequency, start_date = EXCLUDED.start_date,
          end_date = EXCLUDED.end_date, status = EXCLUDED.status, notes = EXCLUDED.notes,
          ${SEGMENT_COLUMNS.map((c) => `${c} = EXCLUDED.${c}`).join(', ')}, updated_at = now()`

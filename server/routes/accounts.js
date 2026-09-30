@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { pool } from '../db.js';
+import { pool, withTransaction } from '../db.js';
+import { anchorAccount } from '../lib/postings.js';
 import { ah } from '../lib/asyncHandler.js';
 import { validateSegment, segmentValues, SEGMENT_COLUMNS } from '../lib/segments.js';
 
@@ -16,24 +17,24 @@ router.get('/', ah(async (req, res) => {
 router.post('/', ah(async (req, res) => {
   const {
     name, ledger, account_type, opening_balance = 0, source_system = 'manual',
-    fee_amount = 0, fee_frequency = 'none', fee_notes = null,
+    fee_amount = 0, fee_frequency = 'none', fee_notes = null, last4 = null,
   } = req.body;
   const segmentError = validateSegment(req.body);
   if (segmentError) return res.status(400).json({ error: segmentError });
 
   const { rows } = await pool.query(
     `INSERT INTO accounts
-      (name, ledger, account_type, opening_balance, source_system, fee_amount, fee_frequency, fee_notes,
+      (name, ledger, account_type, opening_balance, source_system, fee_amount, fee_frequency, fee_notes, last4,
        ${SEGMENT_COLUMNS.join(', ')})
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, ${SEGMENT_COLUMNS.map((_, i) => `$${9 + i}`).join(', ')}) RETURNING *`,
-    [name, ledger, account_type, opening_balance, source_system, fee_amount, fee_frequency, fee_notes,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, ${SEGMENT_COLUMNS.map((_, i) => `$${10 + i}`).join(', ')}) RETURNING *`,
+    [name, ledger, account_type, opening_balance, source_system, fee_amount, fee_frequency, fee_notes, last4 || null,
      ...segmentValues(req.body)]
   );
   res.status(201).json(rows[0]);
 }));
 
 router.patch('/:id', ah(async (req, res) => {
-  const { name, opening_balance, fee_amount, fee_frequency, fee_notes } = req.body;
+  const { name, opening_balance, fee_amount, fee_frequency, fee_notes, last4 } = req.body;
 
   const { rows: currentRows } = await pool.query('SELECT * FROM accounts WHERE id = $1', [req.params.id]);
   if (!currentRows.length) return res.status(404).json({ error: 'not found' });
@@ -51,11 +52,27 @@ router.patch('/:id', ah(async (req, res) => {
        fee_amount = COALESCE($3, fee_amount),
        fee_frequency = COALESCE($4, fee_frequency),
        fee_notes = COALESCE($5, fee_notes),
-       ${SEGMENT_COLUMNS.map((c, i) => `${c} = $${6 + i}`).join(', ')}
-     WHERE id = $${6 + SEGMENT_COLUMNS.length} RETURNING *`,
-    [name, opening_balance, fee_amount, fee_frequency, fee_notes, ...segmentValues(effectiveSeg), req.params.id]
+       last4 = CASE WHEN $6::boolean THEN $7 ELSE last4 END,
+       ${SEGMENT_COLUMNS.map((c, i) => `${c} = $${8 + i}`).join(', ')}
+     WHERE id = $${8 + SEGMENT_COLUMNS.length} RETURNING *`,
+    [name, opening_balance, fee_amount, fee_frequency, fee_notes, last4 !== undefined, last4 || null,
+     ...segmentValues(effectiveSeg), req.params.id]
   );
   res.json(rows[0]);
+}));
+
+// Set this account's balance as it stood at the start of a past day (what
+// the bank showed that morning — a statement's opening balance). Today's
+// balance is rebuilt from it plus everything dated since. Used before
+// loading historical statements, oldest first.
+router.post('/:id/anchor', ah(async (req, res) => {
+  const { as_of, balance } = req.body || {};
+  if (!as_of || balance == null || Number.isNaN(Number(balance))) {
+    return res.status(400).json({ error: 'as_of (YYYY-MM-DD) and balance are required.' });
+  }
+  const r = await withTransaction((client) => anchorAccount(client, req.params.id, { as_of, balance: Number(balance) }));
+  if (!r) return res.status(404).json({ error: 'not found' });
+  res.json(r);
 }));
 
 export default router;

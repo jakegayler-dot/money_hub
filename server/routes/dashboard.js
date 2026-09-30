@@ -3,6 +3,8 @@ import { termDebtCoverage, liquidityFloor, reserveStatus, monthlyAccountFees } f
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { loadBalanceSheet } from '../lib/balanceSheet.js';
+import { cardAmountsDue } from '../lib/cardLedger.js';
+import { toISODate } from '../lib/dates.js';
 
 const router = Router();
 
@@ -43,15 +45,15 @@ router.get('/', ah(async (req, res) => {
        FROM sale_contracts WHERE status IN ('open', 'delivered')`
     ),
     pool.query(`SELECT * FROM credit_cards WHERE status = 'active'`),
+    cardAmountsDue(pool),
+    // Per card, the most recent statement whose deadline has come (paid,
+    // or past due): if it wasn't paid in full by its due date, the grace
+    // period is gone.
     pool.query(
-      `SELECT credit_card_id, due_date, GREATEST(statement_balance - COALESCE(paid_amount, 0), 0) AS amount
-       FROM credit_card_statements WHERE paid = false`
-    ),
-    // Most recent PAID statement per card — whether it was paid in full by
-    // its due date is what decides if the grace period survived.
-    pool.query(
-      `SELECT DISTINCT ON (credit_card_id) credit_card_id, paid_in_full
-       FROM credit_card_statements WHERE paid = true ORDER BY credit_card_id, due_date DESC`
+      `SELECT DISTINCT ON (s.credit_card_id) s.credit_card_id, s.paid_in_full
+       FROM credit_card_statements s JOIN credit_cards cc ON cc.id = s.credit_card_id
+       WHERE cc.status = 'active' AND (s.paid OR s.due_date < CURRENT_DATE)
+       ORDER BY s.credit_card_id, COALESCE(s.statement_date, s.due_date) DESC, s.id DESC`
     ),
   ]);
 
@@ -100,15 +102,15 @@ router.get('/', ah(async (req, res) => {
     creditCards: {
       count: activeCards.rows.length,
       totalBalance: sheet.creditCards.reduce((s, c) => s + c.outstanding, 0),
-      dueSoon: unpaidCardStatements.rows
-        .sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)))
-        .slice(0, 5)
-        .map((r) => ({ ...r, amount: Number(r.amount) })),
-      // A card whose last recorded statement wasn't paid in full by its due
+      dueSoon: unpaidCardStatements
+        .map((r) => ({ credit_card_id: r.credit_card_id, name: r.name, due_date: toISODate(r.due_date), amount: Number(r.amount) }))
+        .sort((a, b) => a.due_date.localeCompare(b.due_date))
+        .slice(0, 5),
+      // A card whose last decided statement wasn't paid in full by its due
       // date has lost its grace period — new purchases now accrue interest
       // from the transaction date, not the due date, until a full-balance
       // payment resets it.
-      gracePeriodLost: lastPaidCardStatements.rows.filter((r) => r.paid_in_full === false).length,
+      gracePeriodLost: lastPaidCardStatements.rows.filter((r) => r.paid_in_full !== true).length,
     },
     netWorth,
   });

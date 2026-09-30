@@ -18,6 +18,7 @@ import assetsRoute from './routes/assets.js';
 import inventoryRoute from './routes/inventory.js';
 import estimatesRoute from './routes/estimates.js';
 import creditCardsRoute from './routes/credit-cards.js';
+import statementsRoute from './routes/statements.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -40,6 +41,7 @@ app.use('/api/assets', assetsRoute);
 app.use('/api/inventory', inventoryRoute);
 app.use('/api/estimates', estimatesRoute);
 app.use('/api/credit-cards', creditCardsRoute);
+app.use('/api/statements', statementsRoute);
 
 // In production, this is the only Railway service — it serves the built
 // client alongside the API so there's nothing extra to deploy or wire up.

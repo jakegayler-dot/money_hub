@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { validateSegment, segmentValues, SEGMENT_COLUMNS } from '../lib/segments.js';
+import { payBill, removeTransaction } from '../lib/postings.js';
+import { todayISO, toISODate, addMonths } from '../lib/dates.js';
 
 // "$13,$14,..." placeholder run for the segment columns, starting at n.
 const segPlaceholders = (n) => SEGMENT_COLUMNS.map((_, i) => `$${n + i}`).join(',');
@@ -71,65 +73,13 @@ router.post('/', ah(async (req, res) => {
 // by hand every cycle.
 router.post('/:id/pay', ah(async (req, res) => {
   const {
-    paid_date = new Date().toISOString().slice(0, 10),
+    paid_date = todayISO(),
     account_id = null,
     paid_by_check = false,
   } = req.body;
-
-  const bill = await withTransaction(async (client) => {
-    const { rows: existingRows } = await client.query('SELECT * FROM bills WHERE id = $1', [req.params.id]);
-    if (!existingRows.length) return null;
-    const bill = existingRows[0];
-    if (bill.status === 'paid') return bill;
-
-    let linkedTransactionId = null;
-    if (account_id) {
-      // A check hits the account balance the moment it's sent (book
-      // balance), but `cleared` stays false until it's reconciled against
-      // the bank statement — see the `cleared` column comment in schema.sql.
-      const { rows: txRows } = await client.query(
-        `INSERT INTO transactions
-          (account_id, ledger, date, amount, description, entered_by, cleared, cleared_date, ${SEG_COLS})
-         VALUES ($1, $2, $3, $4, $5, 'manual', $6, $7, ${segPlaceholders(8)}) RETURNING id`,
-        [account_id, bill.ledger, paid_date, -Math.abs(Number(bill.amount)),
-         `Bill paid: ${bill.name}${paid_by_check ? ' (check)' : ''}`,
-         !paid_by_check, paid_by_check ? null : paid_date,
-         ...segmentValues(bill)]
-      );
-      linkedTransactionId = txRows[0].id;
-      await client.query(
-        `UPDATE accounts SET opening_balance = opening_balance - $1 WHERE id = $2`,
-        [Math.abs(Number(bill.amount)), account_id]
-      );
-    }
-
-    await client.query(
-      `UPDATE bills SET status = 'paid', paid_date = $1, linked_transaction_id = $2 WHERE id = $3`,
-      [paid_date, linkedTransactionId, bill.id]
-    );
-    return { ...bill, status: 'paid', paid_date, linked_transaction_id: linkedTransactionId };
-  });
-
-  if (!bill) return res.status(404).json({ error: 'not found' });
-
-  if (bill.frequency === 'monthly' || bill.frequency === 'quarterly') {
-    const monthsToAdd = bill.frequency === 'monthly' ? 1 : 3;
-    const nextDue = new Date(bill.due_date);
-    nextDue.setMonth(nextDue.getMonth() + monthsToAdd);
-    const { rows: nextRows } = await pool.query(
-      `INSERT INTO bills
-        (name, ledger, category, amount, frequency, due_date, status, notes, has_gst, gst_pct, gst_amount, subtotal_amount,
-         ${SEG_COLS})
-       VALUES ($1,$2,$3,$4,$5,$6,'unpaid',$7,$8,$9,$10,$11,${segPlaceholders(12)}) RETURNING *`,
-      [bill.name, bill.ledger, bill.category, bill.amount, bill.frequency,
-       nextDue.toISOString().slice(0, 10), bill.notes,
-       bill.has_gst, bill.gst_pct, bill.gst_amount, bill.subtotal_amount,
-       ...segmentValues(bill)]
-    );
-    return res.json({ paid: bill.id, nextBill: nextRows[0] });
-  }
-
-  res.json({ paid: bill.id, nextBill: null });
+  const r = await withTransaction((client) => payBill(client, req.params.id, { account_id, date: paid_date, paid_by_check }));
+  if (!r) return res.status(404).json({ error: 'not found' });
+  res.json({ paid: r.bill.id, nextBill: r.nextBill });
 }));
 
 // Editing an UNPAID bill is always safe — nothing downstream depends on its
@@ -149,31 +99,27 @@ router.post('/:id/pay', ah(async (req, res) => {
 // transaction pointing at stale numbers.
 router.post('/:id/unpay', ah(async (req, res) => {
   const bill = await withTransaction(async (client) => {
-    const { rows } = await client.query('SELECT * FROM bills WHERE id = $1', [req.params.id]);
+    const { rows } = await client.query('SELECT * FROM bills WHERE id = $1 FOR UPDATE', [req.params.id]);
     if (!rows.length) return null;
     const bill = rows[0];
     if (bill.status !== 'paid') return bill;
-
-    let txToDelete = null;
-    if (bill.linked_transaction_id) {
-      const { rows: txRows } = await client.query(
-        'SELECT * FROM transactions WHERE id = $1', [bill.linked_transaction_id]
-      );
-      if (txRows.length) txToDelete = txRows[0];
-    }
-    // Null the FK reference before deleting the transaction it points to —
-    // otherwise the DELETE trips the foreign key immediately, before this
-    // row ever stops pointing at it.
+    // Null the FK reference before deleting the transaction it points to.
     const { rows: updated } = await client.query(
       `UPDATE bills SET status = 'unpaid', paid_date = NULL, linked_transaction_id = NULL WHERE id = $1 RETURNING *`,
       [bill.id]
     );
-    if (txToDelete) {
+    if (bill.linked_transaction_id) await removeTransaction(client, bill.linked_transaction_id);
+    // Paying a recurring bill created next cycle's bill. Reopening this one
+    // makes that copy a duplicate (the forecast would count the cycle
+    // twice), so remove it — only if it's still unpaid and untouched.
+    if (bill.frequency === 'monthly' || bill.frequency === 'quarterly') {
+      const nextDue = addMonths(toISODate(bill.due_date), bill.frequency === 'monthly' ? 1 : 3);
       await client.query(
-        `UPDATE accounts SET opening_balance = opening_balance - $1 WHERE id = $2`,
-        [txToDelete.amount, txToDelete.account_id]
+        `DELETE FROM bills WHERE id = (
+           SELECT id FROM bills WHERE status = 'unpaid' AND name = $1 AND frequency = $2
+             AND amount = $3 AND due_date = $4 AND id > $5 ORDER BY id LIMIT 1)`,
+        [bill.name, bill.frequency, bill.amount, nextDue, bill.id]
       );
-      await client.query('DELETE FROM transactions WHERE id = $1', [txToDelete.id]);
     }
     return updated[0];
   });

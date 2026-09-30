@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
-import { validateSegment, ledgerForSegment } from '../lib/segments.js';
+import { validateSegment } from '../lib/segments.js';
 import { todayISO, toISODate } from '../lib/dates.js';
-import { loadBalanceSheet } from '../lib/balanceSheet.js';
+import { cardBalances } from '../lib/cardLedger.js';
+import { payCard, recomputeCardStatement, removeTransaction, upsertCardStatement, anchorCard } from '../lib/postings.js';
 
 const router = Router();
 const round2 = (n) => Math.round(n * 100) / 100;
@@ -40,33 +41,35 @@ router.get('/', ah(async (req, res) => {
     rewardsByCard.get(r.credit_card_id).push(r);
   }
 
+  const balances = await cardBalances(pool, cards);
   const out = cards.map((c) => {
-    const own = (byCard.get(c.id) || []).sort((a, b) => toISODate(b.due_date).localeCompare(toISODate(a.due_date)));
-    const unpaid = own.filter((s) => !s.paid).sort((a, b) => toISODate(a.due_date).localeCompare(toISODate(b.due_date)));
-    const nextDue = unpaid[0] || null;
-    const lastAny = own[0] || null; // most recent statement, paid or not
-    const overdueUnpaid = unpaid.filter((s) => toISODate(s.due_date) < today);
-    // The full amount currently owed, not just the soonest cycle's — a
-    // card behind by more than one unpaid statement owes all of them.
-    const outstanding = c.current_balance != null
-      ? Number(c.current_balance)
-      : round2(unpaid.reduce((s, st) => s + Number(st.statement_balance) - Number(st.paid_amount || 0), 0));
+    // Newest cycle first. Statements are cumulative, so the latest one is
+    // what's owed and due now; older unpaid ones are superseded by it.
+    const cycle = (st) => toISODate(st.statement_date || st.due_date);
+    const own = (byCard.get(c.id) || []).sort((a, b) => cycle(b).localeCompare(cycle(a)) || b.id - a.id);
+    const latest = own[0] || null;
+    const nextDue = latest && !latest.paid ? latest : null;
+    const lastAny = latest;
+    const { outstanding, itemized } = balances.get(c.id) || { outstanding: 0, itemized: false };
+    // Grace period survives only if the last statement whose deadline has
+    // come (paid, or past due) was paid IN FULL by its due date.
+    const decided = own.find((st) => st.paid || toISODate(st.due_date) < today) || null;
 
     return {
       ...c,
+      itemized,
+      ledger_start_date: toISODate(c.ledger_start_date),
       outstanding_balance: outstanding,
       utilization_pct: c.credit_limit ? round2((outstanding / Number(c.credit_limit)) * 100) : null,
       next_due: nextDue ? {
         id: nextDue.id,
         amount: round2(Number(nextDue.statement_balance) - Number(nextDue.paid_amount || 0)),
+        paid_so_far: Number(nextDue.paid_amount || 0),
         due_date: toISODate(nextDue.due_date),
         overdue: toISODate(nextDue.due_date) < today,
       } : null,
-      overdue_count: overdueUnpaid.length,
-      // Grace period on new purchases survives only if the last statement
-      // was paid in full by ITS due date — this reflects that, not the
-      // current cycle (which may still be open).
-      grace_period_intact: lastAny ? (lastAny.paid ? !!lastAny.paid_in_full : null) : null,
+      overdue_count: nextDue && toISODate(nextDue.due_date) < today ? 1 : 0,
+      grace_period_intact: decided ? decided.paid_in_full === true : null,
       last_statement: lastAny ? {
         id: lastAny.id, due_date: toISODate(lastAny.due_date),
         balance: Number(lastAny.statement_balance), paid: lastAny.paid, paid_in_full: lastAny.paid_in_full,
@@ -130,9 +133,42 @@ router.patch('/:id', ah(async (req, res) => {
 // it (ON DELETE CASCADE). Ledger transactions from payments already
 // recorded are left alone — the money really moved.
 router.delete('/:id', ah(async (req, res) => {
-  const { rowCount } = await pool.query('DELETE FROM credit_cards WHERE id = $1', [req.params.id]);
-  if (!rowCount) return res.status(404).json({ error: 'not found' });
+  const ok = await withTransaction(async (client) => {
+    const { rows } = await client.query('SELECT id FROM credit_cards WHERE id = $1', [req.params.id]);
+    if (!rows.length) return false;
+    // Purchases charged to the card go with it (they moved no account
+    // balance). Payments out of bank accounts really happened, so they
+    // stay — just no longer tied to this card.
+    const { rows: purchases } = await client.query(
+      'SELECT id FROM transactions WHERE credit_card_id = $1 AND account_id IS NULL', [req.params.id]
+    );
+    for (const t of purchases) await removeTransaction(client, t.id);
+    await client.query(
+      'UPDATE transactions SET credit_card_id = NULL, credit_card_statement_id = NULL WHERE credit_card_id = $1', [req.params.id]
+    );
+    await client.query('DELETE FROM credit_cards WHERE id = $1', [req.params.id]);
+    return true;
+  });
+  if (!ok) return res.status(404).json({ error: 'not found' });
   res.status(204).end();
+}));
+
+// Switch a card to itemized tracking by hand (an agent's first itemized
+// statement does this automatically): from `start_date` its balance is
+// `opening_balance` plus every purchase, refund and payment entered.
+router.post('/:id/start-ledger', ah(async (req, res) => {
+  const { start_date, opening_balance } = req.body || {};
+  if (!start_date || opening_balance == null || Number.isNaN(Number(opening_balance))) {
+    return res.status(400).json({ error: 'start_date and opening_balance (what the card owed on that date) are required.' });
+  }
+  const card = await withTransaction(async (client) => {
+    const { rows } = await client.query('SELECT * FROM credit_cards WHERE id = $1', [req.params.id]);
+    if (!rows.length) return null;
+    // Also moves an itemized card's start EARLIER, for loading older statements.
+    return anchorCard(client, rows[0], { start_date, opening_balance: Number(opening_balance) });
+  });
+  if (!card) return res.status(404).json({ error: 'not found' });
+  res.json(card);
 }));
 
 // ---- Reward categories --------------------------------------------------
@@ -190,15 +226,27 @@ router.post('/:id/statements', ah(async (req, res) => {
   if (statement_balance == null || Number.isNaN(Number(statement_balance))) {
     return res.status(400).json({ error: 'statement_balance is required' });
   }
-  const { rows } = await pool.query(
-    `INSERT INTO credit_card_statements
-      (credit_card_id, statement_date, due_date, statement_balance, minimum_payment, interest_amount, notes)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [req.params.id, statement_date || null, due_date, Number(statement_balance),
-     minimum_payment === '' || minimum_payment == null ? null : Number(minimum_payment),
-     interest_amount === '' || interest_amount == null ? null : Number(interest_amount), notes]
-  );
-  res.status(201).json(rows[0]);
+  const num = (v) => (v === '' || v == null ? null : Number(v));
+  const row = await withTransaction(async (client) => {
+    if (statement_date) {
+      // Same path as a statement pushed by an agent: deduped on its date,
+      // and picks up any payment already made toward it.
+      const s = await upsertCardStatement(client, req.params.id, {
+        statement_date, due_date, statement_balance: Number(statement_balance),
+        minimum_payment: num(minimum_payment), interest_amount: num(interest_amount),
+      });
+      if (notes) await client.query('UPDATE credit_card_statements SET notes = $1 WHERE id = $2', [notes, s.id]);
+      return { ...s, notes: notes || s.notes };
+    }
+    const { rows } = await client.query(
+      `INSERT INTO credit_card_statements
+        (credit_card_id, statement_date, due_date, statement_balance, minimum_payment, interest_amount, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [req.params.id, null, due_date, Number(statement_balance), num(minimum_payment), num(interest_amount), notes]
+    );
+    return rows[0];
+  });
+  res.status(201).json(row);
 }));
 
 // Editing an UNPAID statement is always safe. Once PAID, a transaction
@@ -223,7 +271,9 @@ router.patch('/statements/:id', ah(async (req, res) => {
      WHERE id = $7 RETURNING *`,
     [due_date, statement_balance, minimum_payment, interest_amount, statement_date, notes, req.params.id]
   );
-  res.json(rows[0]);
+  // A changed balance can turn partial payments into paid-in-full or back.
+  const recomputed = await withTransaction((client) => recomputeCardStatement(client, rows[0].id));
+  res.json(recomputed);
 }));
 
 router.delete('/statements/:id', ah(async (req, res) => {
@@ -232,15 +282,12 @@ router.delete('/statements/:id', ah(async (req, res) => {
   res.status(204).end();
 }));
 
-// Paying a statement moves real money: creates the ledger transaction
-// (a normal expense — a card payment isn't debt service, since the
-// spending it settles never hit a Money Hub account until now), updates
-// the paying account's balance, and marks the cycle paid — one DB
-// transaction, same pattern as recording a bill or loan payment.
-// `amount` lets you pay less than the full balance (a minimum payment);
-// `paid_in_full` is computed from whether the FULL statement_balance was
-// covered by due_date — the number that decides whether next cycle's
-// grace period survives.
+// Paying a statement: money out of an account toward this cycle. Goes
+// through the same payCard() an agent's bank-statement line does. Partial
+// payments add up; the cycle is paid once they cover statement_balance,
+// and `paid_in_full` records whether that happened by the due date (the
+// grace-period test). For an itemized card the payment is a transfer —
+// the purchases are the expenses — otherwise the payment is the expense.
 router.post('/statements/:id/pay', ah(async (req, res) => {
   const {
     account_id, amount = null, paid_date = todayISO(), paid_by_check = false,
@@ -248,70 +295,41 @@ router.post('/statements/:id/pay', ah(async (req, res) => {
   if (!account_id) return res.status(400).json({ error: 'account_id is required — which account is this payment coming out of?' });
 
   const result = await withTransaction(async (client) => {
-    const { rows } = await client.query(
-      `SELECT s.*, c.name AS card_name, c.segment FROM credit_card_statements s
-       JOIN credit_cards c ON c.id = s.credit_card_id WHERE s.id = $1`,
-      [req.params.id]
-    );
+    const { rows } = await client.query('SELECT * FROM credit_card_statements WHERE id = $1', [req.params.id]);
     if (!rows.length) return null;
     const stmt = rows[0];
     if (stmt.paid) return stmt;
-
-    const pay = amount != null && amount !== '' ? Number(amount) : Number(stmt.statement_balance);
-    const ledger = ledgerForSegment(stmt.segment);
-    const { rows: txRows } = await client.query(
-      `INSERT INTO transactions
-        (account_id, ledger, date, amount, description, entered_by, segment, cleared, cleared_date)
-       VALUES ($1, $2, $3, $4, $5, 'manual', $6, $7, $8) RETURNING id`,
-      [account_id, ledger, paid_date, -pay,
-       `Credit card payment: ${stmt.card_name}${paid_by_check ? ' (check)' : ''}`,
-       stmt.segment, !paid_by_check, paid_by_check ? null : paid_date]
-    );
-    await client.query(`UPDATE accounts SET opening_balance = opening_balance - $1 WHERE id = $2`, [pay, account_id]);
-
-    const paidInFull = pay >= Number(stmt.statement_balance) - 0.005 && toISODate(paid_date) <= toISODate(stmt.due_date);
-    const { rows: updated } = await client.query(
-      `UPDATE credit_card_statements SET
-         paid = true, paid_date = $1, paid_amount = $2, paid_in_full = $3,
-         account_id = $4, linked_transaction_id = $5
-       WHERE id = $6 RETURNING *`,
-      [paid_date, pay, paidInFull, account_id, txRows[0].id, stmt.id]
-    );
-    return updated[0];
+    const remaining = Number(stmt.statement_balance) - Number(stmt.paid_amount || 0);
+    const pay = amount != null && amount !== '' ? Number(amount) : remaining;
+    const r = await payCard(client, stmt.credit_card_id, {
+      account_id, date: paid_date, amount: pay, statement_id: stmt.id, paid_by_check,
+    });
+    return r.statement;
   });
 
   if (!result) return res.status(404).json({ error: 'not found' });
   res.json(result);
 }));
 
-// Reverses a recorded payment: deletes the linked transaction, restores
-// the account balance, reopens the statement.
+// Reverses payments recorded here by hand (deletes them, restoring the
+// account balance) and reopens the cycle. Payments that came in from a
+// bank statement are real money that moved — those are left alone; delete
+// one from Ledgers if it was genuinely wrong.
 router.post('/statements/:id/unpay', ah(async (req, res) => {
   const result = await withTransaction(async (client) => {
     const { rows } = await client.query('SELECT * FROM credit_card_statements WHERE id = $1', [req.params.id]);
     if (!rows.length) return null;
-    const stmt = rows[0];
-    if (!stmt.paid) return stmt;
-
-    let txToDelete = null;
-    if (stmt.linked_transaction_id) {
-      const { rows: txRows } = await client.query('SELECT * FROM transactions WHERE id = $1', [stmt.linked_transaction_id]);
-      if (txRows.length) txToDelete = txRows[0];
-    }
-    // Null the FK reference before deleting the transaction it points to —
-    // otherwise the DELETE trips the foreign key immediately, before this
-    // row ever stops pointing at it.
-    const { rows: updated } = await client.query(
-      `UPDATE credit_card_statements SET
-         paid = false, paid_date = NULL, paid_amount = NULL, paid_in_full = NULL, linked_transaction_id = NULL
-       WHERE id = $1 RETURNING *`,
-      [stmt.id]
+    const { rows: manual } = await client.query(
+      `SELECT id FROM transactions WHERE credit_card_statement_id = $1 AND account_id IS NOT NULL AND source IS NULL`,
+      [req.params.id]
     );
-    if (txToDelete) {
-      await client.query(`UPDATE accounts SET opening_balance = opening_balance - $1 WHERE id = $2`, [txToDelete.amount, txToDelete.account_id]);
-      await client.query('DELETE FROM transactions WHERE id = $1', [txToDelete.id]);
+    if (!manual.length) {
+      const err = new Error('No hand-recorded payment to reverse on this statement — its payments came from bank statements.');
+      err.status = 409;
+      throw err;
     }
-    return updated[0];
+    for (const t of manual) await removeTransaction(client, t.id);
+    return recomputeCardStatement(client, Number(req.params.id));
   });
   if (!result) return res.status(404).json({ error: 'not found' });
   res.json(result);

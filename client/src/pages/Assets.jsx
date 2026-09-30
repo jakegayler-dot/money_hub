@@ -13,7 +13,6 @@ const CLASS_DEFAULTS = {
   market_livestock: { unit: 'head', segment: 'livestock' }, breeding_livestock: { unit: 'head', segment: 'livestock' },
   other: { unit: 'units', segment: 'grain' },
 };
-const emptyPrice = { commodity: '', unit: 'bu', price_per_unit: '', as_of: new Date().toISOString().slice(0, 10) };
 
 // Typical CCA declining-balance rates, as a starting point. The CCA class
 // that applies to a specific asset is a tax question — confirm with your
@@ -124,26 +123,40 @@ export default function Assets() {
   const [editingId, setEditingId] = useState(null);
   const [adding, setAdding] = useState(false);
   const [item, setItem] = useState(emptyItem);
-  const [prices, setPrices] = useState([]);
-  const [priceForm, setPriceForm] = useState(emptyPrice);
+  const [itemEdit, setItemEdit] = useState(null);
+  const [sales, setSales] = useState({ items: [], undated: [] }); // forecast sales from inventory
+  const [fallback, setFallback] = useState({ month: '', day: '' }); // { id, quantity, price_per_unit } for a hand-entered item
   const [error, setError] = useState(null);
 
   const load = () => {
     fetch('/api/assets').then((r) => r.json()).then((d) => setAssets(Array.isArray(d) ? d : []));
     fetch('/api/inventory').then((r) => r.json()).then((d) => setInventory(d && d.groups ? d : { groups: [], items: [] }));
     fetch('/api/loans').then((r) => r.json()).then((d) => setLoans(Array.isArray(d) ? d : []));
-    fetch('/api/inventory/prices').then((r) => r.json()).then((d) => setPrices(Array.isArray(d) ? d : []));
+    fetch('/api/estimates/from-inventory').then((r) => r.json()).then((d) => {
+      setSales(d && d.items ? d : { items: [], undated: [] });
+      const [m, day] = (d && d.fallback ? d.fallback : '-').split('-');
+      setFallback({ month: m || '', day: day ? String(Number(day)) : '' });
+    });
   };
 
-  const savePrice = async (e) => {
-    e.preventDefault();
+  const saveFallback = async (clear = false) => {
     setError(null);
-    const res = await fetch('/api/inventory/prices', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...priceForm, price_per_unit: Number(priceForm.price_per_unit) }),
+    const value = clear ? null : `${String(fallback.month).padStart(2, '0')}-${String(fallback.day).padStart(2, '0')}`;
+    const res = await fetch('/api/inventory/sale-fallback', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value }),
     });
     if (!res.ok) { const b = await res.json().catch(() => ({})); setError(b.error || `HTTP ${res.status}`); return; }
-    setPriceForm(emptyPrice);
+    load();
+  };
+
+  const saveItemEdit = async () => {
+    setError(null);
+    const res = await fetch(`/api/inventory/${itemEdit.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quantity: Number(itemEdit.quantity), price_per_unit: itemEdit.price_per_unit === '' ? null : Number(itemEdit.price_per_unit) }),
+    });
+    if (!res.ok) { const b = await res.json().catch(() => ({})); setError(b.error || `HTTP ${res.status}`); return; }
+    setItemEdit(null);
     load();
   };
   useEffect(load, []);
@@ -183,6 +196,18 @@ export default function Assets() {
     .filter((g) => g.rows.length);
   const unsecuredLoans = loans.filter((l) => !l.asset_id);
   const unpricedGroups = inventory.groups.filter((g) => g.needs_price > 0);
+  const saleById = new Map(sales.items.map((x) => [x.inventory_id, x]));
+  const undatedIds = new Set(sales.undated.map((x) => x.id));
+  const BASIS = { item: 'manager date', 'crop estimate': "crop's estimate", fallback: 'fallback date' };
+  const forecastFor = (g) => {
+    if (!['crop', 'market_livestock'].includes(g.item_class)) return { text: 'kept — not forecast' };
+    const dated = g.items.map((i) => saleById.get(i.id)).filter(Boolean);
+    const missing = g.items.filter((i) => undatedIds.has(i.id)).length;
+    if (!dated.length) return missing ? { text: 'no sale date', bad: true } : { text: '— (all contracted)' };
+    const dates = [...new Set(dated.map((x) => x.start_date))];
+    const bases = [...new Set(dated.map((x) => BASIS[x.basis]))];
+    return { text: dates.length === 1 ? dates[0] : `${dates.length} dates`, sub: bases.join(', ') + (missing ? ` · ${missing} undated` : ''), bad: missing > 0 };
+  };
 
   return (
     <>
@@ -202,7 +227,7 @@ export default function Assets() {
         <MetricCard
           label="Inventory (estimated)"
           value={money(totals.inventory)}
-          sub={unpricedGroups.length ? `${unpricedGroups.length} item${unpricedGroups.length > 1 ? 's' : ''} need a price — counted at $0` : 'Uncontracted only, at market price'}
+          sub={unpricedGroups.length ? `${unpricedGroups.length} item${unpricedGroups.length > 1 ? 's' : ''} missing a price — counted at $0` : "Uncontracted only, at the managers' estimates"}
         />
         <MetricCard label="Loans on assets" value={money(totals.loans)} sub={unsecuredLoans.length ? `+ ${unsecuredLoans.length} loan${unsecuredLoans.length > 1 ? 's' : ''} not tied to an asset` : 'Every loan is tied to an asset'} />
         <MetricCard
@@ -298,20 +323,23 @@ export default function Assets() {
       </div>
 
       <div className="panel">
-        <div className="panel-header">Inventory &amp; livestock — estimated at market price</div>
+        <div className="panel-header">Inventory &amp; livestock — at the managers' estimates</div>
         {inventory.groups.length === 0 ? (
           <div className="empty-state">Nothing yet — Quarter Section and Livestock Manager fill this in once their exports are running.</div>
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table>
               <thead>
-                <tr><th>Item</th><th>Type</th><th>On hand</th><th>Contracted</th><th>Counted</th><th>Avg price</th><th>Value counted</th><th>Source</th></tr>
+                <tr><th>Item</th><th>Type</th><th>On hand</th><th>Contracted</th><th>Counted</th><th>Avg price</th><th>Value counted</th><th>Forecast sale</th><th></th></tr>
               </thead>
               <tbody>
                 {inventory.groups.map((g) => (
                   <Fragment key={g.key}>
                     <tr>
-                      <td>{g.commodity}</td>
+                      <td>
+                        {g.commodity}
+                        <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>{[...new Set(g.items.map((i) => (i.source === 'manual' ? 'entered by hand' : i.source)))].join(', ')}</div>
+                      </td>
                       <td>{CLASS_LABELS[g.item_class]}</td>
                       <td>{Number(g.on_hand).toLocaleString()} {g.unit}</td>
                       <td>
@@ -320,25 +348,57 @@ export default function Assets() {
                       </td>
                       <td>{Number(g.uncontracted).toLocaleString()} {g.unit}</td>
                       <td>
-                        {g.needs_price > 0 ? (
-                          <button className="small" onClick={() => setPriceForm({ ...emptyPrice, commodity: g.commodity, unit: g.unit })}>Set price</button>
+                        {g.needs_price > 0 && g.needs_price === g.items.length ? (
+                          <span className="badge fail">NO PRICE</span>
                         ) : <>{unitPrice(g.avg_price)}/{g.unit}</>}
-                        <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>
-                          {g.needs_price > 0 ? 'no price yet' : g.items.every((i) => i.price_basis === 'price list') ? 'price list' : g.items.every((i) => i.price_basis === 'source') ? 'from source' : 'mixed'}
+                        <div style={{ fontSize: 11, color: g.needs_price > 0 ? 'var(--negative)' : 'var(--text-faint)' }}>
+                          {g.needs_price > 0
+                            ? `${g.needs_price} of ${g.items.length} without a price — counted at $0; set it in ${[...new Set(g.items.filter((i) => i.price_basis === 'missing').map((i) => (i.source === 'manual' ? 'Edit below' : i.source)))].join(', ')}`
+                            : g.items.every((i) => i.price_basis === 'source') ? 'manager estimate' : g.items.every((i) => i.price_basis === 'entered by hand') ? 'entered by hand' : 'manager + hand-entered'}
                         </div>
                       </td>
                       <td>{money(g.counted_value)}</td>
-                      <td>{[...new Set(g.items.map((i) => i.source))].join(', ')}</td>
+                      <td>
+                        {(() => { const f = forecastFor(g); return (
+                          <>
+                            <span style={f.bad ? { color: 'var(--negative)' } : undefined}>{f.text}</span>
+                            {f.sub && <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>{f.sub}</div>}
+                          </>
+                        ); })()}
+                      </td>
+                      <td></td>
                     </tr>
-                    {g.items.length > 1 && g.items.map((i) => (
+                    {(g.items.length > 1 || g.items.some((i) => i.source === 'manual')) && g.items.map((i) => (
                       <tr key={i.id} style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                         <td style={{ paddingLeft: 36 }}>{i.location || i.external_id || 'Lot'}</td>
                         <td></td>
-                        <td>{Number(i.quantity).toLocaleString()} {i.unit}</td>
-                        <td colSpan={3}>{i.quantity_contracted != null ? `${Number(i.quantity_contracted).toLocaleString()} contracted` : ''} · as of {String(i.as_of).slice(0, 10)}</td>
-                        <td></td>
                         <td>
-                          {i.source === 'manual' && <button className="small secondary" onClick={() => remove(`/api/inventory/${i.id}`)}>Delete</button>}
+                          {itemEdit?.id === i.id ? (
+                            <input type="number" step="0.001" aria-label="Quantity" style={{ maxWidth: 110 }} value={itemEdit.quantity}
+                              onChange={(e) => setItemEdit({ ...itemEdit, quantity: e.target.value })} />
+                          ) : <>{Number(i.quantity).toLocaleString()} {i.unit}</>}
+                        </td>
+                        <td colSpan={2}>{i.quantity_contracted != null ? `${Number(i.quantity_contracted).toLocaleString()} contracted · ` : ''}as of {String(i.as_of).slice(0, 10)}</td>
+                        <td>
+                          {itemEdit?.id === i.id ? (
+                            <input type="number" step="0.01" aria-label="Price per unit" placeholder="Price / unit" style={{ maxWidth: 110 }} value={itemEdit.price_per_unit}
+                              onChange={(e) => setItemEdit({ ...itemEdit, price_per_unit: e.target.value })} />
+                          ) : i.effective_price != null ? `${unitPrice(i.effective_price)}/${i.unit}` : <span style={{ color: 'var(--negative)' }}>no price</span>}
+                        </td>
+                        <td>{money(i.counted_value)}</td>
+                        <td>{saleById.get(i.id)?.start_date || (undatedIds.has(i.id) ? <span style={{ color: 'var(--negative)' }}>no date</span> : '')}</td>
+                        <td>
+                          {i.source !== 'manual' ? null : itemEdit?.id === i.id ? (
+                            <span style={{ display: 'inline-flex', gap: 4 }}>
+                              <button className="small" onClick={saveItemEdit}>Save</button>
+                              <button className="small secondary" onClick={() => setItemEdit(null)}>Cancel</button>
+                            </span>
+                          ) : (
+                            <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                              <button className="small secondary" onClick={() => setItemEdit({ id: i.id, quantity: String(Number(i.quantity)), price_per_unit: i.price_per_unit != null ? String(Number(i.price_per_unit)) : '' })}>Edit</button>
+                              <button className="small secondary" onClick={() => remove(`/api/inventory/${i.id}`, `Delete ${i.commodity}${i.location ? ` (${i.location})` : ''}?`)}>Delete</button>
+                            </span>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -352,8 +412,27 @@ export default function Assets() {
           Only the uncontracted quantity counts toward equity — grain already under an open contract is counted
           once, as that contract's money in. If the source system reports how much of each bin is contracted,
           that's used; otherwise it's worked out from open contracts for the same commodity and unit.
-          Breeding stock is never netted against contracts.
+          Breeding stock is never netted against contracts. Prices are the estimates Quarter Section and Livestock
+          Manager send — change them there. Add items they don't track (fuel, seed, chemical on hand) by hand below.
         </p>
+        <div className="fallback-row">
+          <span>
+            Uncontracted grain and market cattle sell on their manager's date, else their crop's estimate date. With
+            neither, assume sold by
+          </span>
+          <select aria-label="Fallback month" value={fallback.month} onChange={(e) => setFallback({ ...fallback, month: e.target.value })}>
+            <option value="">month</option>
+            {['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].map((m, i) => <option key={m} value={String(i + 1).padStart(2, '0')}>{m}</option>)}
+          </select>
+          <input aria-label="Fallback day" type="number" min="1" max="31" placeholder="day" style={{ width: 70 }}
+            value={fallback.day} onChange={(e) => setFallback({ ...fallback, day: e.target.value })} />
+          <button className="small" disabled={!fallback.month || !fallback.day} onClick={() => saveFallback()}>Save</button>
+          {sales.fallback && <button className="small secondary" onClick={() => saveFallback(true)}>Clear</button>}
+          <span style={{ color: sales.undated.length ? 'var(--negative)' : 'var(--text-faint)' }}>
+            {sales.fallback_date ? `next: ${sales.fallback_date}` : 'not set'}
+            {sales.undated.length ? ` · ${sales.undated.length} item${sales.undated.length > 1 ? 's' : ''} left out of the forecast for lack of a date` : ''}
+          </span>
+        </div>
         <form className="form-panel" onSubmit={addItem} style={{ maxWidth: 'none', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
           <div className="field"><label>Type</label>
             <select value={item.item_class} onChange={(e) => {
@@ -370,55 +449,14 @@ export default function Assets() {
             <input required value={item.unit} onChange={(e) => setItem({ ...item, unit: e.target.value })} /></div>
           <div className="field"><label>Contracted (optional)</label>
             <input type="number" step="0.001" value={item.quantity_contracted} onChange={(e) => setItem({ ...item, quantity_contracted: e.target.value })} placeholder="auto from contracts" /></div>
-          <div className="field"><label>Est. price / unit</label>
-            <input type="number" step="0.01" value={item.price_per_unit} onChange={(e) => setItem({ ...item, price_per_unit: e.target.value })} placeholder="blank = price list" /></div>
+          <div className="field"><label>Your estimate / unit</label>
+            <input type="number" step="0.01" min="0" value={item.price_per_unit} onChange={(e) => setItem({ ...item, price_per_unit: e.target.value })} placeholder="blank = $0" /></div>
           <div className="field"><label>Location</label>
             <input value={item.location} onChange={(e) => setItem({ ...item, location: e.target.value })} placeholder="Bin 4" /></div>
           <div className="field" style={{ alignSelf: 'end' }}><button type="submit">Add manually</button></div>
         </form>
       </div>
 
-      <div className="panel">
-        <div className="panel-header">Price list — market value per unit</div>
-        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0, padding: '12px 20px 0' }}>
-          Used for any inventory item whose source didn't send its own price — Quarter Section counts bushels and
-          bales, this is where their value comes from. Matched on item name and unit (Canola + bu, Hay + bales).
-          Update it when bids move; every item priced from it revalues immediately.
-        </p>
-        {prices.length > 0 && (
-          <table style={{ marginTop: 12 }}>
-            <thead><tr><th>Item</th><th>Unit</th><th>Price</th><th>As of</th><th>Source</th><th></th></tr></thead>
-            <tbody>
-              {prices.map((p) => (
-                <tr key={p.id}>
-                  <td>{p.commodity}</td>
-                  <td>{p.unit}</td>
-                  <td>{unitPrice(Number(p.price_per_unit))}</td>
-                  <td>{String(p.as_of).slice(0, 10)}</td>
-                  <td>{p.source === 'manual' ? '—' : p.source}</td>
-                  <td>
-                    <span style={{ display: 'inline-flex', gap: 4 }}>
-                      <button className="small secondary" onClick={() => setPriceForm({ commodity: p.commodity, unit: p.unit, price_per_unit: String(Number(p.price_per_unit)), as_of: new Date().toISOString().slice(0, 10) })}>Update</button>
-                      <button className="small secondary" onClick={() => remove(`/api/inventory/prices/${p.id}`)}>Delete</button>
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-        <form className="form-panel" onSubmit={savePrice} style={{ maxWidth: 'none', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
-          <div className="field"><label>Item</label>
-            <input required value={priceForm.commodity} onChange={(e) => setPriceForm({ ...priceForm, commodity: e.target.value })} placeholder="Canola, Hay…" /></div>
-          <div className="field"><label>Unit</label>
-            <input required value={priceForm.unit} onChange={(e) => setPriceForm({ ...priceForm, unit: e.target.value })} /></div>
-          <div className="field"><label>Price / unit</label>
-            <input type="number" step="0.01" min="0" required value={priceForm.price_per_unit} onChange={(e) => setPriceForm({ ...priceForm, price_per_unit: e.target.value })} /></div>
-          <div className="field"><label>As of</label>
-            <input type="date" value={priceForm.as_of} onChange={(e) => setPriceForm({ ...priceForm, as_of: e.target.value })} /></div>
-          <div className="field" style={{ alignSelf: 'end' }}><button type="submit">Save price</button></div>
-        </form>
-      </div>
     </>
   );
 }

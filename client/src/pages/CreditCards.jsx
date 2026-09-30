@@ -31,6 +31,8 @@ export default function CreditCards() {
   const [calcAmount, setCalcAmount] = useState('');
   const [calcCategory, setCalcCategory] = useState('');
   const [calcResult, setCalcResult] = useState(null);
+  const [cardTx, setCardTx] = useState({}); // cardId -> recent transactions charged to / paid on it
+  const [ledgerForm, setLedgerForm] = useState({ start_date: '', opening_balance: '' });
 
   const load = () => { fetch('/api/credit-cards').then((r) => r.json()).then((d) => setCards(Array.isArray(d) ? d : [])); };
   useEffect(() => {
@@ -122,6 +124,9 @@ export default function CreditCards() {
       fetch(`/api/credit-cards/${c.id}/statements`).then((r) => r.json())
         .then((rows) => setStatements((s) => ({ ...s, [c.id]: rows })));
     }
+    setLedgerForm({ start_date: '', opening_balance: '' });
+    fetch(`/api/transactions?credit_card_id=${c.id}&limit=25`).then((r) => r.json())
+      .then((rows) => setCardTx((t) => ({ ...t, [c.id]: rows })));
   };
 
   const addStatement = async (cardId) => {
@@ -177,7 +182,11 @@ export default function CreditCards() {
   const unpayStatement = async (stmtId, cardId) => {
     if (!window.confirm('Reverse this payment? The ledger transaction it created is deleted and the account balance restored.')) return;
     const res = await fetch(`/api/credit-cards/statements/${stmtId}/unpay`, { method: 'POST' });
-    if (!res.ok) { setError(`Could not reverse payment (HTTP ${res.status}).`); return; }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(body?.error || `Could not reverse payment (HTTP ${res.status}).`);
+      return;
+    }
     const rows = await fetch(`/api/credit-cards/${cardId}/statements`).then((r) => r.json());
     setStatements((s) => ({ ...s, [cardId]: rows }));
     load();
@@ -189,6 +198,21 @@ export default function CreditCards() {
     if (!res.ok) { setError(`Could not delete (HTTP ${res.status}).`); return; }
     const rows = await fetch(`/api/credit-cards/${cardId}/statements`).then((r) => r.json());
     setStatements((s) => ({ ...s, [cardId]: rows }));
+    load();
+  };
+
+  const startLedger = async (cardId) => {
+    setError(null);
+    const res = await fetch(`/api/credit-cards/${cardId}/start-ledger`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ start_date: ledgerForm.start_date, opening_balance: Number(ledgerForm.opening_balance) }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(body?.error || `Could not start itemizing (HTTP ${res.status}).`);
+      return;
+    }
     load();
   };
 
@@ -334,7 +358,12 @@ export default function CreditCards() {
                         {c.status === 'closed' && <> · <span className="badge">CLOSED</span></>}
                       </div>
                     </td>
-                    <td>{money(Number(c.outstanding_balance))}</td>
+                    <td>
+                      {money(Number(c.outstanding_balance))}
+                      <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>
+                        {c.itemized ? 'itemized' : c.current_balance != null ? 'entered by hand' : 'from latest statement'}
+                      </div>
+                    </td>
                     <td>{c.utilization_pct != null ? pct(c.utilization_pct / 100) : '—'}</td>
                     <td>{Number(c.apr_purchase).toFixed(2)}%</td>
                     <td>
@@ -397,7 +426,7 @@ export default function CreditCards() {
                                 <option value="">— unknown —</option>
                                 {MONTH_NAMES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
                               </select></div>
-                            <div className="field"><label>Current balance</label>
+                            <div className="field"><label>Current balance{c.itemized ? ' (not used — itemized)' : ''}</label>
                               <input type="number" step="0.01" value={editForm.current_balance} onChange={(e) => setEditForm({ ...editForm, current_balance: e.target.value })} /></div>
                             <div className="field"><label>As of</label>
                               <input type="date" value={editForm.current_balance_as_of} onChange={(e) => setEditForm({ ...editForm, current_balance_as_of: e.target.value })} /></div>
@@ -418,6 +447,50 @@ export default function CreditCards() {
                     <tr>
                       <td colSpan={8} style={{ background: 'var(--panel-alt, rgba(255,255,255,0.03))' }}>
                         <div style={{ padding: '12px 4px' }}>
+                          <div className="metric-label" style={{ margin: '0 0 8px' }}>Purchases</div>
+                          {c.itemized ? (
+                            <>
+                              <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 8px' }}>
+                                Itemized since {c.ledger_start_date} — the balance is what the card owed then plus every purchase,
+                                refund and payment since. Purchases count as expenses when made; payments are transfers.
+                              </p>
+                              {!cardTx[c.id] ? null : cardTx[c.id].length === 0 ? (
+                                <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 14px' }}>Nothing entered yet.</p>
+                              ) : (
+                                <table style={{ marginBottom: 14 }}>
+                                  <thead><tr><th>Date</th><th>Description</th><th>Amount</th></tr></thead>
+                                  <tbody>
+                                    {cardTx[c.id].map((t) => (
+                                      <tr key={t.id}>
+                                        <td>{t.date}</td>
+                                        <td>
+                                          {t.description}
+                                          {t.account_name && <span className="tag">Payment from {t.account_name}</span>}
+                                          {t.is_split && <span className="tag">Split</span>}
+                                        </td>
+                                        <td>{money(t.account_name ? -Number(t.amount) : Number(t.amount))}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              )}
+                            </>
+                          ) : (
+                            <div style={{ margin: '0 0 16px' }}>
+                              <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 8px' }}>
+                                Not itemized — the balance comes from statements, and payments count as the expense. Turn on
+                                itemizing to enter purchases one by one (an agent's first card statement does this automatically).
+                              </p>
+                              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                                <input type="date" aria-label="Itemize from" style={{ maxWidth: 160 }}
+                                  value={ledgerForm.start_date} onChange={(e) => setLedgerForm({ ...ledgerForm, start_date: e.target.value })} />
+                                <input type="number" step="0.01" placeholder="Balance owed on that date" style={{ maxWidth: 200 }}
+                                  value={ledgerForm.opening_balance} onChange={(e) => setLedgerForm({ ...ledgerForm, opening_balance: e.target.value })} />
+                                <button className="small" disabled={!ledgerForm.start_date || ledgerForm.opening_balance === ''} onClick={() => startLedger(c.id)}>Start itemizing</button>
+                              </div>
+                            </div>
+                          )}
+
                           <div className="metric-label" style={{ margin: '0 0 8px' }}>Reward categories</div>
                           {c.reward_categories.length === 0 ? (
                             <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 10px' }}>None entered yet.</p>
@@ -455,8 +528,12 @@ export default function CreditCards() {
                             <table style={{ marginBottom: 12 }}>
                               <thead><tr><th>Due</th><th>Balance</th><th>Min. payment</th><th>Interest billed</th><th>Status</th><th></th></tr></thead>
                               <tbody>
-                                {statements[c.id].map((s) => {
-                                  const overdue = !s.paid && String(s.due_date).slice(0, 10) < today();
+                                {statements[c.id].map((s, idx) => {
+                                  // Statements are cumulative: the newest one is what's due;
+                                  // an older unpaid one has rolled into it.
+                                  const current = idx === 0;
+                                  const remaining = Number(s.statement_balance) - Number(s.paid_amount || 0);
+                                  const overdue = current && !s.paid && String(s.due_date).slice(0, 10) < today();
                                   return (
                                     <tr key={s.id}>
                                       <td>{String(s.due_date).slice(0, 10)}</td>
@@ -465,21 +542,20 @@ export default function CreditCards() {
                                       <td>{s.interest_amount != null ? money(Number(s.interest_amount)) : '—'}</td>
                                       <td>
                                         {s.paid
-                                          ? <span className={`badge ${s.paid_in_full ? 'pass' : 'warn'}`}>{s.paid_in_full ? 'PAID IN FULL' : 'PARTIAL PAY'}</span>
-                                          : overdue ? <span className="badge fail">OVERDUE</span> : <span className="badge">UNPAID</span>}
+                                          ? <span className={`badge ${s.paid_in_full ? 'pass' : 'warn'}`}>{s.paid_in_full ? 'PAID IN FULL' : 'PAID LATE'}</span>
+                                          : !current ? <span className="badge">ROLLED INTO NEXT</span>
+                                          : overdue ? <span className="badge fail">OVERDUE</span>
+                                          : Number(s.paid_amount) > 0 ? <span className="badge warn">{money(remaining)} LEFT</span>
+                                          : <span className="badge">UNPAID</span>}
                                       </td>
                                       <td>
-                                        {s.paid ? (
-                                          <span style={{ display: 'inline-flex', gap: 4 }}>
-                                            <button className="small secondary" onClick={() => unpayStatement(s.id, c.id)}>Unpay</button>
-                                          </span>
-                                        ) : payingId === s.id ? (
+                                        {payingId === s.id ? (
                                           <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
                                             <select value={payAccountId} onChange={(e) => setPayAccountId(e.target.value)}>
                                               <option value="">Paid from…</option>
                                               {accounts.map((a) => <option key={a.id} value={a.id}>{a.name} ({a.ledger})</option>)}
                                             </select>
-                                            <input type="number" step="0.01" placeholder={`Amount (default ${money(Number(s.statement_balance))})`}
+                                            <input type="number" step="0.01" placeholder={`Amount (default ${money(remaining)})`}
                                               style={{ width: 140 }} value={payAmount} onChange={(e) => setPayAmount(e.target.value)} />
                                             <label style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
                                               <input type="checkbox" checked={payByCheck} onChange={(e) => setPayByCheck(e.target.checked)} /> By check
@@ -489,8 +565,15 @@ export default function CreditCards() {
                                           </span>
                                         ) : (
                                           <span style={{ display: 'inline-flex', gap: 4 }}>
-                                            <button className="small" onClick={() => { setPayingId(s.id); setPayAccountId(''); setPayAmount(''); setPayByCheck(false); }}>Pay</button>
-                                            <button className="small secondary" onClick={() => deleteStatement(s.id, c.id)}>Delete</button>
+                                            {current && !s.paid && (
+                                              <button className="small" onClick={() => { setPayingId(s.id); setPayAccountId(''); setPayAmount(''); setPayByCheck(false); }}>Pay</button>
+                                            )}
+                                            {Number(s.paid_amount) > 0 && (
+                                              <button className="small secondary" onClick={() => unpayStatement(s.id, c.id)}>Unpay</button>
+                                            )}
+                                            {!s.paid && !(Number(s.paid_amount) > 0) && (
+                                              <button className="small secondary" onClick={() => deleteStatement(s.id, c.id)}>Delete</button>
+                                            )}
                                           </span>
                                         )}
                                       </td>

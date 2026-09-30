@@ -2,7 +2,9 @@ import { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { OWNERS, ownerWeights } from '../lib/segments.js';
-import { activeEstimates, occurrences, signedAmount } from '../lib/estimates.js';
+import { occurrences, signedAmount } from '../lib/estimates.js';
+import { forecastEstimates } from '../lib/inventoryForecast.js';
+import { cardAmountsDue } from '../lib/cardLedger.js';
 import { loadBalanceSheet, inventoryOwnerRow } from '../lib/balanceSheet.js';
 import { todayISO, addMonths, monthIndex } from '../lib/dates.js';
 import { billDates } from '../lib/calculations.js';
@@ -54,15 +56,20 @@ router.get('/', ah(async (req, res) => {
   const [accounts, txSums, allTx, ytdTx, bills, loanPays, cardStatements, contracts, estimates, sheet] = await Promise.all([
     pool.query(`SELECT * FROM accounts`),
     pool.query(`SELECT account_id, COALESCE(SUM(amount), 0) AS total FROM transactions GROUP BY account_id`),
+    // Cash: only money that moved through an account (a card purchase is
+    // owed on the card, counted under equity below). Transfers included —
+    // they move cash between owners.
     pool.query(`SELECT amount, segment, is_segment_split, segment_grain_pct, segment_livestock_pct,
-                       segment_jake_pct, segment_ashley_pct FROM transactions`),
+                       segment_jake_pct, segment_ashley_pct FROM transaction_lines WHERE account_id IS NOT NULL`),
+    // Earnings: every split piece under its own owner, card purchases
+    // included, transfers excluded.
     pool.query(
       `SELECT t.amount, t.is_capex, t.is_debt_service, t.segment, t.is_segment_split,
               t.segment_grain_pct, t.segment_livestock_pct, t.segment_jake_pct, t.segment_ashley_pct,
               lp.interest_amount
-       FROM transactions t
-       LEFT JOIN loan_payments lp ON lp.linked_transaction_id = t.id
-       WHERE t.date >= $1 AND t.date <= CURRENT_DATE`,
+       FROM transaction_lines t
+       LEFT JOIN loan_payments lp ON lp.linked_transaction_id = t.transaction_id
+       WHERE t.is_transfer = false AND t.date >= $1 AND t.date <= CURRENT_DATE`,
       [ytdStart]
     ),
     pool.query(
@@ -77,18 +84,13 @@ router.get('/', ah(async (req, res) => {
        WHERE lp.paid = false AND lp.is_adjustment = false AND lp.due_date < $1`,
       [endStr]
     ),
-    pool.query(
-      `SELECT s.due_date, GREATEST(s.statement_balance - COALESCE(s.paid_amount, 0), 0) AS amount, cc.segment
-       FROM credit_card_statements s JOIN credit_cards cc ON cc.id = s.credit_card_id
-       WHERE s.paid = false AND s.due_date < $1`,
-      [endStr]
-    ),
+    cardAmountsDue(pool, { dueBefore: endStr }),
     pool.query(
       `SELECT expected_payment_date AS due_date, total_value AS amount, segment
        FROM sale_contracts WHERE status IN ('open', 'delivered') AND expected_payment_date < $1`,
       [endStr]
     ),
-    activeEstimates(),
+    forecastEstimates(),
     loadBalanceSheet(),
   ]);
 
@@ -115,7 +117,7 @@ router.get('/', ah(async (req, res) => {
     for (const d of billDates(b, today, endStr)) committed[idx(d)] -= Number(b.amount) * w(b);
   }
   for (const p of loanPays.rows) committed[idx(p.due_date)] -= Number(p.amount) * w({ segment: p.segment });
-  for (const s of cardStatements.rows) committed[idx(s.due_date)] -= Number(s.amount) * w({ segment: s.segment });
+  for (const s of cardStatements) committed[idx(s.due_date)] -= Number(s.amount) * w({ segment: s.segment });
   let feesPerMonth = 0;
   for (const a of accounts.rows) {
     const amt = Number(a.fee_amount) || 0;

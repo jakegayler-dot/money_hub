@@ -1,81 +1,97 @@
 import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
-import { validateSegment, segmentValues, SEGMENT_COLUMNS } from '../lib/segments.js';
+import { validateSegment } from '../lib/segments.js';
+import { insertTransaction, removeTransaction, ownerOf, ledgerForOwner, normalizeSplits } from '../lib/postings.js';
+import { toISODate } from '../lib/dates.js';
 
 const router = Router();
 
 router.get('/', ah(async (req, res) => {
-  const { ledger, from, to, limit = 100 } = req.query;
+  const { ledger, from, to, account_id, credit_card_id, limit = 100 } = req.query;
   const conditions = [];
   const params = [];
-
-  if (ledger) {
-    params.push(ledger);
-    conditions.push(`t.ledger = $${params.length}`);
-  }
-  if (from) {
-    params.push(from);
-    conditions.push(`t.date >= $${params.length}`);
-  }
-  if (to) {
-    params.push(to);
-    conditions.push(`t.date <= $${params.length}`);
-  }
+  const add = (sql, v) => { params.push(v); conditions.push(sql.replace('?', `$${params.length}`)); };
+  if (ledger) add('t.ledger = ?', ledger);
+  if (from) add('t.date >= ?', from);
+  if (to) add('t.date <= ?', to);
+  if (account_id) add('t.account_id = ?', account_id);
+  if (credit_card_id) add('t.credit_card_id = ?', credit_card_id);
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  params.push(Number(limit));
+  params.push(Math.min(Number(limit) || 100, 1000));
 
-  // account_name joined in so the ledger can say which account each entry
-  // (especially an outstanding check) is drawn on, without a second fetch.
+  // Account and card names joined in so the ledger can say where each
+  // entry came from (a card purchase has no account), plus split pieces.
   const { rows } = await pool.query(
-    `SELECT t.*, a.name AS account_name
+    `SELECT t.*, a.name AS account_name, cc.name AS card_name, ec.name AS category_name,
+            COALESCE((
+              SELECT json_agg(json_build_object(
+                'id', s.id, 'amount', s.amount, 'memo', s.memo, 'category_id', s.category_id,
+                'category_name', sc.name, 'ledger', s.ledger, 'is_capex', s.is_capex,
+                'segment', s.segment, 'is_segment_split', s.is_segment_split,
+                'segment_grain_pct', s.segment_grain_pct, 'segment_livestock_pct', s.segment_livestock_pct,
+                'segment_jake_pct', s.segment_jake_pct, 'segment_ashley_pct', s.segment_ashley_pct
+              ) ORDER BY s.id)
+              FROM transaction_splits s LEFT JOIN expense_categories sc ON sc.id = s.category_id
+              WHERE s.transaction_id = t.id
+            ), '[]'::json) AS splits
      FROM transactions t
-     JOIN accounts a ON a.id = t.account_id
+     LEFT JOIN accounts a ON a.id = t.account_id
+     LEFT JOIN credit_cards cc ON cc.id = t.credit_card_id
+     LEFT JOIN expense_categories ec ON ec.id = t.category_id
      ${where}
-     ORDER BY t.date DESC LIMIT $${params.length}`,
+     ORDER BY t.date DESC, t.id DESC LIMIT $${params.length}`,
     params
   );
-  res.json(rows);
+  res.json(rows.map((r) => ({ ...r, date: toISODate(r.date), cleared_date: toISODate(r.cleared_date) })));
 }));
 
-// Manual entry — this is the v1 ingestion path. `is_mixed_use` +
-// `mixed_use_business_pct` split cost basis between ledgers at entry time,
-// so no post-hoc review-queue step is needed for v1.
-//
-// Recording a transaction and moving the owning account's balance happen
-// in one DB transaction (withTransaction) so the ledger entry and the
-// balance it represents can never fall out of sync with each other.
+// Manual entry. Either out of/into an account (account_id), or charged to
+// a card (credit_card_id, no account — raises the card's balance; the card
+// must be itemized, i.e. have a ledger start). `splits` divides one
+// transaction into pieces, each with its own amount, category and owner;
+// pieces must add up to the total. `is_transfer` marks money moving
+// between things Money Hub tracks (not income or expense).
 router.post('/', ah(async (req, res) => {
   const {
-    account_id, ledger, date, amount, description,
+    account_id = null, credit_card_id = null, date, amount, description,
     category_id = null, purchase_class = null,
     is_mixed_use = false, mixed_use_business_pct = null,
-    is_capex = false, entered_by = 'manual',
-    cleared = true,
+    is_capex = false, is_transfer = false, entered_by = 'manual',
+    cleared = true, splits: pieces = [],
   } = req.body;
 
+  if (!account_id && !credit_card_id) return res.status(400).json({ error: 'Pick an account, or a card for a card purchase.' });
+  if (!date || !Number(amount)) return res.status(400).json({ error: 'date and a non-zero amount are required.' });
   const segmentError = validateSegment(req.body);
   if (segmentError) return res.status(400).json({ error: segmentError });
 
-  const row = await withTransaction(async (client) => {
-    const { rows } = await client.query(
-      `INSERT INTO transactions
-        (account_id, ledger, date, amount, description, category_id,
-         purchase_class, is_mixed_use, mixed_use_business_pct, is_capex, entered_by,
-         cleared, cleared_date, ${SEGMENT_COLUMNS.join(', ')})
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,${SEGMENT_COLUMNS.map((_, i) => `$${14 + i}`).join(',')}) RETURNING *`,
-      [account_id, ledger, date, amount, description, category_id,
-       purchase_class, is_mixed_use, mixed_use_business_pct, is_capex, entered_by,
-       !!cleared, cleared ? date : null,
-       ...segmentValues(req.body)]
-    );
-    await client.query(
-      `UPDATE accounts SET opening_balance = opening_balance + $1 WHERE id = $2`,
-      [amount, account_id]
-    );
-    return rows[0];
-  });
+  let card = null;
+  if (credit_card_id && !account_id) {
+    const { rows } = await pool.query('SELECT * FROM credit_cards WHERE id = $1', [credit_card_id]);
+    card = rows[0];
+    if (!card) return res.status(400).json({ error: 'card not found' });
+    if (!card.ledger_start_date) {
+      return res.status(400).json({
+        error: `${card.name} isn't itemized yet — set its ledger start (date and balance on that date) on the Credit Cards tab before entering purchases on it.`,
+      });
+    }
+  }
 
+  let fallbackOwner = {};
+  if (account_id) fallbackOwner = (await pool.query('SELECT * FROM accounts WHERE id = $1', [account_id])).rows[0] || {};
+  else fallbackOwner = card;
+  const owner = ownerOf(req.body, fallbackOwner);
+  const ledger = req.body.ledger || ledgerForOwner(owner, fallbackOwner.ledger || 'business');
+  const { splits, error } = normalizeSplits(pieces, Number(amount), owner, ledger);
+  if (error) return res.status(400).json({ error });
+
+  const row = await withTransaction((client) => insertTransaction(client, {
+    account_id: account_id || null, credit_card_id: credit_card_id || null,
+    ledger, date, amount: Number(amount), description, category_id: category_id || null, purchase_class,
+    is_mixed_use, mixed_use_business_pct, is_capex, is_transfer, entered_by,
+    cleared: account_id ? !!cleared : true, owner, splits,
+  }));
   res.status(201).json(row);
 }));
 
@@ -83,8 +99,7 @@ router.post('/', ah(async (req, res) => {
 // shows the money moving (e.g. a check finally gets cashed). This never
 // touches the account balance a second time: the balance already moved
 // when the transaction was recorded, exactly as a real checkbook register
-// works. It's how a long-outstanding check stops looking like a mystery
-// gap between this app's balance and the real bank statement.
+// works.
 router.post('/:id/clear', ah(async (req, res) => {
   const { cleared_date = new Date().toISOString().slice(0, 10) } = req.body;
   const { rows } = await pool.query(
@@ -95,7 +110,6 @@ router.post('/:id/clear', ah(async (req, res) => {
   res.json(rows[0]);
 }));
 
-// Reverses a clear, in case it was marked by mistake.
 router.post('/:id/unclear', ah(async (req, res) => {
   const { rows } = await pool.query(
     `UPDATE transactions SET cleared = false, cleared_date = NULL WHERE id = $1 RETURNING *`,
@@ -105,22 +119,13 @@ router.post('/:id/unclear', ah(async (req, res) => {
   res.json(rows[0]);
 }));
 
-// Deleting a transaction reverses its effect on the account balance —
-// otherwise the balance would permanently keep money that was only ever
-// recorded by mistake.
+// Deleting a transaction reverses its effect on the account balance. A
+// bill/loan/contract payment must be reversed from its own tab (so the
+// item reopens); a statement line that produced it returns to the review
+// queue.
 router.delete('/:id', ah(async (req, res) => {
-  const result = await withTransaction(async (client) => {
-    const { rows } = await client.query('SELECT * FROM transactions WHERE id = $1', [req.params.id]);
-    if (!rows.length) return null;
-    const tx = rows[0];
-    await client.query(
-      `UPDATE accounts SET opening_balance = opening_balance - $1 WHERE id = $2`,
-      [tx.amount, tx.account_id]
-    );
-    await client.query('DELETE FROM transactions WHERE id = $1', [tx.id]);
-    return tx;
-  });
-  if (!result) return res.status(404).json({ error: 'not found' });
+  const tx = await withTransaction((client) => removeTransaction(client, req.params.id));
+  if (!tx) return res.status(404).json({ error: 'not found' });
   res.status(204).end();
 }));
 

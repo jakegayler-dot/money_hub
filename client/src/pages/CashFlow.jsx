@@ -96,7 +96,11 @@ function Estimates({ onChange }) {
   const [showRetired, setShowRetired] = useState(false);
   const [error, setError] = useState(null);
 
-  const load = () => { fetch('/api/estimates').then((r) => r.json()).then((d) => setRows(Array.isArray(d) ? d : [])); };
+  const [fromInv, setFromInv] = useState(null);
+  const load = () => {
+    fetch('/api/estimates').then((r) => r.json()).then((d) => setRows(Array.isArray(d) ? d : []));
+    fetch('/api/estimates/from-inventory').then((r) => r.json()).then(setFromInv).catch(() => setFromInv(null));
+  };
   useEffect(load, []);
 
   const act = async (url, method = 'POST') => {
@@ -180,6 +184,40 @@ function Estimates({ onChange }) {
             ))}
           </tbody>
         </table>
+      )}
+
+      {fromInv && (fromInv.items.length > 0 || fromInv.undated.length > 0) && (
+        <div style={{ borderTop: '1px solid var(--border)', marginTop: 12 }}>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0, padding: '12px 20px 0' }}>
+            <strong style={{ color: 'var(--text)' }}>From inventory — automatic.</strong> Uncontracted grain in the bins and
+            market cattle on hand, at the managers' prices, forecast to sell on the date shown. Contracted grain isn't
+            here — it's in the forecast as its contract. Change these in the managers or on the Assets tab, not here.
+          </p>
+          {fromInv.items.length > 0 && (
+            <table style={{ marginTop: 8 }}>
+              <thead><tr><th>Item</th><th>Owner</th><th>Amount</th><th>Sells</th><th>Date from</th></tr></thead>
+              <tbody>
+                {fromInv.items.map((e) => (
+                  <tr key={e.id}>
+                    <td>{e.name}</td>
+                    <td>{ownerSummary(e)}</td>
+                    <td style={{ color: 'var(--positive)' }}>+{money(Number(e.amount))}</td>
+                    <td>{e.start_date}</td>
+                    <td style={{ color: 'var(--text-muted)' }}>
+                      {e.basis === 'item' ? `${e.source} date` : e.basis === 'crop estimate' ? "the crop's estimate" : 'fallback sell-by date'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {fromInv.undated.length > 0 && (
+            <p style={{ fontSize: 12, color: 'var(--negative)', margin: 0, padding: '10px 20px 0' }}>
+              {fromInv.undated.length} item{fromInv.undated.length > 1 ? 's' : ''} ({money(fromInv.undated.reduce((t, u) => t + u.amount, 0))})
+              {' '}left out of the forecast — no sale date. Set a fallback sell-by date on the Assets tab.
+            </p>
+          )}
+        </div>
       )}
 
       <form className="form-panel" onSubmit={submit} style={{ borderTop: '1px solid var(--border)', maxWidth: 'none', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))' }}>

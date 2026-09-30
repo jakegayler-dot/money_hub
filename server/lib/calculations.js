@@ -1,7 +1,9 @@
 import { pool, getSetting } from '../db.js';
-import { activeEstimates, occurrences, signedAmount } from './estimates.js';
+import { occurrences, signedAmount } from './estimates.js';
+import { forecastEstimates } from './inventoryForecast.js';
 import { ownerWeights } from './segments.js';
 import { monthIndex, todayISO, toISODate, addMonths, addDays } from './dates.js';
+import { LATEST_STATEMENTS_SQL } from './cardLedger.js';
 
 const MONTHS = 12;
 
@@ -131,10 +133,14 @@ export async function termDebtCoverage() {
   // ---- Historical: trailing 12 months of actuals -------------------------
   const [txRow, histDraws, histService] = await Promise.all([
     pool.query(
+      // transaction_lines: split pieces count by their own ledger/capex
+      // flag. Transfers (account to account, card payments on itemized
+      // cards, draws) are not income or expense; card purchases are
+      // expenses when made, even before the card is paid.
       `SELECT COALESCE(SUM(amount) FILTER (WHERE amount > 0), 0) AS cash_in,
               COALESCE(SUM(amount) FILTER (WHERE amount < 0), 0) AS cash_out
-       FROM transactions
-       WHERE ledger = 'business' AND is_capex = false AND is_debt_service = false
+       FROM transaction_lines
+       WHERE ledger = 'business' AND is_capex = false AND is_debt_service = false AND is_transfer = false
          AND date > $1 AND date <= $2`,
       [histFrom, today]
     ),
@@ -171,13 +177,15 @@ export async function termDebtCoverage() {
     ),
     monthlyAccountFees(),
     scheduledServiceBetween(today, projTo),
-    // Credit card statements not yet paid, due within the window — a
-    // committed outflow, same standing as an unpaid bill. Business cards
-    // only; personal (Jake/Ashley) cards are outside the farm business.
+    // What's left unpaid on each card's LATEST statement (statements are
+    // cumulative — older ones are already inside it), due within the
+    // window — a committed outflow, same standing as an unpaid bill.
+    // Business cards only; personal (Jake/Ashley) cards are outside the
+    // farm business.
     pool.query(
       `SELECT COALESCE(SUM(GREATEST(s.statement_balance - COALESCE(s.paid_amount, 0), 0)), 0) AS total
-       FROM credit_card_statements s JOIN credit_cards cc ON cc.id = s.credit_card_id
-       WHERE s.paid = false AND s.due_date > $1 AND s.due_date <= $2
+       FROM (${LATEST_STATEMENTS_SQL}) s JOIN credit_cards cc ON cc.id = s.credit_card_id
+       WHERE s.paid = false AND cc.status = 'active' AND s.due_date > $1 AND s.due_date <= $2
          AND (cc.segment IS NULL OR cc.segment NOT IN ('personal', 'jake', 'ashley'))`,
       [today, projTo]
     ),
@@ -186,7 +194,7 @@ export async function termDebtCoverage() {
   let estOut = 0;
   const estFrom = addDays(today, 1);
   const estToExclusive = addDays(projTo, 1);
-  for (const est of await activeEstimates()) {
+  for (const est of await forecastEstimates()) {
     const w = ownerWeights(est);
     const businessShare = 1 - w.jake - w.ashley;
     if (businessShare <= 0) continue;
@@ -292,12 +300,13 @@ export async function liquidityFloor() {
       [endStr]
     ),
     monthlyAccountFees(y0), // same value every month (monthly fees + annual/12)
-    // Credit card statements not yet paid — a scheduled outflow at their
-    // due date, same treatment as an unpaid bill. Business-owned cards only.
+    // What's left unpaid on each card's latest statement — a scheduled
+    // outflow at its due date, same treatment as an unpaid bill.
+    // Business-owned cards only.
     pool.query(
       `SELECT s.due_date, GREATEST(s.statement_balance - COALESCE(s.paid_amount, 0), 0) AS amount
-       FROM credit_card_statements s JOIN credit_cards cc ON cc.id = s.credit_card_id
-       WHERE s.paid = false AND s.due_date < $1
+       FROM (${LATEST_STATEMENTS_SQL}) s JOIN credit_cards cc ON cc.id = s.credit_card_id
+       WHERE s.paid = false AND cc.status = 'active' AND s.due_date < $1
          AND (cc.segment IS NULL OR cc.segment NOT IN ('personal', 'jake', 'ashley'))`,
       [endStr]
     ),
@@ -309,7 +318,7 @@ export async function liquidityFloor() {
   // window. Past occurrences never count — see lib/estimates.js.
   const estInBy = Array(MONTHS).fill(0);
   const estOutBy = Array(MONTHS).fill(0);
-  for (const est of await activeEstimates()) {
+  for (const est of await forecastEstimates()) {
     const w = ownerWeights(est);
     const businessShare = 1 - w.jake - w.ashley;
     if (businessShare <= 0) continue;
@@ -368,8 +377,8 @@ export async function liquidityFloor() {
     (await pool.query(
       `SELECT COALESCE(AVG(monthly_outflow), 0) AS avg FROM (
          SELECT date_trunc('month', date) AS m, SUM(-amount) AS monthly_outflow
-         FROM transactions
-         WHERE ledger = 'business' AND amount < 0
+         FROM transaction_lines
+         WHERE ledger = 'business' AND amount < 0 AND is_transfer = false
            AND date >= CURRENT_DATE - INTERVAL '12 months'
          GROUP BY m
        ) sub`
@@ -410,8 +419,8 @@ export async function reserveStatus(year) {
   const { rows: avgExpenseRows } = await pool.query(
     `SELECT COALESCE(AVG(monthly_outflow), 0) AS avg FROM (
        SELECT EXTRACT(MONTH FROM date) AS m, SUM(-amount) AS monthly_outflow
-       FROM transactions
-       WHERE ledger = 'business' AND amount < 0 AND EXTRACT(YEAR FROM date) = $1
+       FROM transaction_lines
+       WHERE ledger = 'business' AND amount < 0 AND is_transfer = false AND EXTRACT(YEAR FROM date) = $1
        GROUP BY m
      ) sub`,
     [year]
@@ -442,8 +451,8 @@ async function avgMonthlyExpenseValue(year) {
   const { rows } = await pool.query(
     `SELECT COALESCE(AVG(monthly_outflow), 0) AS avg FROM (
        SELECT EXTRACT(MONTH FROM date) AS m, SUM(-amount) AS monthly_outflow
-       FROM transactions
-       WHERE ledger = 'business' AND amount < 0 AND EXTRACT(YEAR FROM date) = $1
+       FROM transaction_lines
+       WHERE ledger = 'business' AND amount < 0 AND is_transfer = false AND EXTRACT(YEAR FROM date) = $1
        GROUP BY m
      ) sub`,
     [year]

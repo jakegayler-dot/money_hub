@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
+import { settleContract, removeTransaction } from '../lib/postings.js';
+import { todayISO } from '../lib/dates.js';
 import { ledgerForSegment } from '../lib/segments.js';
 import { requireIngestKey } from '../lib/ingestAuth.js';
 
@@ -155,65 +157,30 @@ router.post('/', ah(async (req, res) => {
 router.post('/:id/settle', ah(async (req, res) => {
   const {
     account_id,
-    settled_date = new Date().toISOString().slice(0, 10),
+    settled_date = todayISO(),
     amount = null,
   } = req.body;
   if (!account_id) return res.status(400).json({ error: 'account_id is required — which account did the money land in?' });
-
-  const contract = await withTransaction(async (client) => {
-    const { rows } = await client.query('SELECT * FROM sale_contracts WHERE id = $1', [req.params.id]);
-    if (!rows.length) return null;
-    const contract = rows[0];
-    if (contract.status === 'settled') return contract;
-
-    const received = amount != null ? Number(amount) : Number(contract.total_value);
-    const ledger = ledgerForSegment(contract.segment);
-    const { rows: txRows } = await client.query(
-      `INSERT INTO transactions (account_id, ledger, date, amount, description, entered_by, segment, cleared, cleared_date)
-       VALUES ($1, $2, $3, $4, $5, 'manual', $6, true, $3) RETURNING id`,
-      [account_id, ledger, settled_date, Math.abs(received),
-       `Contract settled: ${contract.commodity}${contract.counterparty ? ` — ${contract.counterparty}` : ''}`,
-       contract.segment]
-    );
-    await client.query(
-      `UPDATE accounts SET opening_balance = opening_balance + $1 WHERE id = $2`,
-      [Math.abs(received), account_id]
-    );
-    const { rows: updated } = await client.query(
-      `UPDATE sale_contracts SET status = 'settled', linked_transaction_id = $1 WHERE id = $2 RETURNING *`,
-      [txRows[0].id, contract.id]
-    );
-    return updated[0];
-  });
-
-  if (!contract) return res.status(404).json({ error: 'not found' });
-  res.json(contract);
+  const r = await withTransaction((client) => settleContract(client, req.params.id, { account_id, date: settled_date, amount }));
+  if (!r) return res.status(404).json({ error: 'not found' });
+  res.json(r.contract);
 }));
 
 // Mirror of a bill's unpay: deletes the settlement transaction, pulls the
 // money back out of the balance, reopens the contract.
 router.post('/:id/unsettle', ah(async (req, res) => {
   const contract = await withTransaction(async (client) => {
-    const { rows } = await client.query('SELECT * FROM sale_contracts WHERE id = $1', [req.params.id]);
+    const { rows } = await client.query('SELECT * FROM sale_contracts WHERE id = $1 FOR UPDATE', [req.params.id]);
     if (!rows.length) return null;
     const contract = rows[0];
     if (contract.status !== 'settled') return contract;
-
-    if (contract.linked_transaction_id) {
-      const { rows: txRows } = await client.query('SELECT * FROM transactions WHERE id = $1', [contract.linked_transaction_id]);
-      if (txRows.length) {
-        const tx = txRows[0];
-        await client.query(
-          `UPDATE accounts SET opening_balance = opening_balance - $1 WHERE id = $2`,
-          [tx.amount, tx.account_id]
-        );
-        await client.query('DELETE FROM transactions WHERE id = $1', [tx.id]);
-      }
-    }
+    // Null the FK reference before deleting the transaction it points to —
+    // the old order (delete first) tripped the foreign key and failed.
     const { rows: updated } = await client.query(
       `UPDATE sale_contracts SET status = 'open', linked_transaction_id = NULL WHERE id = $1 RETURNING *`,
       [contract.id]
     );
+    if (contract.linked_transaction_id) await removeTransaction(client, contract.linked_transaction_id);
     return updated[0];
   });
 

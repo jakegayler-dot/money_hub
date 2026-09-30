@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
+import { recordLoanPayment, removeTransaction } from '../lib/postings.js';
 import { ledgerForSegment } from '../lib/segments.js';
 import { buildSchedule, scheduleFromTerms, dueDateFor, FREQUENCIES } from '../lib/amortization.js';
 import { toISODate, todayISO } from '../lib/dates.js';
@@ -38,76 +39,27 @@ router.post('/payments/:paymentId/record', ah(async (req, res) => {
     paid_by_check = false,
   } = req.body;
   if (!account_id) return res.status(400).json({ error: 'account_id is required — which account is this payment coming out of?' });
-
-  const result = await withTransaction(async (client) => {
-    const { rows } = await client.query(
-      `SELECT lp.*, l.name AS loan_name, l.segment FROM loan_payments lp
-       JOIN loans l ON l.id = lp.loan_id
-       WHERE lp.id = $1`,
-      [req.params.paymentId]
-    );
-    if (!rows.length) return null;
-    const payment = rows[0];
-    if (payment.paid || payment.is_adjustment) return payment;
-
-    const total = Number(payment.principal_amount) + Number(payment.interest_amount);
-    // A loan owned by Jake or Ashley (e.g. a home mortgage) posts to the
-    // personal ledger; grain/cattle loans are business debt service.
-    const ledger = ledgerForSegment(payment.segment);
-    const { rows: txRows } = await client.query(
-      `INSERT INTO transactions
-        (account_id, ledger, date, amount, description, entered_by, is_debt_service, segment, cleared, cleared_date)
-       VALUES ($1, $2, $3, $4, $5, 'manual', true, $6, $7, $8) RETURNING id`,
-      [account_id, ledger, paid_date, -total,
-       `Loan payment: ${payment.loan_name}${paid_by_check ? ' (check)' : ''}`,
-       payment.segment, !paid_by_check, paid_by_check ? null : paid_date]
-    );
-    await client.query(
-      `UPDATE accounts SET opening_balance = opening_balance - $1 WHERE id = $2`,
-      [total, account_id]
-    );
-    const { rows: updated } = await client.query(
-      `UPDATE loan_payments SET paid = true, paid_date = $1, linked_transaction_id = $2 WHERE id = $3 RETURNING *`,
-      [paid_date, txRows[0].id, payment.id]
-    );
-    return updated[0];
-  });
-
-  if (!result) return res.status(404).json({ error: 'not found' });
-  res.json(result);
+  const r = await withTransaction((client) => recordLoanPayment(client, req.params.paymentId, { account_id, date: paid_date, paid_by_check }));
+  if (!r) return res.status(404).json({ error: 'not found' });
+  res.json(r.payment);
 }));
 
 // Reverses a recorded payment: deletes the linked transaction, restores
 // the account balance, reopens the schedule row.
 router.post('/payments/:paymentId/unrecord', ah(async (req, res) => {
   const result = await withTransaction(async (client) => {
-    const { rows } = await client.query('SELECT * FROM loan_payments WHERE id = $1', [req.params.paymentId]);
+    const { rows } = await client.query('SELECT * FROM loan_payments WHERE id = $1 FOR UPDATE', [req.params.paymentId]);
     if (!rows.length) return null;
     const payment = rows[0];
     if (!payment.paid || payment.is_adjustment) return payment;
-
-    let txToDelete = null;
-    if (payment.linked_transaction_id) {
-      const { rows: txRows } = await client.query('SELECT * FROM transactions WHERE id = $1', [payment.linked_transaction_id]);
-      if (txRows.length) txToDelete = txRows[0];
-    }
-    // Null the FK reference before deleting the transaction it points to —
-    // otherwise the DELETE trips the foreign key immediately, before this
-    // row ever stops pointing at it.
+    // Null the FK reference before deleting the transaction it points to.
     const { rows: updated } = await client.query(
       `UPDATE loan_payments SET paid = false, paid_date = NULL, linked_transaction_id = NULL WHERE id = $1 RETURNING *`,
       [payment.id]
     );
-    if (txToDelete) {
-      await client.query(
-        `UPDATE accounts SET opening_balance = opening_balance - $1 WHERE id = $2`,
-        [txToDelete.amount, txToDelete.account_id]
-      );
-      await client.query('DELETE FROM transactions WHERE id = $1', [txToDelete.id]);
-    }
+    if (payment.linked_transaction_id) await removeTransaction(client, payment.linked_transaction_id);
     return updated[0];
   });
-
   if (!result) return res.status(404).json({ error: 'not found' });
   res.json(result);
 }));

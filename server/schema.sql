@@ -67,6 +67,12 @@ CREATE TABLE IF NOT EXISTS expense_categories (
   monthly_pct  JSONB NOT NULL DEFAULT '[0.0833,0.0833,0.0834,0.0833,0.0833,0.0834,0.0833,0.0833,0.0834,0.0833,0.0833,0.0834]'
 );
 
+-- Two levels: a parent (e.g. "Fuel & oil") every chart and total is built
+-- on, and optional subcategories under it ("Diesel — dyed", "Gasoline")
+-- for detail. Transactions carry the most specific category; totals roll
+-- up to the parent. One level only — a subcategory can't have children.
+ALTER TABLE expense_categories ADD COLUMN IF NOT EXISTS parent_id INTEGER REFERENCES expense_categories(id) ON DELETE SET NULL;
+
 DO $$ BEGIN
   CREATE TYPE purchase_class AS ENUM ('compounding', 'productive_tool', 'consumptive');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
@@ -419,6 +425,10 @@ CREATE TABLE IF NOT EXISTS cash_estimates (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_estimates_source_ext
   ON cash_estimates (source, external_id) WHERE external_id IS NOT NULL;
+-- What crop/stock an estimate is for ("Canola"). Grain in the bins that
+-- isn't contracted is forecast to sell on the date of its crop's estimate,
+-- so the two are matched on this (or, failing that, on the name).
+ALTER TABLE cash_estimates ADD COLUMN IF NOT EXISTS commodity TEXT;
 
 -- ---- Capital assets -------------------------------------------------
 -- Land, buildings, machinery, vehicles, breeding stock, investments.
@@ -554,26 +564,17 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 ALTER TABLE loans ADD COLUMN IF NOT EXISTS payment_frequency payment_frequency NOT NULL DEFAULT 'monthly';
 ALTER TABLE loans ADD COLUMN IF NOT EXISTS first_payment_date DATE;
 
--- ---- Inventory: forage and a price list -------------------------------
--- Source systems (Quarter Section) know bushels and bale counts but often
--- not market prices. price_per_unit on an item is therefore optional: when
--- it's missing, the item is valued from commodity_prices (maintained in
--- Money Hub or pushed separately); when neither exists, the item counts at
--- $0 and is flagged as needing a price — never valued at a guess.
+-- ---- Inventory: prices come from the managers -------------------------
+-- Each item's price_per_unit is the estimate its manager (Quarter Section,
+-- Livestock Manager) sends, or the one typed in for a hand-entered item.
+-- Money Hub keeps no price list of its own: an item without a price counts
+-- at $0 and is flagged, never valued at a guess.
 ALTER TABLE inventory_items ALTER COLUMN price_per_unit DROP NOT NULL;
-
-CREATE TABLE IF NOT EXISTS commodity_prices (
-  id              SERIAL PRIMARY KEY,
-  commodity       TEXT NOT NULL,
-  unit            TEXT NOT NULL,
-  price_per_unit  NUMERIC(14,4) NOT NULL,
-  as_of           DATE NOT NULL DEFAULT CURRENT_DATE,
-  source          TEXT NOT NULL DEFAULT 'manual',
-  notes           TEXT,
-  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_commodity_prices_key
-  ON commodity_prices (lower(commodity), lower(unit));
+-- When this (uncontracted) item is expected to be sold. Optional: without
+-- it, grain takes its crop's estimate date, then the fallback setting.
+ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS expected_sale_date DATE;
+-- Retired: Money Hub's own price list, replaced by the managers' estimates.
+DROP TABLE IF EXISTS commodity_prices;
 
 -- ---- Credit cards ------------------------------------------------------
 -- A card is revolving debt, not a loan with an amortization schedule: what
@@ -654,6 +655,169 @@ CREATE TABLE IF NOT EXISTS credit_card_statements (
 );
 CREATE INDEX IF NOT EXISTS idx_cc_statements_due_date ON credit_card_statements (due_date);
 CREATE INDEX IF NOT EXISTS idx_cc_statements_card ON credit_card_statements (credit_card_id);
+
+-- ============================================================================
+-- Statement ingest: split lines, card purchase ledger, transfers, dedupe,
+-- and the review queue. Built for agent data entry — an agent reads bank
+-- and card statements and pushes every line; the server does the matching
+-- (bills, loan payments, card payments, contracts, transfers, duplicates,
+-- uncleared checks) and holds anything uncertain for a human.
+-- ============================================================================
+
+-- Last four digits of the account number, so a statement header ("account
+-- ending 4821") can be matched to an account without guessing by name.
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS last4 TEXT;
+
+-- A card purchase is a transaction charged to a card, not paid out of an
+-- account: account_id is null and credit_card_id is set. A card PAYMENT is
+-- a bank-side transaction (account_id set) that also carries the
+-- credit_card_id it paid down. Every transaction still belongs to one or
+-- the other.
+ALTER TABLE transactions ALTER COLUMN account_id DROP NOT NULL;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS credit_card_id INTEGER REFERENCES credit_cards(id);
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS credit_card_statement_id INTEGER REFERENCES credit_card_statements(id) ON DELETE SET NULL;
+DO $$ BEGIN
+  ALTER TABLE transactions ADD CONSTRAINT transactions_account_or_card
+    CHECK (account_id IS NOT NULL OR credit_card_id IS NOT NULL);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- Money moving between things Money Hub already tracks (account to
+-- account, bank to card, loan advances) is neither income nor expense.
+-- Transfers still move account balances; every income/expense/NOI figure
+-- excludes them. Both sides of an account-to-account transfer are
+-- recorded, each on its own account, and paired via transfer_peer_id.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_transfer BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS transfer_peer_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL;
+
+-- A split transaction's category/owner detail lives in transaction_splits;
+-- the parent row still carries the full amount and moves the balance.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_split BOOLEAN NOT NULL DEFAULT false;
+
+-- Dedupe key for anything that came from a statement. A manual entry that
+-- a statement line later matches is "claimed" by stamping these on it, so
+-- a second line can't match it again.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS source TEXT;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS external_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_transactions_source_external
+  ON transactions (source, external_id) WHERE external_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions (account_id);
+CREATE INDEX IF NOT EXISTS idx_transactions_card ON transactions (credit_card_id);
+
+-- Card payments recorded before transactions carried credit_card_id.
+UPDATE transactions t SET credit_card_id = s.credit_card_id, credit_card_statement_id = s.id
+FROM credit_card_statements s
+WHERE s.linked_transaction_id = t.id AND t.credit_card_id IS NULL;
+
+CREATE TABLE IF NOT EXISTS transaction_splits (
+  id                    SERIAL PRIMARY KEY,
+  transaction_id        INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  amount                NUMERIC(14,2) NOT NULL,   -- pieces sum to the parent amount
+  category_id           INTEGER REFERENCES expense_categories(id),
+  memo                  TEXT,
+  ledger                ledger_type NOT NULL,
+  is_capex              BOOLEAN NOT NULL DEFAULT false,
+  segment               enterprise_segment,
+  is_segment_split      BOOLEAN NOT NULL DEFAULT false,
+  segment_grain_pct     NUMERIC(5,2),
+  segment_livestock_pct NUMERIC(5,2),
+  segment_jake_pct      NUMERIC(5,2),
+  segment_ashley_pct    NUMERIC(5,2),
+  -- Only card payments use this: the part paying off a card's pre-
+  -- itemization balance is an expense, the rest is a transfer.
+  is_transfer           BOOLEAN NOT NULL DEFAULT false
+);
+ALTER TABLE transaction_splits ADD COLUMN IF NOT EXISTS is_transfer BOOLEAN NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS idx_transaction_splits_tx ON transaction_splits (transaction_id);
+
+-- Itemized card ledger. Once a card's purchases are entered line by line,
+-- its balance is ledger_opening_balance (the "previous balance" on the
+-- first itemized statement) plus every purchase, refund and payment dated
+-- on or after ledger_start_date — and its payments become transfers, since
+-- the purchases themselves are now the expenses. Null = not itemized; the
+-- balance comes from current_balance or the latest statement as before.
+ALTER TABLE credit_cards ADD COLUMN IF NOT EXISTS ledger_start_date DATE;
+ALTER TABLE credit_cards ADD COLUMN IF NOT EXISTS ledger_opening_balance NUMERIC(14,2);
+
+-- Owner draws recorded from a statement line point at the transfer that
+-- moved the money; deleting that transaction removes the draw with it.
+ALTER TABLE owner_draws ADD COLUMN IF NOT EXISTS linked_transaction_id INTEGER REFERENCES transactions(id) ON DELETE CASCADE;
+
+DO $$ BEGIN
+  CREATE TYPE statement_line_status AS ENUM ('posted', 'matched', 'held', 'rejected');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- One uploaded statement (or export) for one account or card.
+CREATE TABLE IF NOT EXISTS statement_imports (
+  id                       SERIAL PRIMARY KEY,
+  source                   TEXT NOT NULL,
+  external_id              TEXT,
+  account_id               INTEGER REFERENCES accounts(id),
+  credit_card_id           INTEGER REFERENCES credit_cards(id) ON DELETE CASCADE,
+  period_start             DATE,
+  period_end               DATE,
+  opening_balance          NUMERIC(14,2),
+  closing_balance          NUMERIC(14,2),
+  due_date                 DATE,
+  minimum_payment          NUMERIC(14,2),
+  interest_charged         NUMERIC(14,2),
+  credit_card_statement_id INTEGER REFERENCES credit_card_statements(id) ON DELETE SET NULL,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- Historical statements (loading past months): a bill, loan or contract
+-- payment with nothing on file to match posts directly instead of waiting
+-- for review — last year's bills were never entered as bills.
+ALTER TABLE statement_imports ADD COLUMN IF NOT EXISTS historical BOOLEAN NOT NULL DEFAULT false;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_statement_imports_source_external
+  ON statement_imports (source, external_id) WHERE external_id IS NOT NULL;
+
+-- Every line ever pushed, and what became of it: posted (new transaction),
+-- matched (linked to money already on file — nothing new moved), held
+-- (waiting in the review queue) or rejected (discarded by a human).
+CREATE TABLE IF NOT EXISTS statement_lines (
+  id              SERIAL PRIMARY KEY,
+  import_id       INTEGER REFERENCES statement_imports(id) ON DELETE CASCADE,
+  source          TEXT NOT NULL,
+  external_id     TEXT NOT NULL,
+  account_id      INTEGER REFERENCES accounts(id),
+  credit_card_id  INTEGER REFERENCES credit_cards(id) ON DELETE CASCADE,
+  date            DATE NOT NULL,
+  amount          NUMERIC(14,2) NOT NULL,
+  description     TEXT,
+  kind            TEXT NOT NULL DEFAULT 'standard',
+  payload         JSONB NOT NULL,
+  status          statement_line_status NOT NULL,
+  reason          TEXT,
+  candidates      JSONB,
+  transaction_id  INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+  resolved_at     TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_statement_lines_source_external ON statement_lines (source, external_id);
+CREATE INDEX IF NOT EXISTS idx_statement_lines_status ON statement_lines (status);
+
+-- One row per piece of money for reporting: an unsplit transaction is one
+-- line; a split transaction contributes one line per split piece, each with
+-- its own amount, category, owner, ledger and capex flag. Every income,
+-- expense and per-owner calculation reads this, never raw transactions —
+-- that is what makes a split count correctly everywhere at once.
+CREATE OR REPLACE VIEW transaction_lines AS
+SELECT t.id AS transaction_id, NULL::integer AS split_id, t.account_id, t.credit_card_id,
+       t.ledger, t.date, t.amount, t.description, t.category_id,
+       t.is_capex, t.is_debt_service, t.is_transfer, t.cleared,
+       t.segment, t.is_segment_split, t.segment_grain_pct, t.segment_livestock_pct,
+       t.segment_jake_pct, t.segment_ashley_pct
+FROM transactions t
+WHERE t.is_split = false
+UNION ALL
+SELECT t.id, s.id, t.account_id, t.credit_card_id,
+       s.ledger, t.date, s.amount, COALESCE(s.memo, t.description), s.category_id,
+       s.is_capex, t.is_debt_service, (t.is_transfer OR s.is_transfer), t.cleared,
+       s.segment, s.is_segment_split, s.segment_grain_pct, s.segment_livestock_pct,
+       s.segment_jake_pct, s.segment_ashley_pct
+FROM transactions t
+JOIN transaction_splits s ON s.transaction_id = t.id
+WHERE t.is_split = true;
 
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);
 CREATE INDEX IF NOT EXISTS idx_transactions_ledger ON transactions (ledger);

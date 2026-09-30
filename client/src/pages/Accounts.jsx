@@ -13,7 +13,7 @@ const FEE_FREQUENCY_LABELS = {
 
 const emptyForm = {
   name: '', ledger: 'business', account_type: 'operating', opening_balance: '',
-  fee_amount: '', fee_frequency: 'none', fee_notes: '',
+  fee_amount: '', fee_frequency: 'none', fee_notes: '', last4: '',
   ...emptyOwnerFields,
 };
 
@@ -49,12 +49,25 @@ export default function Accounts() {
     load();
   };
 
+  const anchor = async (id) => {
+    setError(null);
+    const res = await fetch(`/api/accounts/${id}/anchor`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ as_of: ownerEdit.anchor_date, balance: Number(ownerEdit.anchor_balance) }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { setError(body?.error || `Could not set balance (HTTP ${res.status}).`); return; }
+    setOwnerEdit({ ...ownerEdit, anchor_date: '', anchor_balance: '' });
+    load();
+  };
+
   const saveOwner = async (id) => {
     setError(null);
     const res = await fetch(`/api/accounts/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(ownerPayload(ownerEdit)),
+      body: JSON.stringify({ ...ownerPayload(ownerEdit), last4: ownerEdit.last4 || null }),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -93,7 +106,10 @@ export default function Accounts() {
             {items.map((a) => (
               <Fragment key={a.id}>
                 <tr>
-                  <td>{a.name}</td>
+                  <td>
+                    {a.name}
+                    {a.last4 && <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>ending {a.last4}</div>}
+                  </td>
                   <td>{ACCOUNT_TYPE_LABELS[a.account_type] || a.account_type}</td>
                   <td style={ownerSummary(a) === 'Unassigned' ? { color: 'var(--text-faint)' } : undefined}>{ownerSummary(a)}</td>
                   <td style={Number(a.opening_balance) < 0 ? { color: 'var(--negative)' } : undefined}>
@@ -105,10 +121,10 @@ export default function Accounts() {
                       className="small secondary"
                       onClick={() => {
                         if (editingId === a.id) { setEditingId(null); setOwnerEdit(null); }
-                        else { setEditingId(a.id); setOwnerEdit(ownerFieldsFrom(a)); }
+                        else { setEditingId(a.id); setOwnerEdit({ ...ownerFieldsFrom(a), last4: a.last4 || '', anchor_date: '', anchor_balance: '' }); }
                       }}
                     >
-                      {editingId === a.id ? 'Close' : 'Set owner'}
+                      {editingId === a.id ? 'Close' : 'Edit'}
                     </button>
                   </td>
                 </tr>
@@ -121,8 +137,25 @@ export default function Accounts() {
                           transactions here. Everything after that follows each transaction's own owner tag.
                         </p>
                         <OwnerFields state={ownerEdit} setState={setOwnerEdit} label="Starting balance belongs to" />
+                        <div className="field">
+                          <label>Last 4 digits of the account number — lets statements be matched to this account</label>
+                          <input maxLength={4} value={ownerEdit.last4} onChange={(e) => setOwnerEdit({ ...ownerEdit, last4: e.target.value.replace(/\D/g, '') })} />
+                        </div>
                         <div>
-                          <button className="small" onClick={() => saveOwner(a.id)}>Save owner</button>
+                          <button className="small" onClick={() => saveOwner(a.id)}>Save</button>
+                        </div>
+                        <div className="field">
+                          <label>
+                            Loading history? Set the balance the bank showed at the start of a past day (a statement's
+                            opening balance). Today's balance is rebuilt from it plus everything dated since.
+                          </label>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            <input type="date" aria-label="Balance as of" style={{ maxWidth: 170 }} value={ownerEdit.anchor_date}
+                              onChange={(e) => setOwnerEdit({ ...ownerEdit, anchor_date: e.target.value })} />
+                            <input type="number" step="0.01" placeholder="Balance that morning" style={{ maxWidth: 190 }} value={ownerEdit.anchor_balance}
+                              onChange={(e) => setOwnerEdit({ ...ownerEdit, anchor_balance: e.target.value })} />
+                            <button className="small secondary" disabled={!ownerEdit.anchor_date || ownerEdit.anchor_balance === ''} onClick={() => anchor(a.id)}>Set balance</button>
+                          </div>
                         </div>
                       </div>
                     </td>
@@ -161,6 +194,10 @@ export default function Accounts() {
           <div className="field">
             <label>Account name</label>
             <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Farm Operating, Ashley Chequing" />
+          </div>
+          <div className="field">
+            <label>Last 4 digits of the account number (lets statements be matched to it)</label>
+            <input maxLength={4} value={form.last4} onChange={(e) => setForm({ ...form, last4: e.target.value.replace(/\D/g, '') })} />
           </div>
           <div className="field">
             <label>Ledger</label>
