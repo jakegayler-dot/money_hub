@@ -213,6 +213,29 @@ test('coverage fails on the unrounded ratio, like the dashboard', () => {
   assert.equal(s.status_line, 'Debt coverage 1.25× — below 1.25×');
 });
 
+test('op margin not meaningful: YTD revenue under 10% of trailing 12 months, or |margin| > 100%', () => {
+  // 1,000 YTD vs 300,000 trailing: null even though the margin itself is sane.
+  let s = buildSummary(baseInputs({ ytd: { revenue: '1000', expenses: '-900' } }), { now: NOON }).summary;
+  assert.equal(s.performance.op_margin_ytd_pct, null);
+  assert.ok(s.notes.includes('Operating margin: not meaningful yet — only $1,000 of revenue so far this year (cash basis).'));
+  // Live case: −1,102.9% with revenue above the 10% line still goes null.
+  s = buildSummary(baseInputs({ ytd: { revenue: '40000', expenses: '-481160' } }), { now: NOON }).summary;
+  assert.equal(s.performance.op_margin_ytd_pct, null);
+  assert.ok(s.notes.some((n) => n.startsWith('Operating margin: not meaningful yet — only $40,000')));
+  // Exactly 10% of trailing revenue and a margin of −100% are still shown.
+  s = buildSummary(baseInputs({ ytd: { revenue: '30000', expenses: '-60000' } }), { now: NOON }).summary;
+  assert.equal(s.performance.op_margin_ytd_pct, -100);
+});
+
+test('ROA over |100|% is null with a note; within range is kept', () => {
+  const tiny = { ...baseInputs().balance, accounts: [{ ledger: 'business', balance: '1000' }], assets: [], inventoryRows: [] };
+  let s = buildSummary(baseInputs({ balance: tiny }), { now: NOON }).summary;
+  assert.equal(s.performance.roa_pct, null);
+  assert.ok(s.notes.some((n) => n.startsWith('ROA: not meaningful')));
+  s = buildSummary(baseInputs({ trailing12: { revenue: '0', expenses: '-400000', interest: 0, lineCount: 5 } }), { now: NOON }).summary;
+  assert.equal(s.performance.roa_pct, -72.7); // −400,000 / 550,000
+});
+
 test('fmtDollars rounds to whole dollars with separators', () => {
   assert.equal(fmtDollars(124037), '$1,240');
   assert.equal(fmtDollars(-50), '-$1');

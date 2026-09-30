@@ -174,9 +174,16 @@ export function buildSummary(inputs, { now = new Date() } = {}) {
   // Operating margin YTD (business ledger, cash basis)
   const ytdRev = cents(inputs.ytd?.revenue);
   const ytdExp = Math.abs(cents(inputs.ytd?.expenses));
+  const t12Rev = cents(inputs.trailing12?.revenue);
   let op_margin_ytd_pct = null;
-  if (ytdRev > 0) {
-    op_margin_ytd_pct = round(((ytdRev - ytdExp) / ytdRev) * 100, 1);
+  // On a cash basis a grain farm has almost no revenue until the crop is
+  // sold, so an early-year margin is noise (e.g. −1,100%). Not meaningful
+  // when YTD revenue is under 10% of the trailing 12 months', or |margin| > 100%.
+  const margin = ytdRev > 0 ? ((ytdRev - ytdExp) / ytdRev) * 100 : null;
+  if (margin != null && (ytdRev * 10 < t12Rev || Math.abs(margin) > 100)) {
+    notes.push(`Operating margin: not meaningful yet — only ${fmtDollars(ytdRev)} of revenue so far this year (cash basis).`);
+  } else if (margin != null) {
+    op_margin_ytd_pct = round(margin, 1);
     notes.push('Operating margin: cash basis (receipts − operating expenses paid since Jan 1, business ledger; excludes capital purchases, debt service and transfers; no depreciation or inventory change).');
   } else {
     notes.push('Operating margin: null — no business revenue recorded since Jan 1.');
@@ -204,8 +211,11 @@ export function buildSummary(inputs, { now = new Date() } = {}) {
     notes.push('ROA: null — no business assets recorded.');
   } else {
     const netIncome = cents(t12.revenue) - Math.abs(cents(t12.expenses)) - Math.abs(cents(t12.interest));
-    roa_pct = round((netIncome / bizAssets) * 100, 1);
-    notes.push('ROA: trailing-12-month cash-basis net income (after scheduled loan interest, before depreciation and tax) ÷ farm-business assets today (not an average).');
+    const roa = (netIncome / bizAssets) * 100;
+    if (Math.abs(roa) > 100) {
+      notes.push(`ROA: not meaningful — ${fmtDollars(netIncome)} trailing-12-month net income against only ${fmtDollars(bizAssets)} of recorded farm-business assets (assets likely incomplete).`);
+    } else roa_pct = round(roa, 1);
+    if (roa_pct != null) notes.push('ROA: trailing-12-month cash-basis net income (after scheduled loan interest, before depreciation and tax) ÷ farm-business assets today (not an average).');
   }
 
   // Status line: the most pressing issue first. Floor and coverage use the
