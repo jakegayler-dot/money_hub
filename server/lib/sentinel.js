@@ -1,15 +1,22 @@
 // Sentinel sync: pushes Money Hub's bills, loan payments, card statements,
 // covenant dates and expected contract payments to Sentinel (Jake's
 // calendar/task hub) as one full snapshot. One-way: Money Hub owns the data
-// and completion happens here; Sentinel only displays it.
+// and completion happens here; Sentinel only displays it. After each
+// successful snapshot push, the Money tile summary (lib/sentinelSummary.js)
+// goes to /v1/sources/money_hub/summary.
 //
 // Triggers: ~60 s after any successful write under /api (debounced), ~30 s
 // after startup, and every 6 hours. Failures retry with backoff (1 min
 // doubling to 60 min). None of this can block or fail a user request, and
 // nothing runs until SENTINEL_URL and SENTINEL_API_KEY are both set.
 
-import { withTransaction } from '../db.js';
-import { buildSnapshot } from './sentinelSnapshot.js';
+import { pool, withTransaction } from '../db.js';
+import { buildSnapshot, reginaToday } from './sentinelSnapshot.js';
+import { buildSummary } from './sentinelSummary.js';
+import { liquidityFloor, termDebtCoverage, scheduledServiceBetween } from './calculations.js';
+import { loadBalanceSheet, inventoryOwnerRow } from './balanceSheet.js';
+import { cardAmountsDue } from './cardLedger.js';
+import { addDays, addMonths } from './dates.js';
 
 const DEBOUNCE_MS = 60 * 1000;
 const STARTUP_DELAY_MS = 30 * 1000;
@@ -70,7 +77,96 @@ export async function buildSnapshotFromDb(now = new Date()) {
   return buildSnapshot(rows, { now, appUrl: process.env.APP_URL || null });
 }
 
-/** Sends one snapshot. Returns { retry } — true only for failures worth retrying. */
+/**
+ * Everything the Money tile summary needs, taken from the same functions
+ * Money Hub's own screens use (liquidityFloor, termDebtCoverage,
+ * loadBalanceSheet) so the tile and the app agree, plus a few raw sums.
+ * Business ledger, transfers excluded — same line filters as calculations.js.
+ */
+export async function loadSummaryInputs(now = new Date(), snapshotRows = null) {
+  const today = reginaToday(now);
+  const d30 = addDays(today, -30);
+  const d12 = addMonths(today, -12);
+  const ytdFrom = `${today.slice(0, 4)}-01-01`;
+  const [liquidity, coverage, sheet, accounts, flows, t12Service, cardDue, rows] = await Promise.all([
+    liquidityFloor(),
+    termDebtCoverage(),
+    loadBalanceSheet(),
+    pool.query(`SELECT ledger, opening_balance AS balance FROM accounts`),
+    pool.query(
+      `SELECT
+         COALESCE(SUM(amount) FILTER (WHERE amount > 0 AND date > $1), 0) AS cf_in,
+         COALESCE(SUM(amount) FILTER (WHERE amount < 0 AND date > $1), 0) AS cf_out,
+         MAX(date) AS last_tx,
+         COALESCE(SUM(amount) FILTER (WHERE op AND amount > 0 AND date >= $2), 0) AS ytd_rev,
+         COALESCE(SUM(amount) FILTER (WHERE op AND amount < 0 AND date >= $2), 0) AS ytd_exp,
+         COALESCE(SUM(amount) FILTER (WHERE op AND amount > 0 AND date > $3), 0) AS t12_rev,
+         COALESCE(SUM(amount) FILTER (WHERE op AND amount < 0 AND date > $3), 0) AS t12_exp,
+         COUNT(*) FILTER (WHERE date > $3)::int AS t12_lines
+       FROM (SELECT date, amount, (is_capex = false AND is_debt_service = false) AS op
+             FROM transaction_lines
+             WHERE ledger = 'business' AND is_transfer = false AND date <= $4) l`,
+      [d30, ytdFrom, d12, today]
+    ),
+    scheduledServiceBetween(d12, today),
+    cardAmountsDue(pool),
+    snapshotRows || loadSnapshotRows(),
+  ]);
+  const f = flows.rows[0];
+  return {
+    cashFlow30: { inflow: f.cf_in, outflow: f.cf_out, lastTxDate: f.last_tx },
+    liquidity,
+    coverage,
+    balance: {
+      accounts: accounts.rows,
+      assets: sheet.assets,
+      inventoryRows: sheet.inventoryRows.map((i) => ({ counted_value: i.counted_value, ...inventoryOwnerRow(i) })),
+      loans: sheet.loans,
+      creditCards: sheet.creditCards,
+      needsPrice: sheet.inventoryGroups.reduce((s, g) => s + (g.needs_price || 0), 0),
+    },
+    ytd: { revenue: f.ytd_rev, expenses: f.ytd_exp },
+    trailing12: {
+      revenue: f.t12_rev, expenses: f.t12_exp, lineCount: f.t12_lines,
+      interest: t12Service.termInterest + t12Service.operatingInterest,
+    },
+    overdue: { bills: rows.bills, loanPayments: rows.loanPayments, cardStatements: cardDue },
+  };
+}
+
+export async function buildSummaryFromDb(now = new Date(), snapshotRows = null) {
+  return buildSummary(await loadSummaryInputs(now, snapshotRows), { now });
+}
+
+/** Sends the Money tile summary. Returns { retry } like pushSnapshot. */
+async function pushSummary(cfg, body) {
+  let res;
+  try {
+    res = await fetch(`${cfg.url}/v1/sources/money_hub/summary`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${cfg.key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (err) {
+    console.error(`Sentinel summary: network error (${err.name}: ${err.message}) — will retry.`);
+    return { retry: true };
+  }
+  const text = await res.text().catch(() => '');
+  if (res.ok) {
+    console.log(`Sentinel summary sent: ${body.summary.status_line}`);
+    return { retry: false };
+  }
+  const detail = text.slice(0, 500);
+  if (res.status >= 500 || res.status === 429 || res.status === 408) {
+    console.error(`Sentinel summary: HTTP ${res.status} — will retry. ${detail}`);
+    return { retry: true };
+  }
+  console.error(`Sentinel summary: HTTP ${res.status} — not retrying. ${detail}`);
+  return { retry: false };
+}
+
+/** Sends one snapshot. Returns { retry, ok } — retry true only for failures worth retrying. */
 async function pushSnapshot(cfg, snapshot) {
   let res;
   try {
@@ -97,7 +193,7 @@ async function pushSnapshot(cfg, snapshot) {
     if (Array.isArray(b.invalid) && b.invalid.length) {
       console.error(`Sentinel sync: ${b.invalid.length} item(s) rejected as invalid:`, JSON.stringify(b.invalid).slice(0, 4000));
     }
-    return { retry: false };
+    return { retry: false, ok: true };
   }
   if (res.status === 409) {
     console.log('Sentinel sync: 409 stale_snapshot (a newer snapshot already landed) — ignored.');
@@ -124,14 +220,33 @@ async function runSync() {
   let retry = false;
   try {
     let snapshot;
+    let snapshotRows;
+    const now = new Date();
     try {
-      snapshot = await buildSnapshotFromDb();
+      snapshotRows = await loadSnapshotRows();
+      snapshot = buildSnapshot(snapshotRows, { now, appUrl: process.env.APP_URL || null });
     } catch (err) {
       // Never send a partial list — Sentinel would delete what's missing.
       console.error('Sentinel sync: building the snapshot failed, nothing sent — will retry.', err);
       retry = true;
     }
-    if (snapshot) retry = (await pushSnapshot(cfg, snapshot)).retry;
+    if (snapshot) {
+      const pushed = await pushSnapshot(cfg, snapshot);
+      retry = pushed.retry;
+      // The Money tile summary follows each successful snapshot push. Its
+      // failure never affects the snapshot; a retryable one retries the
+      // whole sync (re-sending the snapshot is idempotent).
+      if (pushed.ok) {
+        let summary;
+        try {
+          summary = await buildSummaryFromDb(now, snapshotRows);
+        } catch (err) {
+          console.error('Sentinel summary: building it failed, nothing sent — will retry.', err);
+          retry = true;
+        }
+        if (summary && (await pushSummary(cfg, summary)).retry) retry = true;
+      }
+    }
   } catch (err) {
     console.error('Sentinel sync: unexpected error — will retry.', err);
     retry = true;

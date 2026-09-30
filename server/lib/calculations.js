@@ -84,7 +84,7 @@ const BUSINESS_LOAN = `(l.segment IS NULL OR l.segment NOT IN ('personal', 'jake
 const BUSINESS_SEGMENT = `segment NOT IN ('personal', 'jake', 'ashley')`;
 
 /** Scheduled loan payments due in (from, to], split term vs operating. */
-async function scheduledServiceBetween(fromExclusive, toInclusive) {
+export async function scheduledServiceBetween(fromExclusive, toInclusive) {
   const { rows } = await pool.query(
     `SELECT (l.purpose = 'operating') AS operating,
             COALESCE(SUM(lp.principal_amount), 0) AS principal,
