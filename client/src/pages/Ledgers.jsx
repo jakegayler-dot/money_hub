@@ -6,7 +6,7 @@ import SplitEditor, { cents, newPiece, piecesPayload } from '../components/Split
 const emptyForm = {
   source: 'account', account_id: '', credit_card_id: '', ledger: '', date: '', amount: '', description: '',
   category_id: '', is_mixed_use: false, mixed_use_business_pct: '', is_capex: false, is_transfer: false,
-  paid_by_check: false, is_split: false, needs_review: false, review_note: '',
+  paid_by_check: false, is_split: false, needs_review: false, review_note: '', transfer_account_id: '',
   ...emptyOwnerFields,
 };
 
@@ -57,6 +57,10 @@ export default function Ledgers() {
   const itemizedCards = cards.filter((c) => c.itemized);
 
   const lockedFor = editing ? moneyLockedHint(editing) : null;
+  // A transfer between two of your own accounts: both sides get recorded.
+  const pairedTransfer = !editing && !onCard && form.is_transfer && !!form.transfer_account_id;
+  const amt = Number(form.amount) || 0;
+  const otherLabel = amt < 0 ? 'Going into' : amt > 0 ? 'Coming from' : 'Other account';
 
   const startEdit = (t) => {
     setError(null);
@@ -124,6 +128,7 @@ export default function Ledgers() {
         mixed_use_business_pct: form.is_mixed_use ? Number(form.mixed_use_business_pct) : null,
         is_capex: form.is_capex,
         is_transfer: !onCard && form.is_transfer,
+        transfer_account_id: pairedTransfer ? Number(form.transfer_account_id) : null,
         cleared: onCard || !form.paid_by_check,
         splits: form.is_split ? piecesPayload(pieces) : [],
         needs_review: form.needs_review, review_note: form.needs_review ? form.review_note : null,
@@ -147,7 +152,8 @@ export default function Ledgers() {
   };
 
   const remove = async (t) => {
-    if (!window.confirm(`Delete "${t.description || 'this transaction'}" (${cents(t.amount)})? ${t.account_name ? `${t.account_name}'s balance goes back by that amount.` : ''}`)) return;
+    const both = t.transfer_peer_id && !t.source ? ' Both sides of this transfer are deleted.' : '';
+    if (!window.confirm(`Delete "${t.description || 'this transaction'}" (${cents(t.amount)})? ${t.account_name ? `${t.account_name}'s balance goes back by that amount.` : ''}${both}`)) return;
     const r = await fetch(`/api/transactions/${t.id}`, { method: 'DELETE' });
     if (!r.ok) {
       const body = await r.json().catch(() => ({}));
@@ -230,6 +236,23 @@ export default function Ledgers() {
               </label>
             </div>
           )}
+          {!onCard && !editing && form.is_transfer && (
+            <div className="field">
+              <label>{otherLabel}</label>
+              <select value={form.transfer_account_id} onChange={(e) => setForm({ ...form, transfer_account_id: e.target.value })}>
+                <option value="">Not one of my accounts (loan advance, etc.)</option>
+                {accounts.filter((a) => String(a.id) !== String(form.account_id)).map((a) => (
+                  <option key={a.id} value={a.id}>{a.name} ({a.ledger})</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {pairedTransfer && (
+            <p className="split-lines" style={{ margin: 0 }}>
+              Records both sides: {money(Math.abs(amt))} {amt < 0 ? 'out of' : 'into'} {accounts.find((a) => String(a.id) === String(form.account_id))?.name || 'the account above'} and{' '}
+              {amt < 0 ? 'into' : 'out of'} {accounts.find((a) => String(a.id) === String(form.transfer_account_id))?.name}. Each side takes its own account's owner.
+            </p>
+          )}
           {!form.is_transfer && (
             <div className="field">
               <label>
@@ -251,17 +274,17 @@ export default function Ledgers() {
                   </select>
                 </div>
               )}
-              <OwnerFields state={form} setState={setForm} />
+              {!pairedTransfer && <OwnerFields state={form} setState={setForm} />}
             </>
           )}
-          <div className="field">
+          {!pairedTransfer && <div className="field">
             <label>Ledger</label>
             <select value={form.ledger} onChange={(e) => setForm({ ...form, ledger: e.target.value })}>
               <option value="">Automatic — Grain/Cattle = business, Jake/Ashley = personal</option>
               <option value="business">Business</option>
               <option value="personal">Personal</option>
             </select>
-          </div>
+          </div>}
           {!form.is_transfer && (
             <div className="field">
               <label>
@@ -269,7 +292,7 @@ export default function Ledgers() {
               </label>
             </div>
           )}
-          {!onCard && !editing && (
+          {!onCard && !editing && !pairedTransfer && (
             <div className="field">
               <label>
                 <input type="checkbox" checked={form.paid_by_check} onChange={(e) => setForm({ ...form, paid_by_check: e.target.checked })} /> Paid by check (not yet cleared)

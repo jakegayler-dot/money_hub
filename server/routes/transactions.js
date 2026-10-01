@@ -55,6 +55,11 @@ router.get('/', ah(async (req, res) => {
 // transaction into pieces, each with its own amount, category and owner;
 // pieces must add up to the total. `is_transfer` marks money moving
 // between things Money Hub tracks (not income or expense).
+//
+// `transfer_account_id` (with is_transfer and account_id) records BOTH
+// sides of an account-to-account move in one go: `amount` on account_id
+// (negative = money leaving it) and the opposite amount on the other
+// account, linked to each other as transfer peers.
 router.post('/', ah(async (req, res) => {
   const {
     account_id = null, credit_card_id = null, date, amount, description,
@@ -62,7 +67,38 @@ router.post('/', ah(async (req, res) => {
     is_mixed_use = false, mixed_use_business_pct = null,
     is_capex = false, is_transfer = false, entered_by = 'manual',
     cleared = true, splits: pieces = [], needs_review = false, review_note = null,
+    transfer_account_id = null,
   } = req.body;
+
+  if (transfer_account_id) {
+    if (!account_id) return res.status(400).json({ error: 'A transfer to another account needs the account it comes from (or goes into).' });
+    if (String(transfer_account_id) === String(account_id)) return res.status(400).json({ error: 'Pick two different accounts.' });
+    if (!date || !Number(amount)) return res.status(400).json({ error: 'date and a non-zero amount are required.' });
+    if (pieces.length) return res.status(400).json({ error: "A transfer can't be split into pieces." });
+    const { rows: accts } = await pool.query('SELECT * FROM accounts WHERE id = ANY($1::int[])', [[account_id, transfer_account_id]]);
+    const from = accts.find((a) => String(a.id) === String(account_id));
+    const other = accts.find((a) => String(a.id) === String(transfer_account_id));
+    if (!from || !other) return res.status(400).json({ error: 'account not found' });
+    const amt = Number(amount);
+    const note = description ? ` — ${description}` : '';
+    const side = (acct, value, label) => {
+      const owner = ownerOf({}, acct);
+      return {
+        account_id: acct.id, credit_card_id: null, ledger: ledgerForOwner(owner, acct.ledger || 'business'),
+        date, amount: value, description: label, category_id: null, purchase_class: null,
+        is_mixed_use: false, mixed_use_business_pct: null, is_capex: false, is_transfer: true, entered_by,
+        cleared: true, owner, splits: [], needs_review, review_note,
+      };
+    };
+    const row = await withTransaction(async (client) => {
+      const a = await insertTransaction(client, side(from, amt, `Transfer ${amt < 0 ? 'to' : 'from'} ${other.name}${note}`));
+      const b = await insertTransaction(client, side(other, -amt, `Transfer ${amt < 0 ? 'from' : 'to'} ${from.name}${note}`));
+      await client.query('UPDATE transactions SET transfer_peer_id = $1 WHERE id = $2', [b.id, a.id]);
+      await client.query('UPDATE transactions SET transfer_peer_id = $1 WHERE id = $2', [a.id, b.id]);
+      return { ...a, transfer_peer_id: b.id };
+    });
+    return res.status(201).json(row);
+  }
 
   if (!account_id && !credit_card_id) return res.status(400).json({ error: 'Pick an account, or a card for a card purchase.' });
   if (!date || !Number(amount)) return res.status(400).json({ error: 'date and a non-zero amount are required.' });
@@ -234,8 +270,20 @@ router.post('/:id/unclear', ah(async (req, res) => {
 // bill/loan/contract payment must be reversed from its own tab (so the
 // item reopens); a statement line that produced it returns to the review
 // queue.
+// Deleting one side of a hand-entered transfer deletes the other side too,
+// so neither account is left with half a move. (Sides that came from bank
+// statements are left alone — each belongs to its own statement.)
 router.delete('/:id', ah(async (req, res) => {
-  const tx = await withTransaction((client) => removeTransaction(client, req.params.id));
+  const tx = await withTransaction(async (client) => {
+    const { rows } = await client.query('SELECT transfer_peer_id, source FROM transactions WHERE id = $1', [req.params.id]);
+    const peerId = rows[0]?.transfer_peer_id;
+    const removed = await removeTransaction(client, req.params.id);
+    if (removed && peerId && !rows[0].source) {
+      const { rows: peer } = await client.query('SELECT source FROM transactions WHERE id = $1', [peerId]);
+      if (peer.length && !peer[0].source) await removeTransaction(client, peerId);
+    }
+    return removed;
+  });
   if (!tx) return res.status(404).json({ error: 'not found' });
   res.status(204).end();
 }));
