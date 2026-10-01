@@ -1,4 +1,4 @@
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, useLocation } from 'react-router-dom';
 import Sidebar from './components/Sidebar.jsx';
 import EntityBar from './components/EntityBar.jsx';
 import Dashboard from './pages/Dashboard.jsx';
@@ -15,11 +15,14 @@ import CreditCards from './pages/CreditCards.jsx';
 import Review from './pages/Review.jsx';
 
 export default function App() {
+  // The owner toggle and the three headline numbers live on the Dashboard
+  // only; every other page goes straight to its own content.
+  const { pathname } = useLocation();
   return (
     <div className="app-shell">
       <Sidebar />
       <main>
-        <EntityBar />
+        {pathname === '/' && <EntityBar />}
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/cash-flow" element={<CashFlow />} />

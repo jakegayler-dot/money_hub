@@ -145,14 +145,14 @@ main { padding: 24px 28px 56px; max-width: 1560px; min-width: 0; }
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
-  margin-bottom: 26px;
-  padding-bottom: 14px;
+  margin-bottom: 16px;
+  padding-bottom: 10px;
   border-bottom: 1px solid var(--border);
 }
 
 .page-title {
   font-family: var(--font-display);
-  font-size: 30px;
+  font-size: 23px;
   font-weight: 400;
   letter-spacing: 0.01em;
   margin: 0;
@@ -164,9 +164,9 @@ main { padding: 24px 28px 56px; max-width: 1560px; min-width: 0; }
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
-  gap: 12px;
-  margin-bottom: 26px;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
   background: none;
   border: none;
 }
@@ -175,7 +175,7 @@ main { padding: 24px 28px 56px; max-width: 1560px; min-width: 0; }
   background: linear-gradient(160deg, var(--panel-raised), var(--panel));
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 16px 18px 14px;
+  padding: 10px 14px;
   transition: border-color var(--ease), transform var(--ease), box-shadow var(--ease);
 }
 
@@ -191,12 +191,12 @@ main { padding: 24px 28px 56px; max-width: 1560px; min-width: 0; }
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-muted);
-  margin-bottom: 9px;
+  margin-bottom: 5px;
 }
 
 .metric-value {
   font-family: var(--font-mono);
-  font-size: 25px;
+  font-size: 19px;
   font-weight: 500;
   letter-spacing: -0.01em;
   font-feature-settings: 'tnum';
@@ -213,16 +213,16 @@ main { padding: 24px 28px 56px; max-width: 1560px; min-width: 0; }
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  margin-bottom: 22px;
+  margin-bottom: 14px;
   overflow: hidden;
   overflow-x: auto;
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.02) inset;
 }
 
 .panel-header {
-  padding: 13px 20px;
+  padding: 9px 16px;
   border-bottom: 1px solid var(--border);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -230,7 +230,7 @@ main { padding: 24px 28px 56px; max-width: 1560px; min-width: 0; }
   background: linear-gradient(180deg, rgba(255,255,255,0.02), transparent);
 }
 
-.panel > p { padding-left: 20px; padding-right: 20px; }
+.panel > p { padding-left: 16px; padding-right: 16px; font-size: 12px; color: var(--text-muted); margin: 10px 0; line-height: 1.5; }
 
 /* ---------- Tables ---------- */
 
@@ -292,20 +292,31 @@ tr:last-child td { border-bottom: none; }
 
 /* ---------- Forms ---------- */
 
-form.form-panel, .form-panel { padding: 20px; display: grid; gap: 14px; max-width: 520px; }
+/* Entry forms lay their fields out side by side; anything that isn't a
+   plain field (checkbox rows, split editor, notes, the save button) takes
+   the full width. */
+form.form-panel, .form-panel {
+  padding: 14px 16px 16px; display: grid; gap: 10px 12px; max-width: none;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); align-items: end;
+}
+.form-panel > :not(.field), .form-panel > .field.wide, .form-panel > .field:has(.split-editor, textarea) { grid-column: 1 / -1; }
+.form-panel > p { margin: 0; font-size: 12px; }
+.form-panel > .field:has(> label > input[type='checkbox']) { align-self: center; }
+.field > label:has(> input[type='checkbox']) { display: flex; gap: 7px; align-items: flex-start; font-size: 11.5px; line-height: 1.35; cursor: pointer; }
+.field > label > input[type='checkbox'] { flex: none; margin: 1px 0 0; }
 
-.field { display: flex; flex-direction: column; gap: 6px; }
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 
-.field label { font-size: 11.5px; color: var(--text-muted); letter-spacing: 0.02em; }
+.field label { font-size: 11px; color: var(--text-muted); letter-spacing: 0.02em; }
 
 .field input, .field select, .panel select, .panel input, .page-header select {
   background: var(--bg);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   color: var(--text);
-  padding: 8px 11px;
+  padding: 6px 9px;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 12.5px;
   transition: border-color var(--ease), box-shadow var(--ease);
 }
 
@@ -331,9 +342,9 @@ button {
   color: #171204;
   border: none;
   border-radius: var(--radius-sm);
-  padding: 9px 18px;
+  padding: 7px 14px;
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   letter-spacing: 0.01em;
   cursor: pointer;
@@ -359,23 +370,23 @@ button:disabled { opacity: 0.4; cursor: not-allowed; filter: none; }
 
 /* ---------- Misc ---------- */
 
-.empty-state { padding: 36px 20px; color: var(--text-faint); font-size: 13px; text-align: center; font-style: italic; }
+.empty-state { padding: 22px 16px; color: var(--text-faint); font-size: 13px; text-align: center; font-style: italic; }
 
 .notice {
-  padding: 11px 20px;
+  padding: 8px 14px;
   background: var(--gold-soft);
   border: 1px solid rgba(201, 162, 39, 0.2);
   border-radius: var(--radius);
   font-size: 12px;
   color: var(--text-muted);
-  margin-bottom: 22px;
+  margin-bottom: 14px;
 }
 
 /* ---------- Entity bar (owner toggle + headline metrics) ---------- */
 
 .entity-bar {
-  margin: -6px 0 30px;
-  padding-bottom: 22px;
+  margin: -6px 0 20px;
+  padding-bottom: 16px;
   border-bottom: 1px solid var(--border);
 }
 

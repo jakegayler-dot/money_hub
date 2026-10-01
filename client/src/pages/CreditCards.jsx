@@ -620,7 +620,7 @@ export default function CreditCards() {
           purchase — it isn't a running total of rewards actually earned, since Money Hub doesn't know which card
           paid for which ledger transaction.
         </p>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', margin: '0 16px 12px' }}>
           <input type="number" step="0.01" placeholder="Purchase amount" style={{ maxWidth: 140 }}
             value={calcAmount} onChange={(e) => setCalcAmount(e.target.value)} />
           <input placeholder="Category (e.g. Groceries)" style={{ maxWidth: 200 }}

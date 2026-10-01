@@ -175,7 +175,7 @@ export default function Ledgers() {
 
       <div className="panel">
         <div className="panel-header">{editing ? `Edit transaction — ${editing.description || `#${editing.id}`}` : 'Record transaction'}</div>
-        <form className="form-panel" onSubmit={submit} style={{ maxWidth: 640 }}>
+        <form className="form-panel" onSubmit={submit}>
           {editing && lockedFor && (
             <p className="notice" style={{ margin: 0 }}>
               This is {lockedFor}, so its date, amount and account are fixed. Category, owner, splits and the review flag can still be changed.
