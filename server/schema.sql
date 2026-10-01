@@ -884,3 +884,128 @@ CREATE INDEX IF NOT EXISTS idx_bills_status ON bills (status);
 -- the transaction rather than deleting it.
 ALTER TABLE bills ADD COLUMN IF NOT EXISTS linked_existing BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE loan_payments ADD COLUMN IF NOT EXISTS linked_existing BOOLEAN NOT NULL DEFAULT false;
+
+-- ---------------------------------------------------------------------------
+-- Income categories and payees.
+--
+-- Categories are one two-level tree for both directions; `kind` says which
+-- side a category belongs to. Income categories follow the CRA farm income
+-- lines plus the crops grown here.
+ALTER TABLE expense_categories ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'expense';
+
+INSERT INTO expense_categories (name, class, ledger, kind, parent_id)
+SELECT v.name, 'variable_seasonal', 'business', 'income', NULL
+FROM (VALUES ('Grain sales'), ('Cattle sales'), ('Program payments'), ('Custom work income'),
+             ('Patronage dividends'), ('Other farm income')) AS v(name)
+WHERE NOT EXISTS (SELECT 1 FROM expense_categories c WHERE lower(c.name) = lower(v.name));
+
+INSERT INTO expense_categories (name, class, ledger, kind, parent_id)
+SELECT v.name, 'variable_seasonal', 'business', 'income', p.id
+FROM (VALUES ('Canola sales', 'Grain sales'), ('Wheat sales', 'Grain sales'), ('Oat sales', 'Grain sales'),
+             ('Barley sales', 'Grain sales'),
+             ('Calf sales', 'Cattle sales'), ('Cull cow sales', 'Cattle sales'), ('Bull sales', 'Cattle sales'),
+             ('Feeder sales', 'Cattle sales'),
+             ('AgriStability', 'Program payments'), ('AgriInvest', 'Program payments'),
+             ('Crop insurance proceeds', 'Program payments'), ('Rebates & grants', 'Program payments')) AS v(name, parent)
+JOIN expense_categories p ON lower(p.name) = lower(v.parent) AND p.kind = 'income' AND p.parent_id IS NULL
+WHERE NOT EXISTS (SELECT 1 FROM expense_categories c WHERE lower(c.name) = lower(v.name));
+
+-- Who was paid, or who paid: Cargill, Viterra, the auction mart, Co-op.
+-- One list that builds itself as transactions are entered.
+CREATE TABLE IF NOT EXISTS payees (
+  id          SERIAL PRIMARY KEY,
+  name        TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_payees_name ON payees (lower(name));
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS payee_id INTEGER REFERENCES payees(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_transactions_payee ON transactions (payee_id);
+
+-- Settled contracts already in the ledger: income category from the
+-- commodity ("Canola" -> "Canola sales"), payee from the buyer.
+UPDATE transactions t SET category_id = (
+  SELECT c.id FROM expense_categories c
+  WHERE c.kind = 'income' AND c.parent_id IS NOT NULL
+    AND sc.commodity ILIKE '%' || regexp_replace(lower(c.name), ' *sales$', '') || '%'
+  ORDER BY length(c.name) DESC LIMIT 1)
+FROM sale_contracts sc
+WHERE sc.linked_transaction_id = t.id AND t.category_id IS NULL AND NOT t.is_split;
+
+INSERT INTO payees (name)
+SELECT DISTINCT ON (lower(trim(counterparty))) trim(counterparty) FROM sale_contracts
+WHERE COALESCE(trim(counterparty), '') <> ''
+ON CONFLICT DO NOTHING;
+UPDATE transactions t SET payee_id = p.id
+FROM sale_contracts sc JOIN payees p ON lower(p.name) = lower(trim(sc.counterparty))
+WHERE sc.linked_transaction_id = t.id AND t.payee_id IS NULL;
+
+-- Money in with no category waits on Review until it gets one (the app
+-- refuses to clear the flag without one, so this only ever catches new
+-- or older uncategorized income).
+UPDATE transactions SET needs_review = true,
+       review_note = COALESCE(review_note, 'Income with no category — pick one.')
+WHERE amount > 0 AND NOT is_transfer AND NOT is_split AND category_id IS NULL AND NOT needs_review;
+
+-- ---------------------------------------------------------------------------
+-- Month-end close. A closed month's transactions can't be added, edited,
+-- deleted or cleared — from the app or from the statement agent — until the
+-- month is reopened. Every close and reopen is logged.
+CREATE TABLE IF NOT EXISTS closed_periods (
+  month      DATE PRIMARY KEY,           -- first day of the month
+  closed_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  forced     BOOLEAN NOT NULL DEFAULT false,
+  note       TEXT
+);
+CREATE TABLE IF NOT EXISTS period_log (
+  id      SERIAL PRIMARY KEY,
+  month   DATE NOT NULL,
+  action  TEXT NOT NULL,                 -- 'closed' | 'reopened'
+  forced  BOOLEAN NOT NULL DEFAULT false,
+  note    TEXT,
+  at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ---------------------------------------------------------------------------
+-- GST. `gst_amount` is the GST included in a transaction's amount, taken
+-- from the receipt or invoice — exact figures only, never estimated. On
+-- money out it's an input tax credit (the farm's share of it); on money in
+-- it's GST collected. NULL = none recorded.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS gst_amount NUMERIC(14,2);
+
+-- One row per GST reporting period once it's been filed. The refund (or
+-- payment) that settles it is linked here and kept out of income/expense.
+CREATE TABLE IF NOT EXISTS gst_returns (
+  period_start              DATE PRIMARY KEY,
+  period_end                DATE NOT NULL,
+  filed_on                  DATE,
+  net_amount                NUMERIC(14,2),         -- as filed: negative = refund to the farm
+  settlement_transaction_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+  notes                     TEXT
+);
+
+INSERT INTO settings (key, value) VALUES ('gst_filing_frequency', '"quarterly"') ON CONFLICT (key) DO NOTHING;
+
+-- ---------------------------------------------------------------------------
+-- Receipts. A photo goes in (from the phone Shortcut or the Receipts page),
+-- is read by Claude (date, total, GST, business, items, category), and is
+-- matched to the bank or card transaction it belongs to. The image is the
+-- record CRA would ask for, so it's kept here, backed up with everything else.
+CREATE TABLE IF NOT EXISTS receipts (
+  id              SERIAL PRIMARY KEY,
+  uploaded_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  source          TEXT NOT NULL DEFAULT 'app',
+  mime            TEXT NOT NULL,
+  bytes           INTEGER NOT NULL,
+  image           BYTEA NOT NULL,
+  -- reading → unmatched (read, no transaction yet) → matched; or
+  -- review (several possible transactions), failed (couldn't read),
+  -- not_receipt, unread (no API key — fill in by hand)
+  status          TEXT NOT NULL DEFAULT 'reading',
+  extracted       JSONB,
+  candidates      JSONB,
+  transaction_id  INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+  error           TEXT,
+  matched_at      TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_receipts_status ON receipts (status);
+CREATE INDEX IF NOT EXISTS idx_receipts_tx ON receipts (transaction_id);

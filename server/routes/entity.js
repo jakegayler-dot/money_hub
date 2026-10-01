@@ -8,6 +8,7 @@ import { cardAmountsDue } from '../lib/cardLedger.js';
 import { loadBalanceSheet, inventoryOwnerRow } from '../lib/balanceSheet.js';
 import { todayISO, addMonths, monthIndex } from '../lib/dates.js';
 import { billDates } from '../lib/calculations.js';
+import { farmIncomeTax } from '../lib/tax.js';
 
 const router = Router();
 const HORIZON = 12;
@@ -129,6 +130,17 @@ router.get('/', ah(async (req, res) => {
     const weight = w(e);
     if (!weight) continue;
     for (const d of occurrences(e, today, endStr)) estimated[idx(d)] += signedAmount(e) * weight;
+  }
+  // The farm's Dec 31 income tax instalment — personal tax, so it sits
+  // with Jake (and Combined), as an estimate until it's marked paid.
+  if (w({ segment: 'jake' })) {
+    try {
+      const tax = await farmIncomeTax(y0);
+      const due = tax.instalment.due;
+      if (tax.instalment.amount > 0 && !tax.instalment.paid && due >= today && due < endStr) {
+        estimated[idx(due)] -= tax.instalment.amount * w({ segment: 'jake' });
+      }
+    } catch (e) { console.error('Tax instalment forecast skipped:', e.message); }
   }
 
   const project = (includeEstimates) => {

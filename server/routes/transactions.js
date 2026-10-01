@@ -4,9 +4,11 @@ import { ah } from '../lib/asyncHandler.js';
 import { validateSegment, SEGMENT_COLUMNS } from '../lib/segments.js';
 import {
   insertTransaction, removeTransaction, ownerOf, ledgerForOwner, normalizeSplits,
-  linkBillToTransaction, linkLoanPaymentToTransaction,
+  linkBillToTransaction, linkLoanPaymentToTransaction, payeeId, UNCATEGORIZED_INCOME, cleanGst,
 } from '../lib/postings.js';
 import { toISODate } from '../lib/dates.js';
+import { assertOpen } from '../lib/periods.js';
+import { matchPending } from '../lib/receipts.js';
 
 const router = Router();
 
@@ -42,14 +44,15 @@ router.get('/', ah(async (req, res) => {
   if (credit_card_id) add('t.credit_card_id = ?', credit_card_id);
   if (needs_review === 'true') conditions.push('t.needs_review = true');
   if (req.query.id) add('t.id = ?', req.query.id);
-  if (q) add('t.description ILIKE ?', `%${q}%`);
+  if (q) add('(t.description ILIKE ? OR p.name ILIKE $' + (params.length + 1) + ')', `%${q}%`);
+  if (req.query.payee_id) add('t.payee_id = ?', req.query.payee_id);
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   params.push(Math.min(Number(limit) || 200, 2000));
 
   // Account and card names joined in so the ledger can say where each
   // entry came from (a card purchase has no account), plus split pieces.
   const { rows } = await pool.query(
-    `SELECT t.*, a.name AS account_name, cc.name AS card_name, ec.name AS category_name,
+    `SELECT t.*, a.name AS account_name, cc.name AS card_name, ec.name AS category_name, p.name AS payee_name,
             COALESCE((
               SELECT json_agg(json_build_object(
                 'id', s.id, 'amount', s.amount, 'memo', s.memo, 'category_id', s.category_id,
@@ -66,11 +69,14 @@ router.get('/', ah(async (req, res) => {
               (SELECT 'Loan: ' || COALESCE(l.name, l.lender) || ' (due ' || to_char(lp.due_date, 'YYYY-MM-DD') || ')'
                  FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id WHERE lp.linked_transaction_id = t.id LIMIT 1),
               (SELECT 'Contract: ' || c.commodity FROM sale_contracts c WHERE c.linked_transaction_id = t.id LIMIT 1)
-            ) AS pays
+            ) AS pays,
+            EXISTS (SELECT 1 FROM closed_periods cp WHERE cp.month = date_trunc('month', t.date)::date) AS in_closed_month,
+            (SELECT r.id FROM receipts r WHERE r.transaction_id = t.id ORDER BY r.id LIMIT 1) AS receipt_id
      FROM transactions t
      LEFT JOIN accounts a ON a.id = t.account_id
      LEFT JOIN credit_cards cc ON cc.id = t.credit_card_id
      LEFT JOIN expense_categories ec ON ec.id = t.category_id
+     LEFT JOIN payees p ON p.id = t.payee_id
      ${where}
      ORDER BY t.date DESC, t.id DESC LIMIT $${params.length}`,
     params
@@ -164,11 +170,14 @@ router.post('/', ah(async (req, res) => {
       ledger, date, amount: Number(amount), description, category_id: category_id || null, purchase_class,
       is_mixed_use, mixed_use_business_pct, is_capex, is_transfer, entered_by,
       cleared: account_id ? !!cleared : true, owner, splits, needs_review, review_note,
+      payee_id: req.body.payee_id || null, payee: req.body.payee || null,
+      gst_amount: req.body.gst_amount ?? null,
     });
     if (link_bill_id) await linkBillToTransaction(client, Number(link_bill_id), t.id);
     if (link_loan_payment_id) await linkLoanPaymentToTransaction(client, Number(link_loan_payment_id), t.id);
     return t;
   });
+  setImmediate(() => matchPending().catch(() => {}));
   res.status(201).json(row);
 }));
 
@@ -204,6 +213,7 @@ router.patch('/:id', ah(async (req, res) => {
     const { rows } = await client.query('SELECT * FROM transactions WHERE id = $1 FOR UPDATE', [req.params.id]);
     if (!rows.length) return { status: 404, body: { error: 'not found' } };
     const tx = rows[0];
+    await assertOpen(client, tx.date, b.date);
 
     const newDate = b.date !== undefined ? b.date : toISODate(tx.date);
     const newAmount = b.amount !== undefined ? Number(b.amount) : Number(tx.amount);
@@ -250,14 +260,30 @@ router.patch('/:id', ah(async (req, res) => {
       if (tx.account_id) await client.query('UPDATE accounts SET opening_balance = opening_balance - $1 WHERE id = $2', [tx.amount, tx.account_id]);
       if (newAccount) await client.query('UPDATE accounts SET opening_balance = opening_balance + $1 WHERE id = $2', [newAmount, newAccount]);
     }
-    const needsReview = b.needs_review !== undefined ? !!b.needs_review : tx.needs_review;
+    let needsReview = b.needs_review !== undefined ? !!b.needs_review : tx.needs_review;
+    const gst = b.gst_amount !== undefined ? cleanGst(b.gst_amount, newAmount) : (tx.gst_amount == null ? null : cleanGst(tx.gst_amount, newAmount));
+    let payee = tx.payee_id;
+    if (b.payee_id !== undefined) payee = b.payee_id ? Number(b.payee_id) : null;
+    else if (b.payee) payee = await payeeId(client, b.payee);
+    // Money in must carry an income category before its flag can clear.
+    const finalCategory = b.category_id !== undefined ? (b.category_id ? Number(b.category_id) : null) : tx.category_id;
+    const finalTransfer = b.is_transfer !== undefined ? !!b.is_transfer : tx.is_transfer;
+    const finalSplit = splits !== null ? splits.length > 0 : tx.is_split;
+    const uncategorizedIncome = newAmount > 0 && !finalTransfer && !finalSplit && !finalCategory && !tx.is_debt_service
+      && !b.transfer_account_id;
+    if (uncategorizedIncome && b.needs_review === false) {
+      return { status: 400, body: { error: 'This is money in — pick an income category (e.g. Grain sales › Canola sales) before clearing it.' } };
+    }
+    if (uncategorizedIncome) needsReview = true;
     const { rows: up } = await client.query(
       `UPDATE transactions SET
          date = $1, amount = $2, account_id = $3, description = $4, category_id = $5, ledger = $6,
          is_capex = $7, is_transfer = $8, needs_review = $9, review_note = $10,
          cleared_date = CASE WHEN cleared THEN $1::date ELSE cleared_date END,
          is_split = $11,
-         ${SEGMENT_COLUMNS.map((c, i) => `${c} = $${12 + i}`).join(', ')}
+         ${SEGMENT_COLUMNS.map((c, i) => `${c} = $${12 + i}`).join(', ')},
+         payee_id = $${13 + SEGMENT_COLUMNS.length},
+         gst_amount = $${14 + SEGMENT_COLUMNS.length}
        WHERE id = $${12 + SEGMENT_COLUMNS.length} RETURNING *`,
       [newDate, newAmount, newAccount,
        b.description !== undefined ? b.description : tx.description,
@@ -266,9 +292,9 @@ router.patch('/:id', ah(async (req, res) => {
        b.is_capex !== undefined ? !!b.is_capex : tx.is_capex,
        b.is_transfer !== undefined ? !!b.is_transfer : tx.is_transfer,
        needsReview,
-       needsReview ? (b.review_note !== undefined ? b.review_note : tx.review_note) : null,
+       needsReview ? ((b.review_note !== undefined ? b.review_note : tx.review_note) || (uncategorizedIncome ? UNCATEGORIZED_INCOME : null)) : null,
        splits !== null ? splits.length > 0 : tx.is_split,
-       ...SEGMENT_COLUMNS.map((c) => owner[c]), tx.id]
+       ...SEGMENT_COLUMNS.map((c) => owner[c]), tx.id, payee, gst]
     );
     if (splits !== null) {
       await client.query('DELETE FROM transaction_splits WHERE transaction_id = $1', [tx.id]);
@@ -315,6 +341,7 @@ router.patch('/:id', ah(async (req, res) => {
 
 router.post('/:id/clear', ah(async (req, res) => {
   const { cleared_date = new Date().toISOString().slice(0, 10) } = req.body;
+  await assertOpen(pool, cleared_date);
   const { rows } = await pool.query(
     `UPDATE transactions SET cleared = true, cleared_date = $1 WHERE id = $2 RETURNING *`,
     [cleared_date, req.params.id]
@@ -324,6 +351,8 @@ router.post('/:id/clear', ah(async (req, res) => {
 }));
 
 router.post('/:id/unclear', ah(async (req, res) => {
+  const { rows: cur } = await pool.query('SELECT cleared_date FROM transactions WHERE id = $1', [req.params.id]);
+  if (cur[0]?.cleared_date) await assertOpen(pool, cur[0].cleared_date);
   const { rows } = await pool.query(
     `UPDATE transactions SET cleared = false, cleared_date = NULL WHERE id = $1 RETURNING *`,
     [req.params.id]

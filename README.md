@@ -86,6 +86,10 @@ API.
    signs every device out. Calls carrying a valid `X-Api-Key`
    (`INGEST_API_KEY`) don't need it. Unset, the app is open to anyone
    with the link.
+7. Receipts: set `ANTHROPIC_API_KEY` so receipt photos are read automatically
+   (`RECEIPT_MODEL` optionally overrides the model), and `RECEIPT_UPLOAD_KEY`
+   (any long random value) for the iPhone Shortcut — it can only upload
+   receipts. Setup steps are on the Receipts tab → iPhone setup.
 
 Environment variables (optional — defaults match the locked v1 thresholds):
 

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { requireIngestKey } from '../lib/ingestAuth.js';
+import { matchPending } from '../lib/receipts.js';
 import { OWNERS } from '../lib/segments.js';
 import { toISODate, todayISO, addDays } from '../lib/dates.js';
 import { processLine, reconcileImport, KINDS } from '../lib/statementIngest.js';
@@ -89,11 +90,11 @@ async function saveLine(client, existing, fields) {
 // scheduled (so it can label a line's kind with confidence).
 router.get('/reference', requireIngestKey, ah(async (req, res) => {
   const soon = addDays(todayISO(), 60);
-  const [accounts, cards, categories, bills, loanPays, contracts] = await Promise.all([
+  const [accounts, cards, categories, bills, loanPays, contracts, payees] = await Promise.all([
     pool.query('SELECT id, name, ledger, account_type, last4, segment FROM accounts ORDER BY id'),
     pool.query(`SELECT id, name, issuer, last4, segment, ledger_start_date IS NOT NULL AS itemized
                 FROM credit_cards WHERE status = 'active' ORDER BY id`),
-    pool.query(`SELECT c.id, c.name, c.class, c.ledger, p.name AS parent,
+    pool.query(`SELECT c.id, c.name, c.kind, c.class, c.ledger, p.name AS parent,
                        EXISTS (SELECT 1 FROM expense_categories k WHERE k.parent_id = c.id) AS has_subcategories
                 FROM expense_categories c LEFT JOIN expense_categories p ON p.id = c.parent_id
                 ORDER BY lower(COALESCE(p.name, c.name)), c.parent_id IS NOT NULL, lower(c.name)`),
@@ -105,6 +106,7 @@ router.get('/reference', requireIngestKey, ah(async (req, res) => {
                 ORDER BY lp.due_date`, [soon]),
     pool.query(`SELECT id, commodity, counterparty, total_value, expected_payment_date, status
                 FROM sale_contracts WHERE status IN ('open', 'delivered') ORDER BY expected_payment_date`),
+    pool.query('SELECT id, name FROM payees ORDER BY lower(name)'),
   ]);
   const d = (rows, ...keys) => rows.map((r) => {
     const o = { ...r };
@@ -120,6 +122,7 @@ router.get('/reference', requireIngestKey, ah(async (req, res) => {
     unpaid_bills: d(bills.rows, 'due_date'),
     upcoming_loan_payments: d(loanPays.rows, 'due_date'),
     open_contracts: d(contracts.rows, 'expected_payment_date'),
+    payees: payees.rows,
   });
 }));
 
@@ -200,7 +203,7 @@ router.post('/ingest', requireIngestKey, ah(async (req, res) => {
       return rows[0];
     });
   } catch (err) {
-    if (err instanceof PostingError) return res.status(err.status).json({ error: err.message });
+    if (err instanceof PostingError || err.status === 409) return res.status(err.status).json({ error: err.message });
     throw err;
   }
 
@@ -281,6 +284,8 @@ router.post('/ingest', requireIngestKey, ah(async (req, res) => {
     else summary[r.status] += 1;
   }
   const { rows: [freshImp] } = await pool.query('SELECT * FROM statement_imports WHERE id = $1', [imp.id]);
+  // New transactions may be what waiting receipts belong to.
+  setImmediate(() => matchPending().catch(() => {}));
   res.json({
     import_id: imp.id,
     target: { type: target.type, id: target.row.id, name: target.row.name },
@@ -317,10 +322,12 @@ router.get('/review', ah(async (req, res) => {
 router.get('/review/count', ah(async (req, res) => {
   const { rows } = await pool.query(
     `SELECT (SELECT COUNT(*) FROM statement_lines WHERE status = 'held')::int AS lines,
-            (SELECT COUNT(*) FROM transactions WHERE needs_review)::int AS flagged`
+            (SELECT COUNT(*) FROM transactions WHERE needs_review)::int AS flagged,
+            (SELECT COUNT(*) FROM receipts WHERE status IN ('review', 'failed'))::int AS receipts`
   );
-  // `held` is the total waiting — statement lines plus flagged transactions.
-  res.json({ held: rows[0].lines + rows[0].flagged, lines: rows[0].lines, flagged: rows[0].flagged });
+  // `held` is the total waiting — statement lines, flagged transactions and receipts needing a decision.
+  const r = rows[0];
+  res.json({ held: r.lines + r.flagged + r.receipts, lines: r.lines, flagged: r.flagged, receipts: r.receipts });
 }));
 
 router.get('/lines', ah(async (req, res) => {
@@ -347,6 +354,7 @@ router.get('/imports', ah(async (req, res) => {
      LEFT JOIN accounts a ON a.id = si.account_id
      LEFT JOIN credit_cards cc ON cc.id = si.credit_card_id
      LEFT JOIN statement_lines sl ON sl.import_id = si.id
+     WHERE si.source <> 'manual-check'
      GROUP BY si.id, a.name, cc.name
      ORDER BY si.created_at DESC LIMIT 50`
   );

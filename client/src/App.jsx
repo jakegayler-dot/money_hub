@@ -15,6 +15,9 @@ import Expenses from './pages/Expenses.jsx';
 import PurchaseEvaluator from './pages/PurchaseEvaluator.jsx';
 import CreditCards from './pages/CreditCards.jsx';
 import Review from './pages/Review.jsx';
+import Books from './pages/Books.jsx';
+import Tax from './pages/Tax.jsx';
+import Receipts from './pages/Receipts.jsx';
 
 export default function App() {
   // The owner toggle and the three headline numbers live on the Dashboard
@@ -53,6 +56,9 @@ export default function App() {
           <Route path="/purchase-evaluator" element={<PurchaseEvaluator />} />
           <Route path="/credit-cards" element={<CreditCards />} />
           <Route path="/review" element={<Review />} />
+          <Route path="/books" element={<Books />} />
+          <Route path="/tax" element={<Tax />} />
+          <Route path="/receipts" element={<Receipts />} />
         </Routes>
       </main>
     </div>

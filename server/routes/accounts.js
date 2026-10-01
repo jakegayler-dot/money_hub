@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { assertNoClosedFrom } from '../lib/periods.js';
 import { pool, withTransaction } from '../db.js';
 import { anchorAccount } from '../lib/postings.js';
 import { ah } from '../lib/asyncHandler.js';
@@ -39,6 +40,9 @@ router.patch('/:id', ah(async (req, res) => {
   const { rows: currentRows } = await pool.query('SELECT * FROM accounts WHERE id = $1', [req.params.id]);
   if (!currentRows.length) return res.status(404).json({ error: 'not found' });
   const current = currentRows[0];
+  if (opening_balance != null && Number(opening_balance) !== Number(current.opening_balance)) {
+    await assertNoClosedFrom(pool, null, `${current.name}'s balance`);
+  }
 
   const effectiveSeg = {};
   for (const c of SEGMENT_COLUMNS) effectiveSeg[c] = req.body[c] !== undefined ? req.body[c] : current[c];

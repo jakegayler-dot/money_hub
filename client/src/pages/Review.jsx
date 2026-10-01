@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { OWNER_KEYS, OWNER_LABELS } from '../owners.jsx';
 import CategorySelect from '../components/CategorySelect.jsx';
+import { ReceiptRow } from './Receipts.jsx';
+import PayeeSelect, { usePayees } from '../components/PayeeSelect.jsx';
 import SplitEditor, { cents, newPiece, piecesPayload } from '../components/SplitEditor.jsx';
 
 const KIND_LABELS = {
@@ -19,14 +21,76 @@ const CANDIDATE_KEY = {
   card: 'credit_card_id', transaction: 'match_transaction_id',
 };
 
+const NO_LINKS = { bills: [], loan_payments: [] };
+
+/**
+ * "What it is" for one review item: regular spending/income, a transfer
+ * to/from another of your accounts, an unpaid bill, or a scheduled loan
+ * payment. `value` = { type: '' | 'transfer' | 'bill' | 'loan', target: id }.
+ */
+function WhatItIs({ amount, accountId, date, accounts, links, value, onChange }) {
+  const out = amount < 0;
+  const near = (x) => Math.abs(Math.abs(x) - Math.abs(amount)) < 0.005;
+  const gap = (d) => (date ? Math.abs(new Date(d) - new Date(date)) : 0);
+  const sorted = (list) => [...list].sort((a, b) => (Number(near(b.amount)) - Number(near(a.amount))) || (gap(a.due_date) - gap(b.due_date)));
+  const set = (patch) => onChange({ ...value, ...patch });
+  return (
+    <div className="review-fields">
+      <div className="field">
+        <label>What it is</label>
+        <select value={value.type} onChange={(e) => set({ type: e.target.value, target: '' })}>
+          <option value="">Spending / income</option>
+          {accountId && <option value="transfer">Transfer with another of my accounts</option>}
+          {out && <option value="bill">Pays a bill</option>}
+          {out && accountId && <option value="loan">Loan payment</option>}
+        </select>
+      </div>
+      {value.type === 'transfer' && (
+        <div className="field">
+          <label>{out ? 'Going into' : 'Coming from'}</label>
+          <select value={value.target} onChange={(e) => set({ target: e.target.value })}>
+            <option value="">Not one of my accounts / its statement brings the other side</option>
+            {accounts.filter((a) => a.id !== accountId).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+        </div>
+      )}
+      {value.type === 'bill' && (
+        <div className="field" style={{ gridColumn: 'span 2' }}>
+          <label>Which bill (✓ = amount matches)</label>
+          <select value={value.target} onChange={(e) => set({ target: e.target.value })}>
+            <option value="">{links.bills.length ? 'Pick a bill' : 'No unpaid bills on file'}</option>
+            {sorted(links.bills).map((b) => (
+              <option key={b.id} value={b.id}>{near(b.amount) ? '✓ ' : ''}{b.name} · {cents(b.amount)} · due {b.due_date}</option>
+            ))}
+          </select>
+        </div>
+      )}
+      {value.type === 'loan' && (
+        <div className="field" style={{ gridColumn: 'span 2' }}>
+          <label>Which loan payment (✓ = amount matches)</label>
+          <select value={value.target} onChange={(e) => set({ target: e.target.value })}>
+            <option value="">{links.loan_payments.length ? 'Pick a payment' : 'No unrecorded loan payments due'}</option>
+            {sorted(links.loan_payments).map((l) => (
+              <option key={l.id} value={l.id}>{near(l.amount) ? '✓ ' : ''}{l.loan_name} · {cents(l.amount)} · due {l.due_date}</option>
+            ))}
+          </select>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Review() {
   const [lines, setLines] = useState(null);
   const [imports, setImports] = useState([]);
   const [categories, setCategories] = useState([]);
   const [accounts, setAccounts] = useState([]);
+  const [links, setLinks] = useState(NO_LINKS);
+  const payees = usePayees();
   const [error, setError] = useState(null);
 
   const [flagged, setFlagged] = useState([]);
+  const [receipts, setReceipts] = useState([]);
   const load = () => {
     Promise.all([
       fetch('/api/statements/review').then((r) => r.json()),
@@ -34,6 +98,9 @@ export default function Review() {
       fetch('/api/transactions?needs_review=true&limit=500').then((r) => r.json()),
     ]).then(([l, i, f]) => { setLines(l); setImports(i); setFlagged(Array.isArray(f) ? f : []); })
       .catch((e) => setError(e.message));
+    fetch('/api/receipts?status=review,failed').then((r) => r.json()).then((d) => setReceipts(d.receipts || [])).catch(() => {});
+    fetch('/api/transactions/link-options').then((r) => r.json())
+      .then((d) => setLinks(d && d.bills ? d : NO_LINKS)).catch(() => {});
   };
   useEffect(() => {
     load();
@@ -56,7 +123,7 @@ export default function Review() {
     <>
       <div className="page-header">
         <h1 className="page-title">Review</h1>
-        <span className="page-meta">{lines.length + flagged.length} waiting</span>
+        <span className="page-meta">{lines.length + flagged.length + receipts.length} waiting</span>
       </div>
 
       <div className="panel">
@@ -65,10 +132,23 @@ export default function Review() {
           <div className="empty-state">Nothing to review — every statement line has been posted or matched.</div>
         ) : (
           lines.map((l) => (
-            <ReviewItem key={l.id} line={l} categories={categories} accounts={accounts} onDone={changed} />
+            <ReviewItem key={l.id} line={l} categories={categories} accounts={accounts} links={links} payees={payees} onDone={changed} />
           ))
         )}
       </div>
+
+      {receipts.length > 0 && (
+        <div className="panel">
+          <div className="panel-header">Receipts that need you</div>
+          {receipts.map((r) => (
+            <ReceiptRow key={r.id} r={r} act={async (method, url, body) => {
+              const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+              if (res.ok) changed();
+              return res.ok;
+            }} />
+          ))}
+        </div>
+      )}
 
       <div className="panel">
         <div className="panel-header">Transactions flagged for review</div>
@@ -76,7 +156,7 @@ export default function Review() {
           <div className="empty-state">Nothing flagged. Entries marked "Needs review" on the Ledgers tab show up here.</div>
         ) : (
           flagged.map((t) => (
-            <FlaggedItem key={t.id} tx={t} categories={categories} onDone={changed} />
+            <FlaggedItem key={t.id} tx={t} categories={categories} accounts={accounts} links={links} payees={payees} onDone={changed} />
           ))
         )}
       </div>
@@ -120,7 +200,9 @@ function Reconciliation({ r }) {
   return <span className="badge fail" title={`Money Hub ${cents(r.money_hub_balance)} vs statement ${cents(r.statement_closing)}`}>Off by {cents(r.difference)}</span>;
 }
 
-function ReviewItem({ line, categories, accounts, onDone }) {
+const KIND_TO_TYPE = { transfer: 'transfer', owner_draw: 'transfer', bill_payment: 'bill', loan_payment: 'loan' };
+
+function ReviewItem({ line, categories, accounts, links, payees, onDone }) {
   const p = line.payload || {};
   const candidates = line.candidates || [];
   const [pick, setPick] = useState(candidates.length === 1 ? String(candidates[0].id) : '');
@@ -131,32 +213,49 @@ function ReviewItem({ line, categories, accounts, onDone }) {
   const [splitting, setSplitting] = useState(false);
   const [pieces, setPieces] = useState([newPiece(), newPiece()]);
   const [fromAccount, setFromAccount] = useState('');
-  const [otherAccount, setOtherAccount] = useState(p.counterparty_account_id ? String(p.counterparty_account_id) : '');
+  const partyName = (p.party || p.payee || '').trim().toLowerCase();
+  const [payeeId, setPayeeId] = useState('');
+  const knownPayee = partyName ? payees.find((x) => x.name.toLowerCase() === partyName) : null;
+  const payeeValue = payeeId || (knownPayee ? String(knownPayee.id) : '');
+  const [what, setWhat] = useState({
+    type: KIND_TO_TYPE[line.kind || p.kind] || '',
+    target: p.counterparty_account_id ? String(p.counterparty_account_id) : '',
+  });
   const [postAsNew, setPostAsNew] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
 
   const candType = candidates[0]?.type;
   const cardSidePayment = !!line.card_name && kind === 'card_payment';
-  const effKind = editing ? kind : (line.kind || p.kind);
-  // A transfer on an account: name the other account and both sides post.
-  const transferSide = !!line.account_id && ['transfer', 'owner_draw'].includes(effKind)
-    && !(pick && pick !== 'none');
+  // The "What it is" picker applies unless a suggested match was picked.
+  const usePicker = !(pick && pick !== 'none') && !cardSidePayment;
 
   const approve = async () => {
     const overrides = {};
     if (pick && pick !== 'none' && candType) overrides[CANDIDATE_KEY[candType]] = Number(pick);
     if (pick === 'none' && candType === 'transaction') overrides.post_as_new = true;
     if (postAsNew) overrides.post_as_new = true;
+    if (categoryId) { overrides.category_id = Number(categoryId); overrides.category = null; }
+    if (payeeId) overrides.payee_id = Number(payeeId);
     if (editing) {
       overrides.kind = kind;
-      if (categoryId) { overrides.category_id = Number(categoryId); overrides.category = null; }
       if (segment) { overrides.segment = segment; overrides.is_segment_split = false; }
       if (splitting) overrides.splits = piecesPayload(pieces);
       else if (p.splits) overrides.splits = null;
     }
     if (cardSidePayment && fromAccount) overrides.from_account_id = Number(fromAccount);
-    if (transferSide && otherAccount) { overrides.counterparty_account_id = Number(otherAccount); overrides.counterparty_last4 = null; }
+    if (usePicker && what.type === 'transfer') {
+      overrides.kind = (line.kind || p.kind) === 'owner_draw' ? 'owner_draw' : 'transfer';
+      if (what.target) { overrides.counterparty_account_id = Number(what.target); overrides.counterparty_last4 = null; }
+    } else if (usePicker && what.type === 'bill') {
+      if (!what.target) { setErr('Pick which bill this pays.'); return; }
+      overrides.kind = 'bill_payment'; overrides.bill_id = Number(what.target);
+    } else if (usePicker && what.type === 'loan') {
+      if (!what.target) { setErr('Pick which loan payment this is.'); return; }
+      overrides.kind = 'loan_payment'; overrides.loan_payment_id = Number(what.target);
+    } else if (usePicker && !what.type && KIND_TO_TYPE[line.kind || p.kind] && !editing) {
+      overrides.kind = 'standard';
+    }
     setBusy(true);
     setErr(null);
     const r = await fetch(`/api/statements/lines/${line.id}/approve`, {
@@ -220,14 +319,22 @@ function ReviewItem({ line, categories, accounts, onDone }) {
         </div>
       )}
 
-      {transferSide && (
+      {usePicker && (
+        <WhatItIs amount={Number(line.amount)} accountId={line.account_id} date={line.date}
+          accounts={accounts} links={links} value={what} onChange={setWhat} />
+      )}
+      {usePicker && what.type === '' && !splitting && (
         <div className="review-fields">
           <div className="field">
-            <label>{Number(line.amount) < 0 ? 'Going into' : 'Coming from'}</label>
-            <select value={otherAccount} onChange={(e) => setOtherAccount(e.target.value)}>
-              <option value="">Not one of my accounts / other side comes on its own statement</option>
-              {accounts.filter((a) => a.id !== line.account_id).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-            </select>
+            <label>Category{Number(line.amount) > 0 ? ' (required for money in)' : ''}</label>
+            <CategorySelect categories={categories} value={categoryId} onChange={setCategoryId}
+              preferKind={Number(line.amount) > 0 ? 'income' : 'expense'}
+              emptyLabel={p.category ? `Keep "${p.category}"` : 'No category'} />
+          </div>
+          <div className="field">
+            <label>{Number(line.amount) > 0 ? 'Received from' : 'Paid to'}</label>
+            <PayeeSelect payees={payees} value={payeeValue} onChange={setPayeeId}
+              emptyLabel={p.party || p.payee ? `"${p.party || p.payee}" (new)` : 'Not recorded'} />
           </div>
         </div>
       )}
@@ -236,18 +343,13 @@ function ReviewItem({ line, categories, accounts, onDone }) {
         <>
           <div className="review-fields">
             <div className="field">
-              <label>What it is</label>
+              <label>Other kind</label>
               <select value={kind} onChange={(e) => setKind(e.target.value)}>
                 {Object.entries(KIND_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
               </select>
             </div>
             {!splitting && (
               <>
-                <div className="field">
-                  <label>Category</label>
-                  <CategorySelect categories={categories} value={categoryId} onChange={setCategoryId}
-                    emptyLabel={p.category ? `Keep "${p.category}"` : 'No category'} />
-                </div>
                 <div className="field">
                   <label>Belongs to</label>
                   <select value={segment} onChange={(e) => setSegment(e.target.value)}>
@@ -291,16 +393,38 @@ function ReviewItem({ line, categories, accounts, onDone }) {
 // A transaction someone flagged. It already counts; this is where a person
 // confirms or fixes its category and owner, then clears the flag. Anything
 // more (amount, splits) opens it on the Ledgers tab.
-function FlaggedItem({ tx, categories, onDone }) {
+function FlaggedItem({ tx, categories, accounts, links, payees, onDone }) {
   const [categoryId, setCategoryId] = useState(tx.category_id ? String(tx.category_id) : '');
   const [segment, setSegment] = useState(tx.is_segment_split ? '' : (tx.segment || ''));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const amount = Number(tx.amount);
+  // Already a bill/loan/card payment, or already a paired transfer: nothing to re-assign here.
+  const canAssign = !tx.pays && !tx.transfer_peer_id && !(tx.credit_card_id && tx.account_id);
+  const [what, setWhat] = useState({ type: tx.is_transfer ? 'transfer' : '', target: '' });
+  const [payeeId, setPayeeId] = useState(tx.payee_id ? String(tx.payee_id) : '');
+  const needsIncomeCategory = amount > 0 && !tx.is_split && what.type === '' && !categoryId;
 
   const resolve = async () => {
-    const body = { needs_review: false };
-    if (!tx.is_split) {
+    if (needsIncomeCategory) { setErr('This is money in — pick an income category first.'); return; }
+    const body = { needs_review: false, payee_id: payeeId ? Number(payeeId) : null };
+    if (canAssign) {
+      if (what.type === 'transfer') {
+        body.is_transfer = true; body.category_id = null; body.splits = [];
+        if (what.target) body.transfer_account_id = Number(what.target);
+      } else {
+        if (tx.is_transfer) body.is_transfer = false;
+        if (what.type === 'bill') {
+          if (!what.target) { setErr('Pick which bill this pays.'); return; }
+          body.link_bill_id = Number(what.target);
+        }
+        if (what.type === 'loan') {
+          if (!what.target) { setErr('Pick which loan payment this is.'); return; }
+          body.link_loan_payment_id = Number(what.target);
+        }
+      }
+    }
+    if (!tx.is_split && what.type !== 'transfer') {
       body.category_id = categoryId ? Number(categoryId) : null;
       if (segment) { body.segment = segment; body.is_segment_split = false; }
     }
@@ -327,11 +451,17 @@ function FlaggedItem({ tx, categories, onDone }) {
         <div className={`review-amount ${amount < 0 ? 'neg' : 'pos'}`}>{cents(amount)}</div>
       </div>
       <div className="review-reason">{tx.review_note || 'Flagged for review.'}</div>
-      {!tx.is_split && (
+      {canAssign && (
+        <WhatItIs amount={amount} accountId={tx.account_id} date={tx.date}
+          accounts={accounts} links={links} value={what} onChange={setWhat} />
+      )}
+      {tx.pays && <div className="review-meta">Already linked — {tx.pays}</div>}
+      {!tx.is_split && what.type !== 'transfer' && (
         <div className="review-fields">
           <div className="field">
             <label>Category</label>
-            <CategorySelect categories={categories} value={categoryId} onChange={setCategoryId} />
+            <CategorySelect categories={categories} value={categoryId} onChange={setCategoryId}
+              preferKind={amount > 0 ? 'income' : 'expense'} />
           </div>
           <div className="field">
             <label>Belongs to</label>
@@ -339,6 +469,10 @@ function FlaggedItem({ tx, categories, onDone }) {
               <option value="">{tx.is_segment_split ? 'Keep split' : 'Keep as is'}</option>
               {OWNER_KEYS.map((k) => <option key={k} value={k}>{OWNER_LABELS[k]}</option>)}
             </select>
+          </div>
+          <div className="field">
+            <label>{amount > 0 ? 'Received from' : 'Paid to'}</label>
+            <PayeeSelect payees={payees} value={payeeId} onChange={setPayeeId} />
           </div>
         </div>
       )}

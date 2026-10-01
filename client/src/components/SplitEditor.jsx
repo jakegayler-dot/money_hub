@@ -26,6 +26,7 @@ export default function SplitEditor({ pieces, setPieces, categories, total }) {
             value={p.amount} onChange={(e) => set(i, { amount: e.target.value })}
           />
           <CategorySelect aria-label={`Piece ${i + 1} category`} categories={categories} value={p.category_id}
+            preferKind={Number(p.amount || total) > 0 ? 'income' : 'expense'}
             onChange={(v) => set(i, { category_id: v })} />
           <select aria-label={`Piece ${i + 1} owner`} value={p.segment} onChange={(e) => set(i, { segment: e.target.value })}>
             {OWNER_KEYS.map((k) => <option key={k} value={k}>{OWNER_LABELS[k]}</option>)}

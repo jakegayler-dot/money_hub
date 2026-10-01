@@ -58,6 +58,9 @@ function setCookie(req, res, value, maxAge) {
 
 export const authEnabled = () => !!password();
 
+/** Signed-in browser, a valid API key, or no password set. */
+export const isAuthorized = (req) => !authEnabled() || validSession(req) || validKey(req);
+
 /** Guards every /api route except sign-in and the health check. */
 export function requireSignIn(req, res, next) {
   if (!authEnabled() || validSession(req) || validKey(req)) return next();

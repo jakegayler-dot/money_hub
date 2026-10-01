@@ -4,6 +4,9 @@ import { NavLink, useLocation } from 'react-router-dom';
 const links = [
   { to: '/', label: 'Dashboard', end: true },
   { to: '/review', label: 'Review', count: true },
+  { to: '/receipts', label: 'Receipts' },
+  { to: '/books', label: 'Books' },
+  { to: '/tax', label: 'Tax' },
   { to: '/cash-flow', label: 'Cash Flow' },
   { to: '/accounts', label: 'Accounts' },
   { to: '/bills', label: 'Bills' },
@@ -12,7 +15,7 @@ const links = [
   { to: '/loans', label: 'Loans' },
   { to: '/credit-cards', label: 'Credit Cards' },
   { to: '/assets', label: 'Assets' },
-  { to: '/expenses', label: 'Expenses' },
+  { to: '/expenses', label: 'Income & Expenses' },
   { to: '/purchase-evaluator', label: 'Purchase Evaluator' },
 ];
 

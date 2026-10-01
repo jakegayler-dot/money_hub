@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react';
-import { money } from '../format.js';
+import { money, unitPrice } from '../format.js';
 import { OWNER_LABELS } from '../owners.jsx';
 
 const emptyForm = {
@@ -168,7 +168,7 @@ export default function Contracts() {
                         <div className="split-lines">{[c.counterparty, c.source !== 'manual' ? `via ${c.source}` : null].filter(Boolean).join(' · ')}</div>
                       )}
                     </td>
-                    <td>{c.quantity ? `${Number(c.quantity)} ${c.unit || ''}${c.price_per_unit ? ` @ ${money(Number(c.price_per_unit))}` : ''}` : '—'}</td>
+                    <td>{c.quantity ? `${Number(c.quantity)} ${c.unit || ''}${c.price_per_unit ? ` @ ${unitPrice(Number(c.price_per_unit))}/${c.unit || 'unit'}` : ''}` : '—'}</td>
                     <td>{money(Number(c.total_value))}</td>
                     <td>{STATUS_BADGE[c.status] || c.status}</td>
                     <td>

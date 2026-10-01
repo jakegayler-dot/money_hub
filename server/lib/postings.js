@@ -10,11 +10,41 @@ import { toISODate, addMonths } from './dates.js';
 const SEG_COLS = SEGMENT_COLUMNS.join(', ');
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
 
+import { assertOpen, assertNoClosedFrom } from './periods.js';
+
 export class PostingError extends Error {
   constructor(message, status = 409) {
     super(message);
     this.status = status;
   }
+}
+
+export const UNCATEGORIZED_INCOME = 'Income with no category — pick one.';
+
+/**
+ * GST included in an amount, as a positive number, or null. Refused when
+ * it couldn't be part of the amount (more than the whole thing).
+ */
+export function cleanGst(gst, amount) {
+  if (gst === undefined || gst === null || gst === '') return null;
+  const g = Math.abs(round2(gst));
+  if (Number.isNaN(g)) throw new PostingError('GST must be a number.', 400);
+  if (g === 0) return 0;
+  if (g > Math.abs(round2(amount))) throw new PostingError(`GST of ${g} is more than the whole amount.`, 400);
+  return g;
+}
+
+/** The payee/buyer id for a name, creating it the first time it's seen. */
+export async function payeeId(client, name) {
+  const clean = String(name || '').trim().replace(/\s+/g, ' ');
+  if (!clean) return null;
+  const { rows } = await client.query(
+    `INSERT INTO payees (name) VALUES ($1)
+     ON CONFLICT ((lower(name))) DO UPDATE SET name = payees.name
+     RETURNING id`,
+    [clean]
+  );
+  return rows[0].id;
 }
 
 /** Owner fields as an object keyed by SEGMENT_COLUMNS: src's own if it has any, else fallback's. */
@@ -71,23 +101,30 @@ export function normalizeSplits(pieces, parentAmount, parentOwner, parentLedger)
  * (account_id null) moves no account — it raises the card's ledger balance.
  */
 export async function insertTransaction(client, t) {
+  await assertOpen(client, t.date);
   const owner = t.owner || ownerOf(t);
   const splits = t.splits || [];
   const cleared = t.cleared !== false;
+  // Money in with no category can't be analysed — it waits on Review.
+  const uncategorizedIncome = round2(t.amount) > 0 && !t.is_transfer && !splits.length && !t.category_id && !t.is_debt_service;
+  const needsReview = !!t.needs_review || uncategorizedIncome;
+  const reviewNote = t.needs_review ? (t.review_note || null) : (uncategorizedIncome ? UNCATEGORIZED_INCOME : null);
+  const payee = t.payee_id || (t.payee ? await payeeId(client, t.payee) : null);
+  const gst = cleanGst(t.gst_amount, t.amount);
   const { rows } = await client.query(
     `INSERT INTO transactions
       (account_id, credit_card_id, credit_card_statement_id, ledger, date, amount, description, category_id,
        purchase_class, is_mixed_use, mixed_use_business_pct, is_capex, is_debt_service, is_transfer, is_split,
-       entered_by, cleared, cleared_date, source, external_id, needs_review, review_note, ${SEG_COLS})
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
-             ${SEGMENT_COLUMNS.map((_, i) => `$${23 + i}`).join(',')})
+       entered_by, cleared, cleared_date, source, external_id, needs_review, review_note, payee_id, gst_amount, ${SEG_COLS})
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,
+             ${SEGMENT_COLUMNS.map((_, i) => `$${25 + i}`).join(',')})
      RETURNING *`,
     [t.account_id || null, t.credit_card_id || null, t.credit_card_statement_id || null,
      t.ledger || ledgerForOwner(owner), t.date, round2(t.amount), t.description || null, t.category_id || null,
      t.purchase_class || null, !!t.is_mixed_use, t.mixed_use_business_pct ?? null,
      !!t.is_capex, !!t.is_debt_service, !!t.is_transfer, splits.length > 0,
      t.entered_by || 'manual', cleared, cleared ? t.date : null, t.source || null, t.external_id || null,
-     !!t.needs_review, t.needs_review ? (t.review_note || null) : null,
+     needsReview, reviewNote, payee, gst,
      ...SEGMENT_COLUMNS.map((c) => owner[c])]
   );
   const tx = rows[0];
@@ -115,6 +152,7 @@ export async function removeTransaction(client, txId) {
   const { rows } = await client.query('SELECT * FROM transactions WHERE id = $1 FOR UPDATE', [txId]);
   if (!rows.length) return null;
   const tx = rows[0];
+  await assertOpen(client, tx.date, tx.cleared_date);
 
   const { rows: blockers } = await client.query(
     `SELECT 'bill' AS kind, name AS label FROM bills WHERE linked_transaction_id = $1
@@ -148,6 +186,19 @@ export async function removeTransaction(client, txId) {
   return tx;
 }
 
+/** "Canola" / "CWRS wheat" -> the matching "... sales" income category, if there is one. */
+export async function incomeCategoryFor(client, commodity) {
+  if (!commodity) return null;
+  const { rows } = await client.query(
+    `SELECT id FROM expense_categories
+     WHERE kind = 'income' AND parent_id IS NOT NULL
+       AND $1 ILIKE '%' || regexp_replace(lower(name), ' *sales$', '') || '%'
+     ORDER BY length(name) DESC LIMIT 1`,
+    [commodity]
+  );
+  return rows[0]?.id || null;
+}
+
 async function categoryIdByName(client, name) {
   if (!name) return null;
   const { rows } = await client.query('SELECT id FROM expense_categories WHERE lower(name) = lower($1) LIMIT 1', [name]);
@@ -175,7 +226,9 @@ export async function payBill(client, billId, {
     tx = await insertTransaction(client, {
       account_id, credit_card_id, ledger: bill.ledger, date, amount: -paid,
       description: `Bill paid: ${bill.name}${paid_by_check ? ' (check)' : ''}`,
-      category_id: await categoryIdByName(client, bill.category),
+      category_id: await categoryIdByName(client, bill.category), payee: bill.name,
+      // The bill is the invoice, so its GST is exact; scaled if a different amount was paid.
+      gst_amount: bill.has_gst && Number(bill.amount) ? round2(Number(bill.gst_amount) * paid / Number(bill.amount)) : null,
       owner: ownerOf(bill), cleared: !paid_by_check, source, external_id, entered_by,
     });
   }
@@ -220,6 +273,7 @@ async function linkableTx(client, txId) {
   const { rows } = await client.query('SELECT * FROM transactions WHERE id = $1 FOR UPDATE', [txId]);
   const tx = rows[0];
   if (!tx) throw new PostingError('Transaction not found.');
+  await assertOpen(client, tx.date);
   if (Number(tx.amount) >= 0) throw new PostingError('Only money going out can pay a bill or loan.');
   if (tx.is_transfer) throw new PostingError('This is marked as a transfer — untick Transfer first.');
   const already = await existingLink(client, tx.id);
@@ -245,6 +299,11 @@ export async function linkBillToTransaction(client, billId, txId) {
     const cat = await categoryIdByName(client, bill.category);
     if (cat) await client.query('UPDATE transactions SET category_id = $1 WHERE id = $2', [cat, tx.id]);
   }
+  if (!tx.payee_id) await client.query('UPDATE transactions SET payee_id = $1 WHERE id = $2', [await payeeId(client, bill.name), tx.id]);
+  if (bill.has_gst && tx.gst_amount == null && Number(bill.amount)) {
+    const g = round2(Number(bill.gst_amount) * Math.abs(Number(tx.amount)) / Number(bill.amount));
+    await client.query('UPDATE transactions SET gst_amount = $1 WHERE id = $2', [g, tx.id]);
+  }
   const nextBill = await rollBillForward(client, bill);
   return { bill, nextBill };
 }
@@ -262,6 +321,10 @@ export async function linkLoanPaymentToTransaction(client, paymentId, txId) {
     [tx.date, tx.id, payment.id]
   );
   await client.query('UPDATE transactions SET is_debt_service = true WHERE id = $1', [tx.id]);
+  if (!tx.payee_id) {
+    const { rows: l } = await client.query('SELECT COALESCE(lender, name) AS who FROM loans WHERE id = $1', [payment.loan_id]);
+    if (l[0]?.who) await client.query('UPDATE transactions SET payee_id = $1 WHERE id = $2', [await payeeId(client, l[0].who), tx.id]);
+  }
   return { payment };
 }
 
@@ -286,7 +349,7 @@ export async function recordLoanPayment(client, paymentId, {
   const tx = await insertTransaction(client, {
     account_id, ledger: ledgerForSegment(payment.segment), date, amount: -total,
     description: `Loan payment: ${payment.loan_name || payment.lender}${paid_by_check ? ' (check)' : ''}`,
-    is_debt_service: true, owner: ownerOf({ segment: payment.segment }),
+    is_debt_service: true, owner: ownerOf({ segment: payment.segment }), payee: payment.lender || payment.loan_name,
     cleared: !paid_by_check, source, external_id, entered_by,
   });
   const { rows: updated } = await client.query(
@@ -310,6 +373,7 @@ export async function settleContract(client, contractId, {
     account_id, ledger: ledgerForSegment(contract.segment), date, amount: received,
     description: `Contract settled: ${contract.commodity}${contract.counterparty ? ` — ${contract.counterparty}` : ''}`,
     owner: ownerOf({ segment: contract.segment }), source, external_id, entered_by,
+    category_id: await incomeCategoryFor(client, contract.commodity), payee: contract.counterparty,
   });
   const { rows: updated } = await client.query(
     `UPDATE sale_contracts SET status = 'settled', linked_transaction_id = $1 WHERE id = $2 RETURNING *`,
@@ -408,6 +472,7 @@ export async function payCard(client, cardId, {
 export async function anchorAccount(client, accountId, { as_of, balance }) {
   const { rows } = await client.query('SELECT * FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
   if (!rows.length) return null;
+  await assertNoClosedFrom(client, null, `${rows[0].name}'s balance`);
   const { rows: [agg] } = await client.query(
     `SELECT COALESCE(SUM(amount) FILTER (WHERE date >= $2), 0) AS after,
             COALESCE(SUM(amount) FILTER (WHERE date < $2 AND (cleared = false OR cleared_date >= $2)), 0) AS outstanding
@@ -428,6 +493,7 @@ export async function anchorAccount(client, accountId, { as_of, balance }) {
  * entered before the new start would silently drop out of the balance.
  */
 export async function anchorCard(client, card, { start_date, opening_balance }) {
+  await assertNoClosedFrom(client, start_date, `${card.name}'s starting balance`);
   if (card.ledger_start_date && toISODate(start_date) > toISODate(card.ledger_start_date)) {
     throw new PostingError(`${card.name} is already itemized from ${toISODate(card.ledger_start_date)}. Its start can only move earlier, not later.`);
   }

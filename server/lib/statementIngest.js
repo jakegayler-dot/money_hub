@@ -16,9 +16,10 @@
 
 import { validateSegment } from './segments.js';
 import { toISODate } from './dates.js';
+import { closedMonth, monthLabel } from './periods.js';
 import {
   insertTransaction, ownerOf, ledgerForOwner, normalizeSplits, payBill, recordLoanPayment,
-  settleContract, payCard, PostingError,
+  settleContract, payCard, PostingError, payeeId, cleanGst,
 } from './postings.js';
 
 export const KINDS = ['standard', 'bill_payment', 'loan_payment', 'card_payment', 'contract_payment', 'transfer', 'owner_draw'];
@@ -80,7 +81,30 @@ const txCandidate = (t) => ({
  * needs_review flag). Returns { status: posted|matched|held, reason,
  * candidates, transaction_id, note }.
  */
-export async function processLine(client, { target, source, external_id, payload: p, approved = false, historical = false, categoryCache = new Map() }) {
+export async function processLine(client, args) {
+  const out = await processLineInner(client, args);
+  // Who was paid / who paid: the agent's `party` (or `payee`) goes on the
+  // transaction the line posted or matched, unless it already has one.
+  const p = args.payload || {};
+  // GST from the receipt fills in on a transaction that has none recorded.
+  if (p.gst != null && out.transaction_id && (out.status === 'posted' || out.status === 'matched')) {
+    await client.query('UPDATE transactions SET gst_amount = COALESCE(gst_amount, $1) WHERE id = $2',
+      [cleanGst(p.gst, p.amount), out.transaction_id]);
+  }
+  const party = p.party || p.payee;
+  if ((p.payee_id || party) && out.transaction_id && (out.status === 'posted' || out.status === 'matched')) {
+    // A reviewer's pick (payee_id) replaces whatever was there; the agent's name only fills a blank.
+    if (p.payee_id) {
+      await client.query('UPDATE transactions SET payee_id = $1 WHERE id = $2', [Number(p.payee_id), out.transaction_id]);
+    } else {
+      await client.query('UPDATE transactions SET payee_id = COALESCE(payee_id, $1) WHERE id = $2',
+        [await payeeId(client, party), out.transaction_id]);
+    }
+  }
+  return out;
+}
+
+async function processLineInner(client, { target, source, external_id, payload: p, approved = false, historical = false, categoryCache = new Map() }) {
   const isCard = target.type === 'card';
   const T = target.row;
   const date = toISODate(p.date);
@@ -118,6 +142,10 @@ export async function processLine(client, { target, source, external_id, payload
   }
   const { splits, error: splitErr } = normalizeSplits(pieces, amount, owner, ledger);
   if (splitErr) return hold(splitErr);
+
+  // A closed month takes nothing new — not even from a re-sent statement.
+  const closed = await closedMonth(client, date);
+  if (closed) return hold(`${monthLabel(closed)} is closed on the Books tab. Reopen it to post this line, or reject it.`);
 
   if (p.needs_review && !approved) {
     return hold(p.review_note ? `Flagged by the agent: ${p.review_note}` : 'Flagged by the agent for review.');
@@ -173,12 +201,17 @@ export async function processLine(client, { target, source, external_id, payload
   }
 
   const where = isCard ? { credit_card_id: T.id } : { account_id: T.id };
-  const plain = { ...stamp, ...where, date, amount, description: p.description, category_id, owner, ledger, splits, is_capex: !!p.is_capex };
+  const plain = { ...stamp, ...where, date, amount, description: p.description, category_id, owner, ledger, splits, is_capex: !!p.is_capex,
+    gst_amount: p.gst ?? null };
 
   // ---- 3. By kind -------------------------------------------------------------
   try {
     switch (kind) {
       case 'standard':
+        // A person approving money in must say what kind of income it is.
+        if (approved && amount > 0 && !category_id && !splits.length) {
+          return hold('Pick an income category for this deposit (e.g. Grain sales › Canola sales).');
+        }
         return posted(await insertTransaction(client, plain));
 
       case 'bill_payment': {
@@ -382,7 +415,7 @@ export async function processLine(client, { target, source, external_id, payload
         return hold(`Unhandled kind ${kind}.`);
     }
   } catch (err) {
-    if (err instanceof PostingError) return hold(err.message);
+    if (err instanceof PostingError || err.status === 409) return hold(err.message);
     throw err;
   }
 }
@@ -401,7 +434,8 @@ export async function reconcileImport(db, imp) {
     const { rows: [r] } = await db.query(
       `SELECT a.opening_balance
               - COALESCE((SELECT SUM(amount) FROM transactions WHERE account_id = a.id AND date > $2), 0)
-              - COALESCE((SELECT SUM(amount) FROM transactions WHERE account_id = a.id AND cleared = false AND date <= $2), 0)
+              - COALESCE((SELECT SUM(amount) FROM transactions WHERE account_id = a.id AND date <= $2
+                            AND (cleared = false OR cleared_date > $2)), 0)
               AS balance
        FROM accounts a WHERE a.id = $1`,
       [imp.account_id, end]

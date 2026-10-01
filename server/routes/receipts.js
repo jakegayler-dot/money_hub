@@ -1,0 +1,152 @@
+import express, { Router } from 'express';
+import crypto from 'node:crypto';
+import { pool } from '../db.js';
+import { ah } from '../lib/asyncHandler.js';
+import { isAuthorized } from '../lib/appAuth.js';
+import { processReceipt, matchReceipt, attachReceipt, readerEnabled } from '../lib/receipts.js';
+import { toISODate } from '../lib/dates.js';
+
+// Upload is mounted before the sign-in guard so the iPhone Shortcut can
+// post with a key instead of a browser session.
+export const receiptUpload = Router();
+
+const sameText = (a, b) => {
+  const x = crypto.createHash('sha256').update(String(a)).digest();
+  const y = crypto.createHash('sha256').update(String(b)).digest();
+  return crypto.timingSafeEqual(x, y);
+};
+const uploadKeyOk = (req) => {
+  const key = process.env.RECEIPT_UPLOAD_KEY;
+  const sent = req.get('x-receipt-key');
+  return !!key && !!sent && sameText(sent, key);
+};
+
+// What kind of image the bytes are (the Content-Type a phone sends isn't
+// always right). Claude reads JPEG, PNG, WebP and GIF.
+function sniff(buf) {
+  if (buf.length < 12) return null;
+  if (buf[0] === 0xff && buf[1] === 0xd8) return 'image/jpeg';
+  if (buf[0] === 0x89 && buf[1] === 0x50) return 'image/png';
+  if (buf.slice(0, 4).toString() === 'RIFF' && buf.slice(8, 12).toString() === 'WEBP') return 'image/webp';
+  if (buf.slice(0, 3).toString() === 'GIF') return 'image/gif';
+  if (buf.slice(4, 8).toString() === 'ftyp') return 'heic';
+  return null;
+}
+
+receiptUpload.post('/', express.raw({ type: () => true, limit: '12mb' }), ah(async (req, res) => {
+  if (!isAuthorized(req) && !uploadKeyOk(req)) return res.status(401).json({ error: 'Missing or wrong X-Receipt-Key.' });
+  const buf = Buffer.isBuffer(req.body) ? req.body : null;
+  if (!buf || !buf.length) return res.status(400).json({ error: 'Send the photo as the request body.' });
+  const mime = sniff(buf);
+  if (mime === 'heic') return res.status(415).json({ error: 'HEIC photo — convert it to JPEG first (the Shortcut’s "Convert Image" step does this).' });
+  if (!mime) return res.status(415).json({ error: 'Not a JPEG, PNG, WebP or GIF image.' });
+  const { rows: [r] } = await pool.query(
+    `INSERT INTO receipts (source, mime, bytes, image) VALUES ($1, $2, $3, $4) RETURNING id`,
+    [uploadKeyOk(req) ? 'shortcut' : 'app', mime, buf.length, buf]
+  );
+  setImmediate(() => processReceipt(r.id).catch((e) => console.error('Receipt read failed', r.id, e.message)));
+  res.status(201).json({ id: r.id, ok: true, message: readerEnabled() ? 'Receipt saved — reading it now.' : 'Receipt saved.' });
+}));
+
+const router = Router();
+
+const LIST = `
+  SELECT r.id, r.uploaded_at, r.source, r.bytes, r.status, r.extracted, r.candidates, r.transaction_id, r.error, r.matched_at,
+         t.date AS tx_date, t.amount AS tx_amount, t.description AS tx_description, a.name AS tx_account, cc.name AS tx_card
+  FROM receipts r
+  LEFT JOIN transactions t ON t.id = r.transaction_id
+  LEFT JOIN accounts a ON a.id = t.account_id
+  LEFT JOIN credit_cards cc ON cc.id = t.credit_card_id`;
+const shape = (r) => ({ ...r, tx_date: toISODate(r.tx_date), tx_amount: r.tx_amount == null ? null : Number(r.tx_amount) });
+
+router.get('/', ah(async (req, res) => {
+  const params = [];
+  let where = '';
+  if (req.query.status) { params.push(String(req.query.status).split(',')); where = `WHERE r.status = ANY($1)`; }
+  const { rows } = await pool.query(`${LIST} ${where} ORDER BY r.uploaded_at DESC LIMIT 300`, params);
+  res.json({ reader: readerEnabled(), upload_key_set: !!process.env.RECEIPT_UPLOAD_KEY, receipts: rows.map(shape) });
+}));
+
+// Farm purchases over $50 this year with no receipt photo — the same rule as the Books tab.
+router.get('/missing', ah(async (req, res) => {
+  const year = Number(req.query.year) || new Date().getFullYear();
+  const { rows } = await pool.query(
+    `SELECT t.id, t.date, t.amount, t.description, t.gst_amount, p.name AS payee, a.name AS account_name, cc.name AS card_name
+     FROM transactions t
+     LEFT JOIN payees p ON p.id = t.payee_id
+     LEFT JOIN accounts a ON a.id = t.account_id
+     LEFT JOIN credit_cards cc ON cc.id = t.credit_card_id
+     WHERE t.amount < -50 AND NOT t.is_transfer AND NOT t.is_debt_service
+       AND NOT (t.account_id IS NOT NULL AND t.credit_card_id IS NOT NULL)
+       AND EXTRACT(YEAR FROM t.date) = $1
+       AND (t.segment IN ('grain', 'livestock') OR COALESCE(t.segment_grain_pct, 0) + COALESCE(t.segment_livestock_pct, 0) > 0
+            OR (t.segment IS NULL AND NOT t.is_segment_split AND t.ledger = 'business'))
+       AND NOT EXISTS (SELECT 1 FROM receipts r WHERE r.transaction_id = t.id)
+     ORDER BY t.date DESC LIMIT 500`,
+    [year]
+  );
+  res.json(rows.map((t) => ({ ...t, date: toISODate(t.date), amount: Number(t.amount), gst_amount: t.gst_amount == null ? null : Number(t.gst_amount) })));
+}));
+
+router.get('/:id/image', ah(async (req, res) => {
+  const { rows: [r] } = await pool.query('SELECT mime, image FROM receipts WHERE id = $1', [req.params.id]);
+  if (!r) return res.status(404).end();
+  res.set('Content-Type', r.mime).set('Cache-Control', 'private, max-age=86400').send(r.image);
+}));
+
+router.post('/:id/retry', ah(async (req, res) => {
+  await pool.query(`UPDATE receipts SET status = 'reading', error = NULL WHERE id = $1`, [req.params.id]);
+  await processReceipt(Number(req.params.id));
+  const { rows } = await pool.query(`${LIST} WHERE r.id = $1`, [req.params.id]);
+  res.json(rows[0] ? shape(rows[0]) : null);
+}));
+
+// Correct what was read (or type it in when there's no reader), then match again.
+router.patch('/:id', ah(async (req, res) => {
+  const { rows: [r] } = await pool.query('SELECT * FROM receipts WHERE id = $1', [req.params.id]);
+  if (!r) return res.status(404).json({ error: 'not found' });
+  const ex = { ...(r.extracted || {}), is_receipt: true };
+  for (const k of ['date', 'total', 'gst', 'party']) if (req.body[k] !== undefined) ex[k] = req.body[k] === '' ? null : req.body[k];
+  if (ex.total != null) ex.total = Number(ex.total);
+  if (ex.gst != null) ex.gst = Number(ex.gst);
+  const status = r.status === 'matched' ? 'matched' : 'unmatched';
+  await pool.query('UPDATE receipts SET extracted = $2, status = $3, error = NULL WHERE id = $1', [r.id, ex, status]);
+  if (status !== 'matched') await matchReceipt(r.id);
+  const { rows } = await pool.query(`${LIST} WHERE r.id = $1`, [r.id]);
+  res.json(shape(rows[0]));
+}));
+
+// Transactions this receipt could belong to, for attaching by hand.
+router.get('/:id/suggest', ah(async (req, res) => {
+  const { rows: [r] } = await pool.query('SELECT extracted FROM receipts WHERE id = $1', [req.params.id]);
+  const ex = r?.extracted || {};
+  const total = Number(ex.total) || 0;
+  const date = ex.date || toISODate(new Date());
+  const { rows } = await pool.query(
+    `SELECT t.id, t.date, t.amount, t.description, a.name AS account_name, cc.name AS card_name
+     FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id LEFT JOIN credit_cards cc ON cc.id = t.credit_card_id
+     WHERE t.amount < 0 AND NOT t.is_transfer AND t.date BETWEEN $1::date - 30 AND $1::date + 30
+       AND NOT EXISTS (SELECT 1 FROM receipts x WHERE x.transaction_id = t.id)
+     ORDER BY abs(abs(t.amount) - $2), abs(t.date - $1::date) LIMIT 12`,
+    [date, total]
+  );
+  res.json(rows.map((t) => ({ ...t, date: toISODate(t.date), amount: Number(t.amount) })));
+}));
+
+router.post('/:id/attach', ah(async (req, res) => {
+  await attachReceipt(Number(req.params.id), Number(req.body?.transaction_id));
+  res.json({ ok: true });
+}));
+
+router.post('/:id/detach', ah(async (req, res) => {
+  await pool.query(`UPDATE receipts SET transaction_id = NULL, status = 'unmatched', matched_at = NULL WHERE id = $1`, [req.params.id]);
+  res.json({ ok: true });
+}));
+
+router.delete('/:id', ah(async (req, res) => {
+  const { rowCount } = await pool.query('DELETE FROM receipts WHERE id = $1', [req.params.id]);
+  if (!rowCount) return res.status(404).json({ error: 'not found' });
+  res.status(204).end();
+}));
+
+export default router;

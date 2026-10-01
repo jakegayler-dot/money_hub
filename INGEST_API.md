@@ -127,8 +127,10 @@ Same `X-Api-Key`. Returns every account (with `last4`), card, category, owner, u
 | `amount` | yes | **Your side of it: negative = money out / spent, positive = money in / credited.** On a card: a purchase is negative, a refund or payment received is positive |
 | `description` | yes | Exactly as printed |
 | `kind` | | `standard` (default) · `bill_payment` · `loan_payment` · `card_payment` · `contract_payment` · `transfer` · `owner_draw` — see below |
-| `payee` | | Who it was paid to or from, in plain words ("Rent", "FCC", "Richardson Pioneer") — helps match bills, loans, contracts, cards |
-| `category` | | Exact name from `/reference`. Unknown names are held for review, not created |
+| `party` | **always, when the statement or receipt names one** | The business on the other side: who was paid, or who paid ("Federated Co-op", "Cargill", "Heartland Livestock", "SaskPower"). Recorded on the transaction so totals by payee and buyer work. Use one consistent name per business — check `payees` in `/reference` and reuse an existing name exactly |
+| `payee` | | Plain-words hint for matching a bill, loan, contract or card ("Rent", "FCC", "Richardson Pioneer"). Also recorded as the party if `party` is missing |
+| `gst` | **when the receipt or invoice shows it** | The GST amount printed on the receipt/invoice (positive number, included in `amount`). Exact figures only — never calculate or guess it; leave it out if there's no receipt. Zero-rated items (fertilizer, seed, crop protection, feed, grain and cattle sales) have none. Recorded on the transaction for the GST return |
+| `category` | **always for money in** | Exact name from `/reference`. Categories have a `kind`: `expense` for money out, `income` for money in (e.g. "Canola sales", "Calf sales", "AgriStability", "Patronage dividends"). **Every deposit that isn't a transfer needs an income category** — without one it posts but waits on Review until a person picks one. Unknown names are held for review, not created |
 | `segment` | | Owner: `grain` · `livestock` · `jake` · `ashley`. Default: the account's (or card's) owner. Or `is_segment_split: true` + the four `segment_*_pct` fields summing to 100 |
 | `splits` | | One line, several pieces. Each: `amount` (same sign), `category`, `segment`, `memo`. **Pieces must add up to the line amount exactly** |
 | `is_capex` | | Capital purchase |
@@ -140,7 +142,7 @@ Same `X-Api-Key`. Returns every account (with `last4`), card, category, owner, u
 
 ### Kinds — what to send, and what Money Hub does
 
-- **`standard`** — ordinary spending or income. Posted with its category/owner/splits.
+- **`standard`** — ordinary spending or income. Posted with its category/owner/splits/party. Income: use the most specific income category ("Wheat sales", not "Grain sales") and set the owner (`grain` / `livestock`).
 - **`bill_payment`** — paying a bill that's on the Bills tab (utilities, rent, invoices). Matched to the unpaid bill with that exact amount due within 45 days; the bill closes and a recurring one rolls to next cycle. A bill paid on a card works too (send it on the card statement).
 - **`loan_payment`** — a scheduled loan payment. Matched to the unpaid scheduled payment with that exact amount due within 20 days; recorded as debt service (kept out of operating expenses and coverage math).
 - **`card_payment`** — from a bank statement: paying a credit card (send `card_last4`). On a card statement: the "PAYMENT — THANK YOU" line; it's matched to the bank-side payment and never counted twice.
@@ -154,7 +156,7 @@ Same `X-Api-Key`. Returns every account (with `last4`), card, category, owner, u
 
 - `posted` — new transaction recorded (and the bill/loan/contract/card updated).
 - `matched` — this money was **already on file**: an outstanding cheque it cleared, a hand-entered transaction, or the other side of a transfer or card payment. Nothing new moved.
-- `held` — waiting on the Review tab; `reason` says why and `candidates` lists what it might be. Common reasons: two bills for the same amount, unknown category, no matching scheduled item, possible duplicate, flagged by you.
+- `held` — waiting on the Review tab; `reason` says why and `candidates` lists what it might be. Common reasons: two bills for the same amount, unknown category, no matching scheduled item, possible duplicate, flagged by you, or the line is dated in a month that's been **closed** on the Books tab (closed months take nothing new until reopened).
 - `ok: false` + `error` — unusable (bad date, zero amount). Fix and re-send.
 
 Re-sending a statement is always safe: finished lines report `already_processed: true`; held lines are re-evaluated with whatever you send now.
@@ -208,7 +210,9 @@ Anything you already entered by hand inside the history window is recognized and
 > - **Send every line**, amounts signed from the owner's side (money out negative). Copy dates, amounts and descriptions exactly.
 > - **Label `kind`** only when the statement makes it clear (a named loan, a named bill, a card payment, a transfer between their own accounts). Otherwise `standard`.
 > - **Split** a line only when you have the receipt showing the breakdown; pieces must sum to the line.
-> - **Categories:** always the most specific one from `/reference` (a subcategory when one exists — e.g. "Diesel — dyed", not "Fuel & oil").
+> - **Categories:** always the most specific one from `/reference` (a subcategory when one exists — e.g. "Diesel — dyed", not "Fuel & oil"). Money in gets an **income** category ("Canola sales", "Calf sales", "AgriStability") — never leave a deposit uncategorized unless it's a transfer.
+> - **GST:** when you have the receipt or invoice, send its GST amount as `gst` — exactly as printed. No receipt, no `gst`.
+> - **Party:** send `party` on every line that names a business — the same spelling every time (reuse names from `payees` in `/reference`).
 > - **When unsure, set `needs_review: true` with a one-sentence `review_note`.** Don't guess a category, owner or kind.
 > - **After each post, read `reconciliation`.** If it isn't `reconciled` or `explained_by_held`, re-read the statement for a missed or misread line and re-send (re-sending is safe). Report anything you can't resolve.
 > - Report back: lines posted, matched, held (with reasons), and the reconciliation result for each statement.

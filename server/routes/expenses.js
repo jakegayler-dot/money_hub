@@ -15,7 +15,7 @@ router.get('/', ah(async (req, res) => {
     `SELECT c.*, p.name AS parent_name,
             CASE WHEN p.id IS NULL THEN c.name ELSE p.name || ' › ' || c.name END AS full_name
      FROM expense_categories c LEFT JOIN expense_categories p ON p.id = c.parent_id
-     ORDER BY lower(COALESCE(p.name, c.name)), c.parent_id IS NOT NULL, lower(c.name)`
+     ORDER BY c.kind DESC, lower(COALESCE(p.name, c.name)), c.parent_id IS NOT NULL, lower(c.name)`
   );
   res.json(rows);
 }));
@@ -30,27 +30,36 @@ router.get('/by-category', ah(async (req, res) => {
   const year = Number(req.query.year) || new Date().getFullYear();
   const owner = String(req.query.owner || 'all');
   if (owner !== 'all' && !OWNERS.includes(owner)) return res.status(400).json({ error: `owner must be all, ${OWNERS.join(', ')}` });
+  const kind = req.query.kind === 'income' ? 'income' : 'expense';
   const weight = (row) => (owner === 'all' ? 1 : ownerWeights(row)[owner]);
 
   const [{ rows: cats }, { rows: lines }] = await Promise.all([
-    pool.query('SELECT id, name, parent_id FROM expense_categories'),
+    pool.query('SELECT id, name, parent_id, kind FROM expense_categories'),
     pool.query(
       `SELECT amount, category_id, is_capex, segment, is_segment_split,
               segment_grain_pct, segment_livestock_pct, segment_jake_pct, segment_ashley_pct
        FROM transaction_lines
-       WHERE is_transfer = false AND is_debt_service = false AND EXTRACT(YEAR FROM date) = $1
-         AND (amount < 0 OR category_id IS NOT NULL)`,
+       WHERE is_transfer = false AND is_debt_service = false AND EXTRACT(YEAR FROM date) = $1`,
       [year]
     ),
   ]);
   const byId = new Map(cats.map((c) => [c.id, c]));
+  // Expense view: spending (and refunds tagged to an expense category).
+  // Income view: money in, by income category; positive amounts.
+  const belongs = (l) => {
+    const c = l.category_id ? byId.get(l.category_id) : null;
+    if (c) return c.kind === kind;
+    return kind === 'income' ? Number(l.amount) > 0 : Number(l.amount) < 0;
+  };
   const spent = new Map(); // category id -> spend
   let uncategorized = 0;
   let capex = 0;
   for (const l of lines) {
+    if (!belongs(l)) continue;
     const w = weight(l);
     if (!w) continue;
-    const amt = -Number(l.amount) * w; // spending is positive; a refund is negative
+    // Spending is positive (a refund negative); income is positive.
+    const amt = (kind === 'income' ? 1 : -1) * Number(l.amount) * w;
     if (l.is_capex) { capex += amt; continue; }
     if (!l.category_id || !byId.has(l.category_id)) { uncategorized += amt; continue; }
     spent.set(l.category_id, (spent.get(l.category_id) || 0) + amt);
@@ -75,7 +84,7 @@ router.get('/by-category', ah(async (req, res) => {
     .filter((p) => Math.abs(p.total) >= 0.005)
     .sort((a, b) => b.total - a.total);
   const total = out.reduce((s, p) => s + p.total, 0) + uncategorized;
-  res.json({ year, owner, total: r2(total), uncategorized: r2(uncategorized), capex_total: r2(capex), categories: out });
+  res.json({ year, owner, kind, total: r2(total), uncategorized: r2(uncategorized), capex_total: r2(capex), categories: out });
 }));
 
 // Actual money spent this year, split across owners — each split piece
@@ -145,10 +154,12 @@ router.post('/', ah(async (req, res) => {
     ledger = parent ? parent.ledger : 'business',
     annual_total = 0, monthly_pct = EVEN_MONTHLY_PCT,
   } = req.body;
+  // A subcategory is always the same kind as its parent.
+  const kind = parent ? parent.kind : (req.body.kind === 'income' ? 'income' : 'expense');
   const { rows } = await pool.query(
-    `INSERT INTO expense_categories (name, class, ledger, annual_total, monthly_pct, parent_id)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [chk.name, klass, ledger, Number(annual_total) || 0, JSON.stringify(monthly_pct), parent ? parent.id : null]
+    `INSERT INTO expense_categories (name, class, ledger, annual_total, monthly_pct, parent_id, kind)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [chk.name, klass, ledger, Number(annual_total) || 0, JSON.stringify(monthly_pct), parent ? parent.id : null, kind]
   );
   res.status(201).json(rows[0]);
 }));
@@ -160,6 +171,7 @@ router.patch('/:id', ah(async (req, res) => {
   if (chk.error) return res.status(chk.status).json({ error: chk.error });
   const { annual_total, monthly_pct, class: klass, ledger } = req.body;
   const parentChange = req.body.parent_id !== undefined;
+  const newKind = chk.parent ? chk.parent.kind : (['income', 'expense'].includes(req.body.kind) ? req.body.kind : null);
   const { rows } = await pool.query(
     `UPDATE expense_categories
      SET name = COALESCE($1, name),
@@ -167,11 +179,14 @@ router.patch('/:id', ah(async (req, res) => {
          monthly_pct = COALESCE($3, monthly_pct),
          class = COALESCE($4, class),
          ledger = COALESCE($5, ledger),
-         parent_id = CASE WHEN $6::boolean THEN $7::int ELSE parent_id END
+         parent_id = CASE WHEN $6::boolean THEN $7::int ELSE parent_id END,
+         kind = COALESCE($9, kind)
      WHERE id = $8 RETURNING *`,
     [chk.name, annual_total ?? null, monthly_pct ? JSON.stringify(monthly_pct) : null, klass || null, ledger || null,
-     parentChange, req.body.parent_id || null, req.params.id]
+     parentChange, req.body.parent_id || null, req.params.id, newKind]
   );
+  // A main category's subcategories follow it if its kind changes.
+  if (newKind && !rows[0].parent_id) await pool.query('UPDATE expense_categories SET kind = $1 WHERE parent_id = $2', [newKind, rows[0].id]);
   res.json(rows[0]);
 }));
 

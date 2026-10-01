@@ -19,6 +19,11 @@ import inventoryRoute from './routes/inventory.js';
 import estimatesRoute from './routes/estimates.js';
 import creditCardsRoute from './routes/credit-cards.js';
 import statementsRoute from './routes/statements.js';
+import payeesRoute from './routes/payees.js';
+import booksRoute from './routes/books.js';
+import taxRoute from './routes/tax.js';
+import receiptsRoute, { receiptUpload } from './routes/receipts.js';
+import { readPending, matchPending } from './lib/receipts.js';
 import { authRouter, requireSignIn, authEnabled } from './lib/appAuth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -27,6 +32,8 @@ const app = express();
 // the real visitor (the sign-in limit counts per address).
 app.set('trust proxy', 1);
 app.use(cors());
+// The receipt upload takes a raw image body, so it's mounted before the JSON parser.
+app.use('/api/receipts/upload', receiptUpload);
 app.use(express.json());
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
@@ -51,6 +58,10 @@ app.use('/api/inventory', inventoryRoute);
 app.use('/api/estimates', estimatesRoute);
 app.use('/api/credit-cards', creditCardsRoute);
 app.use('/api/statements', statementsRoute);
+app.use('/api/payees', payeesRoute);
+app.use('/api/books', booksRoute);
+app.use('/api/tax', taxRoute);
+app.use('/api/receipts', receiptsRoute);
 
 // In production, this is the only Railway service — it serves the built
 // client alongside the API so there's nothing extra to deploy or wire up.
@@ -81,4 +92,8 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const port = process.env.PORT || 4000;
-app.listen(port, () => console.log(`Money Hub listening on :${port}`));
+app.listen(port, () => {
+  console.log(`Money Hub listening on :${port}`);
+  // Receipts that arrived before the API key was set, or while the server was down.
+  setTimeout(() => readPending().then(matchPending).catch((e) => console.error('Receipt catch-up failed:', e.message)), 3000);
+});

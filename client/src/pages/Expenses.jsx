@@ -9,7 +9,7 @@ const CLASS_LABELS = {
   overhead: 'Overhead',
 };
 
-const emptyForm = { name: '', parent_id: '', class: 'variable_seasonal', ledger: 'business', annual_total: '' };
+const emptyForm = { kind: 'expense', name: '', parent_id: '', class: 'variable_seasonal', ledger: 'business', annual_total: '' };
 const pctOf = (part, whole) => (whole > 0 ? `${Math.round((part / whole) * 100)}%` : '—');
 
 export default function Expenses() {
@@ -18,6 +18,9 @@ export default function Expenses() {
   const [segmentTotals, setSegmentTotals] = useState(null);
   const [owner, setOwner] = useState('all');
   const [spend, setSpend] = useState(null);
+  const [income, setIncome] = useState(null);
+  const [payeeKind, setPayeeKind] = useState('expense');
+  const [payeeTotals, setPayeeTotals] = useState(null);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
   const year = new Date().getFullYear();
@@ -25,9 +28,13 @@ export default function Expenses() {
   const loadCategories = () => { fetch('/api/expenses').then((r) => r.json()).then((d) => setCategories(Array.isArray(d) ? d : [])); };
   const loadSpend = () => {
     fetch(`/api/expenses/by-category?year=${year}&owner=${owner}`).then((r) => r.json()).then(setSpend);
+    fetch(`/api/expenses/by-category?year=${year}&owner=${owner}&kind=income`).then((r) => r.json()).then(setIncome);
   };
   useEffect(loadCategories, []);
   useEffect(loadSpend, [owner]);
+  useEffect(() => {
+    fetch(`/api/payees/totals?year=${year}&owner=${owner}&kind=${payeeKind}`).then((r) => r.json()).then(setPayeeTotals);
+  }, [owner, payeeKind]);
   useEffect(() => {
     fetch(`/api/expenses/segment-totals?year=${year}`).then((r) => r.json()).then((d) => setSegmentTotals(d.totals));
   }, []);
@@ -44,7 +51,7 @@ export default function Expenses() {
 
   const submit = async (e) => {
     e.preventDefault();
-    const body = { name: form.name, annual_total: Number(form.annual_total) || 0 };
+    const body = { name: form.name, annual_total: Number(form.annual_total) || 0, kind: form.kind };
     if (form.parent_id) body.parent_id = Number(form.parent_id);
     else { body.class = form.class; body.ledger = form.ledger; }
     if (await call('/api/expenses', 'POST', body)) { setForm(emptyForm); loadCategories(); }
@@ -59,11 +66,21 @@ export default function Expenses() {
   };
 
   const parents = categories.filter((c) => !c.parent_id);
+  const formParents = parents.filter((c) => (c.kind || 'expense') === form.kind);
+  const ownerToggle = (
+    <div className="seg-toggle" role="group" aria-label="Owner">
+      {['all', ...OWNER_KEYS].map((k) => (
+        <button key={k} type="button" aria-pressed={owner === k} className={owner === k ? 'on' : ''} onClick={() => setOwner(k)}>
+          {k === 'all' ? 'All' : OWNER_LABELS[k]}
+        </button>
+      ))}
+    </div>
+  );
 
   return (
     <>
       <div className="page-header">
-        <h1 className="page-title">Expenses</h1>
+        <h1 className="page-title">Income &amp; Expenses</h1>
         <span className="page-meta">FY {year}</span>
       </div>
 
@@ -99,16 +116,7 @@ export default function Expenses() {
       <div className="panel">
         <div className="panel-header spend-header">
           <span>Spending by category — {year}</span>
-          <div className="seg-toggle" role="group" aria-label="Owner">
-            {['all', ...OWNER_KEYS].map((k) => (
-              <button
-                key={k} type="button" aria-pressed={owner === k}
-                className={owner === k ? 'on' : ''} onClick={() => setOwner(k)}
-              >
-                {k === 'all' ? 'All' : OWNER_LABELS[k]}
-              </button>
-            ))}
-          </div>
+          {ownerToggle}
         </div>
         {!spend ? (
           <div className="empty-state">Loading…</div>
@@ -116,6 +124,53 @@ export default function Expenses() {
           <div className="empty-state">No spending recorded for {owner === 'all' ? 'anyone' : OWNER_LABELS[owner]} in {year} yet.</div>
         ) : (
           <SpendBars data={spend} />
+        )}
+      </div>
+
+      <div className="panel">
+        <div className="panel-header spend-header">
+          <span>Income by category — {year}</span>
+          {ownerToggle}
+        </div>
+        {!income ? (
+          <div className="empty-state">Loading…</div>
+        ) : income.categories.length === 0 && !income.uncategorized ? (
+          <div className="empty-state">No income recorded for {owner === 'all' ? 'anyone' : OWNER_LABELS[owner]} in {year} yet.</div>
+        ) : (
+          <SpendBars data={income} income />
+        )}
+      </div>
+
+      <div className="panel">
+        <div className="panel-header spend-header">
+          <span>{payeeKind === 'income' ? 'Who paid you' : 'Who you paid'} — {year}</span>
+          <span style={{ display: 'inline-flex', gap: 8, flexWrap: 'wrap' }}>
+            <div className="seg-toggle" role="group" aria-label="Direction">
+              {[['expense', 'Paid to'], ['income', 'Received from']].map(([k, l]) => (
+                <button key={k} type="button" aria-pressed={payeeKind === k} className={payeeKind === k ? 'on' : ''} onClick={() => setPayeeKind(k)}>{l}</button>
+              ))}
+            </div>
+            {ownerToggle}
+          </span>
+        </div>
+        {!payeeTotals ? (
+          <div className="empty-state">Loading…</div>
+        ) : payeeTotals.payees.length === 0 ? (
+          <div className="empty-state">Nothing yet.</div>
+        ) : (
+          <table>
+            <thead><tr><th>{payeeKind === 'income' ? 'Buyer / payer' : 'Payee'}</th><th>Total</th><th>Share</th><th>Transactions</th></tr></thead>
+            <tbody>
+              {payeeTotals.payees.map((x) => (
+                <tr key={x.payee_id || 'none'} style={x.payee_id ? undefined : { color: 'var(--text-faint)' }}>
+                  <td>{x.payee_id ? <a className="small-link" style={{ color: 'var(--text)', fontSize: 'inherit' }} href={`/ledgers?payee=${x.payee_id}`}>{x.name}</a> : x.name}</td>
+                  <td>{money(x.total)}</td>
+                  <td>{pctOf(x.total, payeeTotals.total)}</td>
+                  <td>{x.count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
 
@@ -136,12 +191,17 @@ export default function Expenses() {
           agent sending "Diesel — dyed" always lands in exactly one place.
         </p>
         <form className="form-panel" onSubmit={submit} style={{ maxWidth: 'none', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
+          <div className="field"><label>Income or expense</label>
+            <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value, parent_id: '' })}>
+              <option value="expense">Expense</option>
+              <option value="income">Income</option>
+            </select></div>
           <div className="field"><label>Name</label>
             <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Diesel — dyed" /></div>
           <div className="field"><label>Under (optional)</label>
             <select value={form.parent_id} onChange={(e) => setForm({ ...form, parent_id: e.target.value })}>
               <option value="">— top level —</option>
-              {parents.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {formParents.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select></div>
           {!form.parent_id && (
             <>
@@ -168,7 +228,7 @@ export default function Expenses() {
 // Horizontal bars, one hue: parents sorted by spend, each opening to its
 // subcategories. Bars share one scale (the largest parent), so a
 // subcategory's bar is directly comparable to any parent's.
-function SpendBars({ data }) {
+function SpendBars({ data, income = false }) {
   const [open, setOpen] = useState(() => new Set());
   const [tip, setTip] = useState(null);
   const max = Math.max(...data.categories.map((c) => c.total), data.uncategorized, 1);
@@ -230,13 +290,20 @@ function SpendBars({ data }) {
       {tip && (
         <div className="spend-tip" style={{ left: tip.x, top: tip.y }} role="status">
           <strong>{tip.label}</strong>
-          <span>{money(tip.amount)} · {pctOf(tip.amount, data.total)} of spending</span>
+          <span>{money(tip.amount)} · {pctOf(tip.amount, data.total)} of {income ? 'income' : 'spending'}</span>
         </div>
       )}
-      <p className="spend-note">
-        Total {money(data.total)}. Excludes transfers between accounts, loan payments, and capital purchases
-        {data.capex_total ? ` (${money(data.capex_total)} this year)` : ''}. Refunds net against their category.
-      </p>
+      {income ? (
+        <p className="spend-note">
+          Total {money(data.total)}. Excludes transfers between accounts and loan advances.
+          {Math.abs(data.uncategorized) >= 0.005 ? ' Uncategorized income is waiting on the Review tab.' : ''}
+        </p>
+      ) : (
+        <p className="spend-note">
+          Total {money(data.total)}. Excludes transfers between accounts, loan payments, and capital purchases
+          {data.capex_total ? ` (${money(data.capex_total)} this year)` : ''}. Refunds net against their category.
+        </p>
+      )}
     </div>
   );
 }
@@ -260,7 +327,7 @@ function CategoryTable({ categories, parents, call, reload }) {
             <input aria-label="Name" value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
             <select aria-label="Parent" value={editing.parent_id} onChange={(e) => setEditing({ ...editing, parent_id: e.target.value })}>
               <option value="">— top level —</option>
-              {parents.filter((p) => p.id !== c.id).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {parents.filter((p) => p.id !== c.id && (p.kind || 'expense') === (c.kind || 'expense')).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </span>
         ) : c.name}
@@ -288,12 +355,21 @@ function CategoryTable({ categories, parents, call, reload }) {
       <table>
         <thead><tr><th>Category</th><th>Class</th><th>Ledger</th><th>Budget</th><th></th></tr></thead>
         <tbody>
-          {parents.map((p) => (
-            <Fragment key={p.id}>
-              {line(p, false)}
-              {childrenOf(p.id).map((c) => line(c, true))}
-            </Fragment>
-          ))}
+          {[['expense', 'Expense categories'], ['income', 'Income categories']].map(([k, title]) => {
+            const group = parents.filter((p) => (p.kind || 'expense') === k);
+            if (!group.length) return null;
+            return (
+              <Fragment key={k}>
+                <tr><td colSpan={5} className="group-row">{title}</td></tr>
+                {group.map((p) => (
+                  <Fragment key={p.id}>
+                    {line(p, false)}
+                    {childrenOf(p.id).map((c) => line(c, true))}
+                  </Fragment>
+                ))}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>

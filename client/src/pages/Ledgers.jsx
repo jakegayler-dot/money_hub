@@ -3,11 +3,12 @@ import { money } from '../format.js';
 import { OwnerFields, ownerPayload, ownerSummary, emptyOwnerFields, ownerFieldsFrom, OWNER_LABELS } from '../owners.jsx';
 import SplitEditor, { cents, newPiece, piecesPayload } from '../components/SplitEditor.jsx';
 import CategorySelect from '../components/CategorySelect.jsx';
+import PayeeSelect, { usePayees } from '../components/PayeeSelect.jsx';
 
 const emptyForm = {
   source: 'account', account_id: '', credit_card_id: '', ledger: '', date: '', amount: '', description: '',
   category_id: '', is_mixed_use: false, mixed_use_business_pct: '', is_capex: false, is_transfer: false,
-  paid_by_check: false, is_split: false, needs_review: false, review_note: '', transfer_account_id: '', pays: '',
+  paid_by_check: false, is_split: false, needs_review: false, review_note: '', transfer_account_id: '', pays: '', payee_id: '', gst_amount: '',
   ...emptyOwnerFields,
 };
 
@@ -27,8 +28,11 @@ export default function Ledgers() {
   const [outstandingOnly, setOutstandingOnly] = useState(false);
   const [reviewOnly, setReviewOnly] = useState(false);
   const [search, setSearch] = useState('');
+  // /ledgers?payee=ID (from the payee totals) shows only that payee's entries.
+  const [payeeFilter, setPayeeFilter] = useState(() => new URLSearchParams(window.location.search).get('payee') || '');
   const [editing, setEditing] = useState(null); // the transaction being edited
   const [error, setError] = useState(null);
+  const payees = usePayees();
   const [linkOptions, setLinkOptions] = useState({ bills: [], loan_payments: [] });
   const loadLinkOptions = () => fetch('/api/transactions/link-options').then((r) => r.json())
     .then((d) => setLinkOptions(d && d.bills ? d : { bills: [], loan_payments: [] })).catch(() => {});
@@ -38,11 +42,12 @@ export default function Ledgers() {
     if (filter !== 'all') params.set('ledger', filter);
     if (reviewOnly) params.set('needs_review', 'true');
     if (search.trim()) params.set('q', search.trim());
+    if (payeeFilter) params.set('payee_id', payeeFilter);
     params.set('limit', '500');
     fetch(`/api/transactions?${params}`).then((r) => r.json()).then((d) => setTransactions(Array.isArray(d) ? d : []));
   };
 
-  useEffect(load, [filter, reviewOnly]);
+  useEffect(load, [filter, reviewOnly, payeeFilter]);
   // /ledgers?edit=ID (from the Review tab) opens that transaction for editing.
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get('edit');
@@ -96,6 +101,8 @@ export default function Ledgers() {
       ledger: '', date: (t.date || '').slice(0, 10), amount: String(Number(t.amount)), description: t.description || '',
       category_id: t.category_id ? String(t.category_id) : '', is_capex: !!t.is_capex, is_transfer: !!t.is_transfer,
       is_split: split, needs_review: !!t.needs_review, review_note: t.review_note || '',
+      payee_id: t.payee_id ? String(t.payee_id) : '',
+      gst_amount: t.gst_amount != null ? String(Number(t.gst_amount)) : '',
       ...ownerFieldsFrom(t),
     });
     setPieces(split
@@ -109,6 +116,8 @@ export default function Ledgers() {
   const saveEdit = async () => {
     const body = {
       description: form.description,
+      payee_id: form.payee_id ? Number(form.payee_id) : null,
+      gst_amount: form.gst_amount === '' || form.is_transfer ? null : Number(form.gst_amount),
       category_id: !form.is_split && form.category_id ? Number(form.category_id) : null,
       is_capex: form.is_capex,
       splits: form.is_split ? piecesPayload(pieces) : [],
@@ -150,6 +159,8 @@ export default function Ledgers() {
         account_id: onCard ? null : Number(form.account_id),
         credit_card_id: onCard ? Number(form.credit_card_id) : null,
         ledger: form.ledger || null, date: form.date, amount: Number(form.amount), description: form.description,
+        payee_id: form.payee_id ? Number(form.payee_id) : null,
+        gst_amount: form.gst_amount === '' || form.is_transfer ? null : Number(form.gst_amount),
         category_id: !form.is_split && form.category_id ? Number(form.category_id) : null,
         is_mixed_use: form.is_mixed_use,
         mixed_use_business_pct: form.is_mixed_use ? Number(form.mixed_use_business_pct) : null,
@@ -176,7 +187,8 @@ export default function Ledgers() {
   };
 
   const markCleared = async (id) => {
-    await fetch(`/api/transactions/${id}/clear`, { method: 'POST' });
+    const r = await fetch(`/api/transactions/${id}/clear`, { method: 'POST' });
+    if (!r.ok) { const b = await r.json().catch(() => ({})); window.alert(b.error || 'Could not mark it cleared.'); }
     load();
   };
 
@@ -257,6 +269,19 @@ export default function Ledgers() {
             <label>Description</label>
             <input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
           </div>
+          {!form.is_transfer && (
+            <div className="field">
+              <label>GST on the receipt (optional)</label>
+              <input type="number" step="0.01" min="0" placeholder="Blank = none recorded" value={form.gst_amount}
+                onChange={(e) => setForm({ ...form, gst_amount: e.target.value })} />
+            </div>
+          )}
+          {!form.is_transfer && (
+            <div className="field">
+              <label>{amt > 0 ? 'Received from' : 'Paid to'}</label>
+              <PayeeSelect payees={payees} value={form.payee_id} onChange={(v) => setForm((f) => ({ ...f, payee_id: v }))} />
+            </div>
+          )}
           {!onCard && (
             <div className="field">
               <label>
@@ -323,8 +348,11 @@ export default function Ledgers() {
               {!form.is_transfer && (
                 <div className="field">
                   <label>Category</label>
-                  <CategorySelect categories={categories} value={form.category_id}
+                  <CategorySelect categories={categories} value={form.category_id} preferKind={amt > 0 ? 'income' : 'expense'}
                     onChange={(v) => setForm((f) => ({ ...f, category_id: v }))} />
+                  {amt > 0 && !form.category_id && (
+                    <span className="split-lines" style={{ color: 'var(--gold-bright)' }}>Money in needs an income category, or it waits on Review.</span>
+                  )}
                 </div>
               )}
               {!pairedTransfer && <OwnerFields state={form} setState={setForm} />}
@@ -377,6 +405,11 @@ export default function Ledgers() {
         <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
           <span>
             Transactions
+            {payeeFilter && (
+              <> — {payees.find((x) => String(x.id) === String(payeeFilter))?.name || 'one payee'}{' '}
+                <button type="button" className="small secondary" onClick={() => { setPayeeFilter(''); window.history.replaceState(null, '', '/ledgers'); }}>Show all</button>
+              </>
+            )}
             {outstandingCount > 0 && ` — ${outstandingCount} outstanding check${outstandingCount === 1 ? '' : 's'} totaling ${money(outstandingTotal)}`}
           </span>
           <span style={{ display: 'inline-flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', textTransform: 'none', letterSpacing: 0 }}>
@@ -414,6 +447,8 @@ export default function Ledgers() {
                     {t.description}
                     {t.is_transfer && <span className="tag">Transfer</span>}
                     {t.pays && <span className="tag tag-link">{t.pays}</span>}
+                    {t.receipt_id && <a className="tag" href={`/api/receipts/${t.receipt_id}/image`} target="_blank" rel="noreferrer">Receipt</a>}
+                    {t.payee_name && <div className="split-lines" style={{ color: 'var(--text)' }}>{Number(t.amount) > 0 ? 'From' : 'To'} {t.payee_name}</div>}
                     {t.source && <span className="tag" title={`From ${t.source}`}>Statement</span>}
                     {t.needs_review && <span className="badge warn" style={{ marginLeft: 6 }}>NEEDS REVIEW</span>}
                     {t.needs_review && t.review_note && <div className="split-lines" style={{ color: 'var(--gold-bright)' }}>{t.review_note}</div>}
@@ -431,6 +466,7 @@ export default function Ledgers() {
                   </td>
                   <td>
                     <span className="nowrap">{cents(Number(t.amount))}</span>
+                    {t.gst_amount != null && Number(t.gst_amount) > 0 && <div className="split-lines nowrap">incl. GST {cents(Number(t.gst_amount))}</div>}
                     <div style={{ marginTop: 4 }}>
                       {!t.account_id ? <span className="tag" style={{ marginLeft: 0 }}>On card</span> : t.cleared ? (
                         <span className="badge pass">CLEARED</span>
@@ -443,8 +479,14 @@ export default function Ledgers() {
                     {t.account_id && !t.cleared && (
                       <button className="small" onClick={() => markCleared(t.id)}>Mark cleared</button>
                     )}{' '}
-                    <button className="small secondary" onClick={() => startEdit(t)}>Edit</button>{' '}
-                    <button className="small secondary" onClick={() => remove(t)}>Delete</button>
+                    {t.in_closed_month ? (
+                      <span className="tag" title="This month is closed on the Books tab" style={{ marginLeft: 0 }}>Closed month</span>
+                    ) : (
+                      <>
+                        <button className="small secondary" onClick={() => startEdit(t)}>Edit</button>{' '}
+                        <button className="small secondary" onClick={() => remove(t)}>Delete</button>
+                      </>
+                    )}
                   </td>
                 </tr>
               ))}
