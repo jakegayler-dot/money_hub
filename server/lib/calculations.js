@@ -1,7 +1,7 @@
 import { pool, getSetting } from '../db.js';
 import { occurrences, signedAmount } from './estimates.js';
 import { forecastEstimates } from './inventoryForecast.js';
-import { ownerWeights } from './segments.js';
+import { ownerWeights, businessShare } from './segments.js';
 import { monthIndex, todayISO, toISODate, addMonths, addDays } from './dates.js';
 import { LATEST_STATEMENTS_SQL } from './cardLedger.js';
 
@@ -171,8 +171,10 @@ export async function termDebtCoverage() {
       [projTo]
     ),
     pool.query(
-      `SELECT due_date, amount, frequency FROM bills
-       WHERE ledger = 'business' AND status = 'unpaid' AND due_date <= $1`,
+      // Every unpaid bill, counted at its farm share — a bill split 60%
+      // Cattle / 40% Jake is $60 of every $100 here, not all or nothing.
+      `SELECT due_date, amount, frequency, ledger, segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_jake_pct, segment_ashley_pct FROM bills
+       WHERE status = 'unpaid' AND due_date <= $1`,
       [projTo]
     ),
     monthlyAccountFees(),
@@ -203,7 +205,7 @@ export async function termDebtCoverage() {
     if (amt >= 0) estIn += amt; else estOut += -amt;
   }
   const billsTotal = billRow.rows.reduce(
-    (s, b) => s + billDates(b, today, estToExclusive).length * Number(b.amount), 0
+    (s, b) => s + billDates(b, today, estToExclusive).length * Number(b.amount) * businessShare(b), 0
   );
   // No draw budget is stored, so next year's withdrawals are assumed to
   // match the last 12 months' — lenders use the family-living budget here,
@@ -279,8 +281,9 @@ export async function liquidityFloor() {
 
   const [billRows, debtRows, contractRows, fees, cardRows] = await Promise.all([
     pool.query(
-      `SELECT due_date, amount, frequency FROM bills
-       WHERE ledger = 'business' AND status = 'unpaid' AND due_date < $1`,
+      // Every unpaid bill, at its farm share (see businessShare).
+      `SELECT due_date, amount, frequency, ledger, segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_jake_pct, segment_ashley_pct FROM bills
+       WHERE status = 'unpaid' AND due_date < $1`,
       [endStr]
     ),
     // Loans owned by Jake/Ashley (e.g. a home mortgage) post to the
@@ -331,7 +334,9 @@ export async function liquidityFloor() {
 
   const billsBy = Array(MONTHS).fill(0);
   for (const r of billRows.rows) {
-    for (const d of billDates(r, todayISO(), endStr)) billsBy[Math.min(idxFor(d), MONTHS - 1)] += Number(r.amount);
+    const share = businessShare(r);
+    if (!share) continue;
+    for (const d of billDates(r, todayISO(), endStr)) billsBy[Math.min(idxFor(d), MONTHS - 1)] += Number(r.amount) * share;
   }
   const debtBy = Array(MONTHS).fill(0);
   for (const r of debtRows.rows) debtBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);

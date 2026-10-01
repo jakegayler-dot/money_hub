@@ -57,7 +57,13 @@ router.post('/payments/:paymentId/unrecord', ah(async (req, res) => {
       `UPDATE loan_payments SET paid = false, paid_date = NULL, linked_transaction_id = NULL WHERE id = $1 RETURNING *`,
       [payment.id]
     );
-    if (payment.linked_transaction_id) await removeTransaction(client, payment.linked_transaction_id);
+    if (payment.linked_transaction_id && payment.linked_existing) {
+      // Matched to a transaction already in the ledger: unlink it, keep it.
+      await client.query('UPDATE transactions SET is_debt_service = false WHERE id = $1', [payment.linked_transaction_id]);
+    } else if (payment.linked_transaction_id) {
+      await removeTransaction(client, payment.linked_transaction_id);
+    }
+    await client.query('UPDATE loan_payments SET linked_existing = false WHERE id = $1', [payment.id]);
     return updated[0];
   });
   if (!result) return res.status(404).json({ error: 'not found' });

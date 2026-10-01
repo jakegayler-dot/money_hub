@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react';
 import { Routes, Route, useLocation } from 'react-router-dom';
+import SignIn from './components/SignIn.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import EntityBar from './components/EntityBar.jsx';
 import Dashboard from './pages/Dashboard.jsx';
@@ -18,9 +20,24 @@ export default function App() {
   // The owner toggle and the three headline numbers live on the Dashboard
   // only; every other page goes straight to its own content.
   const { pathname } = useLocation();
+  // 'checking' until the server says whether a password is set and whether
+  // this browser is signed in.
+  const [auth, setAuth] = useState('checking');
+  const [required, setRequired] = useState(false);
+  const check = () => fetch('/api/auth/status').then((r) => r.json())
+    .then((s) => { setRequired(!!s.required); setAuth(s.signedIn ? 'in' : 'out'); }).catch(() => setAuth('in'));
+  useEffect(() => {
+    check();
+    const out = () => setAuth('out');
+    window.addEventListener('auth-required', out);
+    return () => window.removeEventListener('auth-required', out);
+  }, []);
+
+  if (auth === 'checking') return null;
+  if (auth === 'out') return <SignIn onSignedIn={() => setAuth('in')} />;
   return (
     <div className="app-shell">
-      <Sidebar />
+      <Sidebar canSignOut={required} />
       <main>
         {pathname === '/' && <EntityBar />}
         <Routes>

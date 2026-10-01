@@ -1,4 +1,5 @@
 import { OWNER_KEYS, OWNER_LABELS } from '../owners.jsx';
+import CategorySelect from './CategorySelect.jsx';
 
 export const cents = (n) => (n == null || Number.isNaN(Number(n)) ? '—' : new Intl.NumberFormat('en-CA', {
   style: 'currency', currency: 'CAD', minimumFractionDigits: 2, maximumFractionDigits: 2,
@@ -24,10 +25,8 @@ export default function SplitEditor({ pieces, setPieces, categories, total }) {
             type="number" step="0.01" placeholder="Amount" aria-label={`Piece ${i + 1} amount`}
             value={p.amount} onChange={(e) => set(i, { amount: e.target.value })}
           />
-          <select aria-label={`Piece ${i + 1} category`} value={p.category_id} onChange={(e) => set(i, { category_id: e.target.value })}>
-            <option value="">No category</option>
-            {categories.map((c) => <option key={c.id} value={c.id}>{c.full_name || c.name}</option>)}
-          </select>
+          <CategorySelect aria-label={`Piece ${i + 1} category`} categories={categories} value={p.category_id}
+            onChange={(v) => set(i, { category_id: v })} />
           <select aria-label={`Piece ${i + 1} owner`} value={p.segment} onChange={(e) => set(i, { segment: e.target.value })}>
             {OWNER_KEYS.map((k) => <option key={k} value={k}>{OWNER_LABELS[k]}</option>)}
           </select>

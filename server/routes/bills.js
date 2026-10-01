@@ -108,7 +108,10 @@ router.post('/:id/unpay', ah(async (req, res) => {
       `UPDATE bills SET status = 'unpaid', paid_date = NULL, linked_transaction_id = NULL WHERE id = $1 RETURNING *`,
       [bill.id]
     );
-    if (bill.linked_transaction_id) await removeTransaction(client, bill.linked_transaction_id);
+    // A bill matched to a transaction that was already in the ledger just
+    // lets go of it; a payment made from the Bills tab is deleted.
+    if (bill.linked_transaction_id && !bill.linked_existing) await removeTransaction(client, bill.linked_transaction_id);
+    await client.query('UPDATE bills SET linked_existing = false WHERE id = $1', [bill.id]);
     // Paying a recurring bill created next cycle's bill. Reopening this one
     // makes that copy a duplicate (the forecast would count the cycle
     // twice), so remove it — only if it's still unpaid and untouched.

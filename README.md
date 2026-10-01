@@ -81,6 +81,11 @@ API.
    before starting the server) and is safe to re-run — it treats
    "already exists" errors as success rather than crashing.
 5. Every push to `main` auto-deploys.
+6. Set `APP_PASSWORD` (Railway → service → Variables) to require a
+   password. Signing in lasts 30 days per device; changing the password
+   signs every device out. Calls carrying a valid `X-Api-Key`
+   (`INGEST_API_KEY`) don't need it. Unset, the app is open to anyone
+   with the link.
 
 Environment variables (optional — defaults match the locked v1 thresholds):
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { OWNER_KEYS, OWNER_LABELS } from '../owners.jsx';
+import CategorySelect from '../components/CategorySelect.jsx';
 import SplitEditor, { cents, newPiece, piecesPayload } from '../components/SplitEditor.jsx';
 
 const KIND_LABELS = {
@@ -38,6 +39,9 @@ export default function Review() {
     load();
     fetch('/api/expenses').then((r) => r.json()).then(setCategories);
     fetch('/api/accounts').then((r) => r.json()).then(setAccounts);
+    const reload = () => fetch('/api/expenses').then((r) => r.json()).then(setCategories);
+    window.addEventListener('categories-changed', reload);
+    return () => window.removeEventListener('categories-changed', reload);
   }, []);
 
   const changed = () => {
@@ -127,12 +131,17 @@ function ReviewItem({ line, categories, accounts, onDone }) {
   const [splitting, setSplitting] = useState(false);
   const [pieces, setPieces] = useState([newPiece(), newPiece()]);
   const [fromAccount, setFromAccount] = useState('');
+  const [otherAccount, setOtherAccount] = useState(p.counterparty_account_id ? String(p.counterparty_account_id) : '');
   const [postAsNew, setPostAsNew] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
 
   const candType = candidates[0]?.type;
   const cardSidePayment = !!line.card_name && kind === 'card_payment';
+  const effKind = editing ? kind : (line.kind || p.kind);
+  // A transfer on an account: name the other account and both sides post.
+  const transferSide = !!line.account_id && ['transfer', 'owner_draw'].includes(effKind)
+    && !(pick && pick !== 'none');
 
   const approve = async () => {
     const overrides = {};
@@ -147,6 +156,7 @@ function ReviewItem({ line, categories, accounts, onDone }) {
       else if (p.splits) overrides.splits = null;
     }
     if (cardSidePayment && fromAccount) overrides.from_account_id = Number(fromAccount);
+    if (transferSide && otherAccount) { overrides.counterparty_account_id = Number(otherAccount); overrides.counterparty_last4 = null; }
     setBusy(true);
     setErr(null);
     const r = await fetch(`/api/statements/lines/${line.id}/approve`, {
@@ -210,6 +220,18 @@ function ReviewItem({ line, categories, accounts, onDone }) {
         </div>
       )}
 
+      {transferSide && (
+        <div className="review-fields">
+          <div className="field">
+            <label>{Number(line.amount) < 0 ? 'Going into' : 'Coming from'}</label>
+            <select value={otherAccount} onChange={(e) => setOtherAccount(e.target.value)}>
+              <option value="">Not one of my accounts / other side comes on its own statement</option>
+              {accounts.filter((a) => a.id !== line.account_id).map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </div>
+        </div>
+      )}
+
       {editing && (
         <>
           <div className="review-fields">
@@ -223,10 +245,8 @@ function ReviewItem({ line, categories, accounts, onDone }) {
               <>
                 <div className="field">
                   <label>Category</label>
-                  <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
-                    <option value="">{p.category ? `Keep "${p.category}"` : 'No category'}</option>
-                    {categories.map((c) => <option key={c.id} value={c.id}>{c.full_name || c.name}</option>)}
-                  </select>
+                  <CategorySelect categories={categories} value={categoryId} onChange={setCategoryId}
+                    emptyLabel={p.category ? `Keep "${p.category}"` : 'No category'} />
                 </div>
                 <div className="field">
                   <label>Belongs to</label>
@@ -311,10 +331,7 @@ function FlaggedItem({ tx, categories, onDone }) {
         <div className="review-fields">
           <div className="field">
             <label>Category</label>
-            <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
-              <option value="">No category</option>
-              {categories.map((c) => <option key={c.id} value={c.id}>{c.full_name || c.name}</option>)}
-            </select>
+            <CategorySelect categories={categories} value={categoryId} onChange={setCategoryId} />
           </div>
           <div className="field">
             <label>Belongs to</label>

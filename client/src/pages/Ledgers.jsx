@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react';
 import { money } from '../format.js';
 import { OwnerFields, ownerPayload, ownerSummary, emptyOwnerFields, ownerFieldsFrom, OWNER_LABELS } from '../owners.jsx';
 import SplitEditor, { cents, newPiece, piecesPayload } from '../components/SplitEditor.jsx';
+import CategorySelect from '../components/CategorySelect.jsx';
 
 const emptyForm = {
   source: 'account', account_id: '', credit_card_id: '', ledger: '', date: '', amount: '', description: '',
   category_id: '', is_mixed_use: false, mixed_use_business_pct: '', is_capex: false, is_transfer: false,
-  paid_by_check: false, is_split: false, needs_review: false, review_note: '', transfer_account_id: '',
+  paid_by_check: false, is_split: false, needs_review: false, review_note: '', transfer_account_id: '', pays: '',
   ...emptyOwnerFields,
 };
 
@@ -28,6 +29,9 @@ export default function Ledgers() {
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState(null); // the transaction being edited
   const [error, setError] = useState(null);
+  const [linkOptions, setLinkOptions] = useState({ bills: [], loan_payments: [] });
+  const loadLinkOptions = () => fetch('/api/transactions/link-options').then((r) => r.json())
+    .then((d) => setLinkOptions(d && d.bills ? d : { bills: [], loan_payments: [] })).catch(() => {});
 
   const load = () => {
     const params = new URLSearchParams();
@@ -51,6 +55,10 @@ export default function Ledgers() {
     fetch('/api/accounts').then((r) => r.json()).then(setAccounts);
     fetch('/api/credit-cards').then((r) => r.json()).then((c) => setCards(c.filter((x) => x.status === 'active')));
     fetch('/api/expenses').then((r) => r.json()).then(setCategories);
+    loadLinkOptions();
+    const reload = () => fetch('/api/expenses').then((r) => r.json()).then(setCategories);
+    window.addEventListener('categories-changed', reload);
+    return () => window.removeEventListener('categories-changed', reload);
   }, []);
 
   const onCard = form.source === 'card';
@@ -58,9 +66,24 @@ export default function Ledgers() {
 
   const lockedFor = editing ? moneyLockedHint(editing) : null;
   // A transfer between two of your own accounts: both sides get recorded.
-  const pairedTransfer = !editing && !onCard && form.is_transfer && !!form.transfer_account_id;
+  // Shown for a new transfer, or when editing a transfer whose other side
+  // isn't recorded yet.
+  const canPair = !onCard && form.is_transfer && (!editing || (!editing.transfer_peer_id && !!editing.account_id && !editing.credit_card_id));
+  const pairedTransfer = canPair && !!form.transfer_account_id;
   const amt = Number(form.amount) || 0;
   const otherLabel = amt < 0 ? 'Going into' : amt > 0 ? 'Coming from' : 'Other account';
+  // Money going out can be the payment for an unpaid bill or a scheduled
+  // loan payment — linking it marks that paid instead of entering it twice.
+  const canLink = amt < 0 && !form.is_transfer && (!editing || (!editing.pays && !(editing.credit_card_id && editing.account_id)));
+  const near = (x) => Math.abs(Math.abs(x) - Math.abs(amt)) < 0.005;
+  // Amount matches first, then the due date closest to this transaction's date.
+  const dayGap = (d) => (form.date ? Math.abs(new Date(d) - new Date(form.date)) : 0);
+  const byMatch = (list) => [...list].sort((a, b) => (Number(near(b.amount)) - Number(near(a.amount))) || (dayGap(a.due_date) - dayGap(b.due_date)));
+  const linkPayload = () => {
+    if (!canLink || !form.pays) return {};
+    const [kind, id] = form.pays.split(':');
+    return kind === 'bill' ? { link_bill_id: Number(id) } : { link_loan_payment_id: Number(id) };
+  };
 
   const startEdit = (t) => {
     setError(null);
@@ -94,6 +117,9 @@ export default function Ledgers() {
     };
     if (form.ledger) body.ledger = form.ledger;
     if (!(editing.credit_card_id && editing.account_id)) body.is_transfer = !onCard && form.is_transfer;
+    if (body.is_transfer) { body.category_id = null; body.splits = []; }
+    if (pairedTransfer) body.transfer_account_id = Number(form.transfer_account_id);
+    Object.assign(body, linkPayload());
     if (!lockedFor) {
       body.date = form.date;
       body.amount = Number(form.amount);
@@ -109,6 +135,7 @@ export default function Ledgers() {
     }
     cancelEdit();
     load();
+    loadLinkOptions();
     window.dispatchEvent(new Event('review-changed'));
   };
 
@@ -133,6 +160,7 @@ export default function Ledgers() {
         splits: form.is_split ? piecesPayload(pieces) : [],
         needs_review: form.needs_review, review_note: form.needs_review ? form.review_note : null,
         ...ownerPayload(form),
+        ...linkPayload(),
       }),
     });
     if (!r.ok) {
@@ -143,6 +171,7 @@ export default function Ledgers() {
     setForm(emptyForm);
     setPieces([newPiece(), newPiece()]);
     load();
+    loadLinkOptions();
     if (form.needs_review) window.dispatchEvent(new Event('review-changed'));
   };
 
@@ -236,7 +265,7 @@ export default function Ledgers() {
               </label>
             </div>
           )}
-          {!onCard && !editing && form.is_transfer && (
+          {canPair && (
             <div className="field">
               <label>{otherLabel}</label>
               <select value={form.transfer_account_id} onChange={(e) => setForm({ ...form, transfer_account_id: e.target.value })}>
@@ -261,6 +290,32 @@ export default function Ledgers() {
               </label>
             </div>
           )}
+          {canLink && (linkOptions.bills.length > 0 || linkOptions.loan_payments.length > 0) && (
+            <div className="field span2">
+              <label>Pays a bill or loan? (✓ = amount matches)</label>
+              <select value={form.pays} onChange={(e) => setForm({ ...form, pays: e.target.value })}>
+                <option value="">No — regular spending</option>
+                {linkOptions.bills.length > 0 && (
+                  <optgroup label="Unpaid bills">
+                    {byMatch(linkOptions.bills).map((b) => (
+                      <option key={`b${b.id}`} value={`bill:${b.id}`}>
+                        {near(b.amount) ? '✓ ' : ''}{b.name} · {cents(b.amount)} · due {b.due_date}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {!onCard && linkOptions.loan_payments.length > 0 && (
+                  <optgroup label="Loan payments">
+                    {byMatch(linkOptions.loan_payments).map((l) => (
+                      <option key={`l${l.id}`} value={`loan:${l.id}`}>
+                        {near(l.amount) ? '✓ ' : ''}{l.loan_name} · {cents(l.amount)} · due {l.due_date}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+            </div>
+          )}
           {form.is_split && !form.is_transfer ? (
             <SplitEditor pieces={pieces} setPieces={setPieces} categories={categories} total={form.amount} />
           ) : (
@@ -268,16 +323,14 @@ export default function Ledgers() {
               {!form.is_transfer && (
                 <div className="field">
                   <label>Category</label>
-                  <select value={form.category_id} onChange={(e) => setForm({ ...form, category_id: e.target.value })}>
-                    <option value="">No category</option>
-                    {categories.map((c) => <option key={c.id} value={c.id}>{c.full_name || c.name}</option>)}
-                  </select>
+                  <CategorySelect categories={categories} value={form.category_id}
+                    onChange={(v) => setForm((f) => ({ ...f, category_id: v }))} />
                 </div>
               )}
               {!pairedTransfer && <OwnerFields state={form} setState={setForm} />}
             </>
           )}
-          {!pairedTransfer && <div className="field">
+          {!(pairedTransfer && !editing) && <div className="field">
             <label>Ledger</label>
             <select value={form.ledger} onChange={(e) => setForm({ ...form, ledger: e.target.value })}>
               <option value="">Automatic — Grain/Cattle = business, Jake/Ashley = personal</option>
@@ -360,6 +413,7 @@ export default function Ledgers() {
                   <td>
                     {t.description}
                     {t.is_transfer && <span className="tag">Transfer</span>}
+                    {t.pays && <span className="tag tag-link">{t.pays}</span>}
                     {t.source && <span className="tag" title={`From ${t.source}`}>Statement</span>}
                     {t.needs_review && <span className="badge warn" style={{ marginLeft: 6 }}>NEEDS REVIEW</span>}
                     {t.needs_review && t.review_note && <div className="split-lines" style={{ color: 'var(--gold-bright)' }}>{t.review_note}</div>}

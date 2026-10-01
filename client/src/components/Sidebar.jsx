@@ -16,7 +16,7 @@ const links = [
   { to: '/purchase-evaluator', label: 'Purchase Evaluator' },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({ canSignOut = false }) {
   // Statement lines waiting for a human — refreshed on every navigation
   // and whenever the Review page approves or rejects something.
   const [held, setHeld] = useState(0);
@@ -48,6 +48,10 @@ export default function Sidebar() {
           </NavLink>
         ))}
       </nav>
+      {canSignOut && <button type="button" className="nav-link signout" onClick={async () => {
+        await fetch('/api/auth/logout', { method: 'POST' });
+        window.dispatchEvent(new Event('auth-required'));
+      }}>Sign out</button>}
     </aside>
   );
 }

@@ -183,7 +183,12 @@ export async function payBill(client, billId, {
     `UPDATE bills SET status = 'paid', paid_date = $1, linked_transaction_id = $2 WHERE id = $3`,
     [date, tx ? tx.id : null, bill.id]
   );
+  const nextBill = await rollBillForward(client, bill);
+  return { bill: { ...bill, status: 'paid', paid_date: date, linked_transaction_id: tx?.id ?? null }, transaction: tx, nextBill };
+}
 
+/** Recurring bills: paying one cycle creates the next. */
+async function rollBillForward(client, bill) {
   let nextBill = null;
   if (bill.frequency === 'monthly' || bill.frequency === 'quarterly') {
     const nextDue = addMonths(toISODate(bill.due_date), bill.frequency === 'monthly' ? 1 : 3);
@@ -196,7 +201,68 @@ export async function payBill(client, billId, {
     );
     nextBill = next[0];
   }
-  return { bill: { ...bill, status: 'paid', paid_date: date, linked_transaction_id: tx?.id ?? null }, transaction: tx, nextBill };
+  return nextBill;
+}
+
+/** What a transaction already pays, or null. */
+async function existingLink(client, txId) {
+  const { rows } = await client.query(
+    `SELECT 'bill "' || name || '"' AS what FROM bills WHERE linked_transaction_id = $1
+     UNION ALL SELECT 'a loan payment' FROM loan_payments WHERE linked_transaction_id = $1
+     UNION ALL SELECT 'contract (' || commodity || ')' FROM sale_contracts WHERE linked_transaction_id = $1
+     UNION ALL SELECT 'a card payment' FROM transactions WHERE id = $1 AND credit_card_id IS NOT NULL AND account_id IS NOT NULL`,
+    [txId]
+  );
+  return rows[0]?.what || null;
+}
+
+async function linkableTx(client, txId) {
+  const { rows } = await client.query('SELECT * FROM transactions WHERE id = $1 FOR UPDATE', [txId]);
+  const tx = rows[0];
+  if (!tx) throw new PostingError('Transaction not found.');
+  if (Number(tx.amount) >= 0) throw new PostingError('Only money going out can pay a bill or loan.');
+  if (tx.is_transfer) throw new PostingError('This is marked as a transfer — untick Transfer first.');
+  const already = await existingLink(client, tx.id);
+  if (already) throw new PostingError(`This transaction is already the payment for ${already}.`);
+  return tx;
+}
+
+/**
+ * Marks a bill paid BY a transaction already in the ledger — no new money
+ * movement. The bill's category fills in if the transaction has none.
+ */
+export async function linkBillToTransaction(client, billId, txId) {
+  const tx = await linkableTx(client, txId);
+  const { rows } = await client.query('SELECT * FROM bills WHERE id = $1 FOR UPDATE', [billId]);
+  const bill = rows[0];
+  if (!bill) throw new PostingError('Bill not found.');
+  if (bill.status === 'paid') throw new PostingError(`"${bill.name}" is already marked paid.`);
+  await client.query(
+    `UPDATE bills SET status = 'paid', paid_date = $1, linked_transaction_id = $2, linked_existing = true WHERE id = $3`,
+    [tx.date, tx.id, bill.id]
+  );
+  if (!tx.category_id && !tx.is_split) {
+    const cat = await categoryIdByName(client, bill.category);
+    if (cat) await client.query('UPDATE transactions SET category_id = $1 WHERE id = $2', [cat, tx.id]);
+  }
+  const nextBill = await rollBillForward(client, bill);
+  return { bill, nextBill };
+}
+
+/** Marks a scheduled loan payment made BY a transaction already in the ledger. */
+export async function linkLoanPaymentToTransaction(client, paymentId, txId) {
+  const tx = await linkableTx(client, txId);
+  if (!tx.account_id) throw new PostingError('A loan payment comes out of a bank account, not a card.');
+  const { rows } = await client.query('SELECT * FROM loan_payments WHERE id = $1 FOR UPDATE', [paymentId]);
+  const payment = rows[0];
+  if (!payment || payment.is_adjustment) throw new PostingError('Loan payment not found.');
+  if (payment.paid) throw new PostingError('That loan payment is already recorded.');
+  await client.query(
+    `UPDATE loan_payments SET paid = true, paid_date = $1, linked_transaction_id = $2, linked_existing = true WHERE id = $3`,
+    [tx.date, tx.id, payment.id]
+  );
+  await client.query('UPDATE transactions SET is_debt_service = true WHERE id = $1', [tx.id]);
+  return { payment };
 }
 
 /**

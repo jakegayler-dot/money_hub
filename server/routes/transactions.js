@@ -2,10 +2,33 @@ import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { validateSegment, SEGMENT_COLUMNS } from '../lib/segments.js';
-import { insertTransaction, removeTransaction, ownerOf, ledgerForOwner, normalizeSplits } from '../lib/postings.js';
+import {
+  insertTransaction, removeTransaction, ownerOf, ledgerForOwner, normalizeSplits,
+  linkBillToTransaction, linkLoanPaymentToTransaction,
+} from '../lib/postings.js';
 import { toISODate } from '../lib/dates.js';
 
 const router = Router();
+
+// What a payment out of the ledger could be paying: every unpaid bill, and
+// every unrecorded scheduled loan payment due within the next 90 days
+// (overdue ones included).
+router.get('/link-options', ah(async (req, res) => {
+  const { rows: bills } = await pool.query(
+    `SELECT id, name, due_date, amount, category FROM bills WHERE status = 'unpaid' ORDER BY due_date, id`
+  );
+  const { rows: payments } = await pool.query(
+    `SELECT lp.id, lp.due_date, lp.principal_amount + lp.interest_amount AS amount,
+            COALESCE(l.name, l.lender) AS loan_name
+     FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
+     WHERE NOT lp.paid AND NOT COALESCE(lp.is_adjustment, false) AND lp.due_date <= CURRENT_DATE + 90
+     ORDER BY lp.due_date, lp.id`
+  );
+  res.json({
+    bills: bills.map((b) => ({ ...b, due_date: toISODate(b.due_date), amount: Number(b.amount) })),
+    loan_payments: payments.map((p) => ({ ...p, due_date: toISODate(p.due_date), amount: Number(p.amount) })),
+  });
+}));
 
 router.get('/', ah(async (req, res) => {
   const { ledger, from, to, account_id, credit_card_id, needs_review, q, limit = 200 } = req.query;
@@ -37,7 +60,13 @@ router.get('/', ah(async (req, res) => {
               ) ORDER BY s.id)
               FROM transaction_splits s LEFT JOIN expense_categories sc ON sc.id = s.category_id
               WHERE s.transaction_id = t.id
-            ), '[]'::json) AS splits
+            ), '[]'::json) AS splits,
+            COALESCE(
+              (SELECT 'Bill: ' || b.name FROM bills b WHERE b.linked_transaction_id = t.id LIMIT 1),
+              (SELECT 'Loan: ' || COALESCE(l.name, l.lender) || ' (due ' || to_char(lp.due_date, 'YYYY-MM-DD') || ')'
+                 FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id WHERE lp.linked_transaction_id = t.id LIMIT 1),
+              (SELECT 'Contract: ' || c.commodity FROM sale_contracts c WHERE c.linked_transaction_id = t.id LIMIT 1)
+            ) AS pays
      FROM transactions t
      LEFT JOIN accounts a ON a.id = t.account_id
      LEFT JOIN credit_cards cc ON cc.id = t.credit_card_id
@@ -125,12 +154,21 @@ router.post('/', ah(async (req, res) => {
   const { splits, error } = normalizeSplits(pieces, Number(amount), owner, ledger);
   if (error) return res.status(400).json({ error });
 
-  const row = await withTransaction((client) => insertTransaction(client, {
-    account_id: account_id || null, credit_card_id: credit_card_id || null,
-    ledger, date, amount: Number(amount), description, category_id: category_id || null, purchase_class,
-    is_mixed_use, mixed_use_business_pct, is_capex, is_transfer, entered_by,
-    cleared: account_id ? !!cleared : true, owner, splits, needs_review, review_note,
-  }));
+  // link_bill_id / link_loan_payment_id: this entry IS that bill's or loan
+  // payment's money — the bill is marked paid (or the loan payment
+  // recorded) by this transaction instead of creating another one.
+  const { link_bill_id = null, link_loan_payment_id = null } = req.body;
+  const row = await withTransaction(async (client) => {
+    const t = await insertTransaction(client, {
+      account_id: account_id || null, credit_card_id: credit_card_id || null,
+      ledger, date, amount: Number(amount), description, category_id: category_id || null, purchase_class,
+      is_mixed_use, mixed_use_business_pct, is_capex, is_transfer, entered_by,
+      cleared: account_id ? !!cleared : true, owner, splits, needs_review, review_note,
+    });
+    if (link_bill_id) await linkBillToTransaction(client, Number(link_bill_id), t.id);
+    if (link_loan_payment_id) await linkLoanPaymentToTransaction(client, Number(link_loan_payment_id), t.id);
+    return t;
+  });
   res.status(201).json(row);
 }));
 
@@ -241,6 +279,34 @@ router.patch('/:id', ah(async (req, res) => {
           [tx.id, s.amount, s.category_id, s.memo, s.ledger, s.is_capex, ...SEGMENT_COLUMNS.map((c) => s.owner[c])]
         );
       }
+    }
+
+    if (b.link_bill_id) await linkBillToTransaction(client, Number(b.link_bill_id), tx.id);
+    if (b.link_loan_payment_id) await linkLoanPaymentToTransaction(client, Number(b.link_loan_payment_id), tx.id);
+
+    // Pointing a one-sided transfer at the other account records the
+    // matching side there and links the two.
+    if (b.transfer_account_id) {
+      const t = up[0];
+      if (!t.is_transfer || !t.account_id) return { status: 400, body: { error: 'Only a transfer out of or into an account can be paired with another account.' } };
+      if (tx.transfer_peer_id) return { status: 409, body: { error: 'This transfer already has its other side recorded.' } };
+      if (Number(b.transfer_account_id) === Number(t.account_id)) return { status: 400, body: { error: 'Pick two different accounts.' } };
+      const { rows: acc } = await client.query('SELECT * FROM accounts WHERE id = ANY($1::int[])', [[t.account_id, Number(b.transfer_account_id)]]);
+      const here = acc.find((a) => a.id === t.account_id);
+      const other = acc.find((a) => a.id === Number(b.transfer_account_id));
+      if (!other) return { status: 400, body: { error: 'account not found' } };
+      const amt = Number(t.amount);
+      const o = ownerOf({}, other);
+      const peer = await insertTransaction(client, {
+        account_id: other.id, credit_card_id: null, ledger: ledgerForOwner(o, other.ledger || 'business'),
+        date: toISODate(t.date), amount: -amt, category_id: null, purchase_class: null,
+        description: `Transfer ${amt < 0 ? 'from' : 'to'} ${here.name}${t.description ? ` — ${t.description}` : ''}`,
+        is_mixed_use: false, mixed_use_business_pct: null, is_capex: false, is_transfer: true, entered_by: 'manual',
+        cleared: true, owner: o, splits: [], needs_review: false, review_note: null,
+      });
+      await client.query('UPDATE transactions SET transfer_peer_id = $1 WHERE id = $2', [peer.id, t.id]);
+      await client.query('UPDATE transactions SET transfer_peer_id = $1 WHERE id = $2', [t.id, peer.id]);
+      up[0].transfer_peer_id = peer.id;
     }
     return { status: 200, body: up[0] };
   });

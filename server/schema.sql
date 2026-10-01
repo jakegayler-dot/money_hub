@@ -808,26 +808,79 @@ CREATE INDEX IF NOT EXISTS idx_statement_lines_status ON statement_lines (status
 -- its own amount, category, owner, ledger and capex flag. Every income,
 -- expense and per-owner calculation reads this, never raw transactions —
 -- that is what makes a split count correctly everywhere at once.
-CREATE OR REPLACE VIEW transaction_lines AS
-SELECT t.id AS transaction_id, NULL::integer AS split_id, t.account_id, t.credit_card_id,
-       t.ledger, t.date, t.amount, t.description, t.category_id,
-       t.is_capex, t.is_debt_service, t.is_transfer, t.cleared,
-       t.segment, t.is_segment_split, t.segment_grain_pct, t.segment_livestock_pct,
-       t.segment_jake_pct, t.segment_ashley_pct
-FROM transactions t
-WHERE t.is_split = false
+--
+-- A percentage owner split that crosses farm and personal (e.g. 60% Cattle
+-- / 40% Jake) is further divided here into a business line and a personal
+-- line, each carrying its share of the dollars and its owners' percentages
+-- rescaled to 100. Without this the whole amount would sit on one ledger
+-- and business figures (coverage ratio, expense averages) would count the
+-- personal share as a farm cost. Owner totals come out identical either way.
+-- Dropped and recreated (not CREATE OR REPLACE) because its column types
+-- changed when this was added; nothing else depends on the view.
+DROP VIEW IF EXISTS transaction_lines;
+CREATE VIEW transaction_lines AS
+WITH base AS (
+  SELECT t.id AS transaction_id, NULL::integer AS split_id, t.account_id, t.credit_card_id,
+         t.ledger, t.date, t.amount, t.description, t.category_id,
+         t.is_capex, t.is_debt_service, t.is_transfer, t.cleared,
+         t.segment, t.is_segment_split, t.segment_grain_pct, t.segment_livestock_pct,
+         t.segment_jake_pct, t.segment_ashley_pct
+  FROM transactions t
+  WHERE t.is_split = false
+  UNION ALL
+  SELECT t.id, s.id, t.account_id, t.credit_card_id,
+         s.ledger, t.date, s.amount, COALESCE(s.memo, t.description), s.category_id,
+         s.is_capex, t.is_debt_service, (t.is_transfer OR s.is_transfer), t.cleared,
+         s.segment, s.is_segment_split, s.segment_grain_pct, s.segment_livestock_pct,
+         s.segment_jake_pct, s.segment_ashley_pct
+  FROM transactions t
+  JOIN transaction_splits s ON s.transaction_id = t.id
+  WHERE t.is_split = true
+),
+pct AS (
+  SELECT base.*,
+         COALESCE(segment_grain_pct, 0) AS g, COALESCE(segment_livestock_pct, 0) AS l,
+         COALESCE(segment_jake_pct, 0) AS j, COALESCE(segment_ashley_pct, 0) AS a
+  FROM base
+),
+mixed AS (
+  SELECT pct.*, ROUND(amount * (g + l) / 100.0, 2) AS biz_amount
+  FROM pct
+  WHERE is_segment_split AND (g + l) > 0 AND (j + a) > 0
+)
+SELECT transaction_id, split_id, account_id, credit_card_id, ledger, date, amount, description, category_id,
+       is_capex, is_debt_service, is_transfer, cleared, segment, is_segment_split,
+       segment_grain_pct, segment_livestock_pct, segment_jake_pct, segment_ashley_pct
+FROM pct
+WHERE NOT (is_segment_split AND (g + l) > 0 AND (j + a) > 0)
 UNION ALL
-SELECT t.id, s.id, t.account_id, t.credit_card_id,
-       s.ledger, t.date, s.amount, COALESCE(s.memo, t.description), s.category_id,
-       s.is_capex, t.is_debt_service, (t.is_transfer OR s.is_transfer), t.cleared,
-       s.segment, s.is_segment_split, s.segment_grain_pct, s.segment_livestock_pct,
-       s.segment_jake_pct, s.segment_ashley_pct
-FROM transactions t
-JOIN transaction_splits s ON s.transaction_id = t.id
-WHERE t.is_split = true;
+-- business share: grain/cattle percentages rescaled to 100
+SELECT transaction_id, split_id, account_id, credit_card_id, 'business'::ledger_type, date, biz_amount,
+       description, category_id, is_capex, is_debt_service, is_transfer, cleared,
+       NULL::enterprise_segment, true,
+       CASE WHEN l = 0 THEN 100 ELSE ROUND(g * 100 / (g + l), 2) END,
+       CASE WHEN l = 0 THEN 0 ELSE 100 - ROUND(g * 100 / (g + l), 2) END,
+       0, 0
+FROM mixed
+UNION ALL
+-- personal share: Jake/Ashley percentages rescaled to 100
+SELECT transaction_id, split_id, account_id, credit_card_id, 'personal'::ledger_type, date, amount - biz_amount,
+       description, category_id, is_capex, is_debt_service, is_transfer, cleared,
+       NULL::enterprise_segment, true,
+       0, 0,
+       CASE WHEN a = 0 THEN 100 ELSE ROUND(j * 100 / (j + a), 2) END,
+       CASE WHEN a = 0 THEN 0 ELSE 100 - ROUND(j * 100 / (j + a), 2) END
+FROM mixed;
 
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions (date);
 CREATE INDEX IF NOT EXISTS idx_transactions_ledger ON transactions (ledger);
 CREATE INDEX IF NOT EXISTS idx_loan_payments_due_date ON loan_payments (due_date);
 CREATE INDEX IF NOT EXISTS idx_bills_due_date ON bills (due_date);
 CREATE INDEX IF NOT EXISTS idx_bills_status ON bills (status);
+
+-- A bill or loan payment can be matched to a transaction that was already
+-- in the ledger (entered by hand or from a statement) instead of creating
+-- a new one. linked_existing marks those, so undoing the payment unlinks
+-- the transaction rather than deleting it.
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS linked_existing BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE loan_payments ADD COLUMN IF NOT EXISTS linked_existing BOOLEAN NOT NULL DEFAULT false;

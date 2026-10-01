@@ -83,3 +83,18 @@ export function allocateBySegment(amount, row) {
 export function ledgerForSegment(segment) {
   return segment === 'jake' || segment === 'ashley' || segment === 'personal' ? 'personal' : 'business';
 }
+
+/**
+ * Fraction (0–1) of a row that is farm business: Grain + Cattle's share of
+ * a percentage split; 1 for a Grain or Cattle row; 0 for Jake or Ashley;
+ * otherwise whatever its ledger says. Used wherever a business-only figure
+ * reads rows that can be split between farm and personal (bills, estimates).
+ */
+export function businessShare(row = {}) {
+  if (row.is_segment_split) {
+    return ((Number(row.segment_grain_pct) || 0) + (Number(row.segment_livestock_pct) || 0)) / 100;
+  }
+  if (row.segment === 'grain' || row.segment === 'livestock') return 1;
+  if (row.segment === 'jake' || row.segment === 'ashley' || row.segment === 'personal') return 0;
+  return row.ledger === 'personal' ? 0 : 1;
+}

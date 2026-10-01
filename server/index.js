@@ -19,13 +19,22 @@ import inventoryRoute from './routes/inventory.js';
 import estimatesRoute from './routes/estimates.js';
 import creditCardsRoute from './routes/credit-cards.js';
 import statementsRoute from './routes/statements.js';
+import { authRouter, requireSignIn, authEnabled } from './lib/appAuth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
+// Railway's proxy sits in front: trust exactly that one hop, so req.ip is
+// the real visitor (the sign-in limit counts per address).
+app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.json());
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+
+// Everything under /api below this needs a signed-in browser or the API key.
+app.use('/api/auth', authRouter);
+app.use('/api', requireSignIn);
+if (!authEnabled()) console.warn('APP_PASSWORD is not set — Money Hub is open to anyone with the link.');
 
 app.use('/api/dashboard', dashboardRoute);
 app.use('/api/accounts', accountsRoute);
