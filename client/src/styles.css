@@ -470,6 +470,8 @@ button:disabled { opacity: 0.4; cursor: not-allowed; filter: none; }
 .review-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
 .review-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .review-error { font-size: 12px; color: var(--negative); }
+.small-link { font-size: 12px; color: var(--text-muted); text-decoration: underline; text-underline-offset: 2px; }
+.small-link:hover { color: var(--text); }
 .tag { display: inline-block; font-size: 10.5px; padding: 1px 7px; border-radius: 9px; border: 1px solid var(--border-strong); color: var(--text-muted); margin-left: 6px; letter-spacing: 0.02em; }
 .split-lines { font-size: 11.5px; color: var(--text-muted); margin-top: 3px; }
 

@@ -19,18 +19,11 @@ import inventoryRoute from './routes/inventory.js';
 import estimatesRoute from './routes/estimates.js';
 import creditCardsRoute from './routes/credit-cards.js';
 import statementsRoute from './routes/statements.js';
-import sentinelRoute from './routes/sentinel.js';
-import { sentinelWriteTrigger, startSentinelSync } from './lib/sentinel.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-// Any successful write under /api (including statement ingest paying bills)
-// schedules a debounced Sentinel sync. Fires after the response is sent, so
-// it can never slow down or fail the request itself.
-app.use('/api', sentinelWriteTrigger);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
@@ -49,7 +42,6 @@ app.use('/api/inventory', inventoryRoute);
 app.use('/api/estimates', estimatesRoute);
 app.use('/api/credit-cards', creditCardsRoute);
 app.use('/api/statements', statementsRoute);
-app.use('/api/sentinel', sentinelRoute);
 
 // In production, this is the only Railway service — it serves the built
 // client alongside the API so there's nothing extra to deploy or wire up.
@@ -80,7 +72,4 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const port = process.env.PORT || 4000;
-app.listen(port, () => {
-  console.log(`Money Hub listening on :${port}`);
-  startSentinelSync();
-});
+app.listen(port, () => console.log(`Money Hub listening on :${port}`));

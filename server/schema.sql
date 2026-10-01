@@ -703,6 +703,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_transactions_source_external
 CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions (account_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_card ON transactions (credit_card_id);
 
+-- A transaction someone (usually the data-entry agent) wasn't sure about:
+-- it's recorded and counts like any other, but sits on the Review tab with
+-- the reason until a person checks it and clears the flag.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS needs_review BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS review_note TEXT;
+CREATE INDEX IF NOT EXISTS idx_transactions_needs_review ON transactions (needs_review) WHERE needs_review;
+
 -- Card payments recorded before transactions carried credit_card_id.
 UPDATE transactions t SET credit_card_id = s.credit_card_id, credit_card_statement_id = s.id
 FROM credit_card_statements s

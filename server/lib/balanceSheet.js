@@ -29,7 +29,8 @@ export function outstandingAt(loan, payments, dateISO) {
  * capital assets, inventory (uncontracted only), and loans. Callers apply
  * owner weights themselves, so one load serves Combined and every owner.
  */
-export async function loadBalanceSheet(today = todayISO()) {
+export async function loadBalanceSheet() {
+  const today = todayISO();
   const in12 = addMonths(today, 12);
 
   const [assetRows, loanRows, paymentRows, invRows, contractRows, cardRows] = await Promise.all([

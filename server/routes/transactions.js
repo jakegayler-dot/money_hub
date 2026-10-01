@@ -1,14 +1,14 @@
 import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
-import { validateSegment } from '../lib/segments.js';
+import { validateSegment, SEGMENT_COLUMNS } from '../lib/segments.js';
 import { insertTransaction, removeTransaction, ownerOf, ledgerForOwner, normalizeSplits } from '../lib/postings.js';
 import { toISODate } from '../lib/dates.js';
 
 const router = Router();
 
 router.get('/', ah(async (req, res) => {
-  const { ledger, from, to, account_id, credit_card_id, limit = 100 } = req.query;
+  const { ledger, from, to, account_id, credit_card_id, needs_review, q, limit = 200 } = req.query;
   const conditions = [];
   const params = [];
   const add = (sql, v) => { params.push(v); conditions.push(sql.replace('?', `$${params.length}`)); };
@@ -17,8 +17,11 @@ router.get('/', ah(async (req, res) => {
   if (to) add('t.date <= ?', to);
   if (account_id) add('t.account_id = ?', account_id);
   if (credit_card_id) add('t.credit_card_id = ?', credit_card_id);
+  if (needs_review === 'true') conditions.push('t.needs_review = true');
+  if (req.query.id) add('t.id = ?', req.query.id);
+  if (q) add('t.description ILIKE ?', `%${q}%`);
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-  params.push(Math.min(Number(limit) || 100, 1000));
+  params.push(Math.min(Number(limit) || 200, 2000));
 
   // Account and card names joined in so the ledger can say where each
   // entry came from (a card purchase has no account), plus split pieces.
@@ -58,7 +61,7 @@ router.post('/', ah(async (req, res) => {
     category_id = null, purchase_class = null,
     is_mixed_use = false, mixed_use_business_pct = null,
     is_capex = false, is_transfer = false, entered_by = 'manual',
-    cleared = true, splits: pieces = [],
+    cleared = true, splits: pieces = [], needs_review = false, review_note = null,
   } = req.body;
 
   if (!account_id && !credit_card_id) return res.status(400).json({ error: 'Pick an account, or a card for a card purchase.' });
@@ -90,7 +93,7 @@ router.post('/', ah(async (req, res) => {
     account_id: account_id || null, credit_card_id: credit_card_id || null,
     ledger, date, amount: Number(amount), description, category_id: category_id || null, purchase_class,
     is_mixed_use, mixed_use_business_pct, is_capex, is_transfer, entered_by,
-    cleared: account_id ? !!cleared : true, owner, splits,
+    cleared: account_id ? !!cleared : true, owner, splits, needs_review, review_note,
   }));
   res.status(201).json(row);
 }));
@@ -100,6 +103,114 @@ router.post('/', ah(async (req, res) => {
 // touches the account balance a second time: the balance already moved
 // when the transaction was recorded, exactly as a real checkbook register
 // works.
+// What stops a transaction's money (date, amount, account) from being
+// edited here, or null if nothing does. Categorizing — description,
+// category, owner, splits, capex, the review flag — is always allowed.
+async function moneyLock(client, tx) {
+  const { rows } = await client.query(
+    `SELECT 'bill "' || name || '"' AS what FROM bills WHERE linked_transaction_id = $1
+     UNION ALL SELECT 'a scheduled loan payment' FROM loan_payments WHERE linked_transaction_id = $1
+     UNION ALL SELECT 'contract (' || commodity || ')' FROM sale_contracts WHERE linked_transaction_id = $1`,
+    [tx.id]
+  );
+  if (rows.length) return `It's the payment for ${rows[0].what} — reverse it from there (unpay / unrecord / unsettle) so that item reopens, then re-enter it.`;
+  if (tx.credit_card_id && tx.account_id) return 'It\'s a credit card payment — reverse it from the card\'s statement on the Credit Cards tab.';
+  if (tx.transfer_peer_id) return 'It\'s one side of a paired transfer — delete it and re-enter both sides.';
+  if (tx.source) return 'It came from a bank statement, so its date and amount are what the bank shows — delete it and re-send the statement if it was misread.';
+  return null;
+}
+
+// Edit a transaction. Always editable: description, category, owner (or
+// split pieces), capital purchase, transfer flag, review flag and note.
+// Date, amount and account are editable only on a plain entry (see
+// moneyLock); changing them moves the account balances to match.
+router.patch('/:id', ah(async (req, res) => {
+  const b = req.body || {};
+  const result = await withTransaction(async (client) => {
+    const { rows } = await client.query('SELECT * FROM transactions WHERE id = $1 FOR UPDATE', [req.params.id]);
+    if (!rows.length) return { status: 404, body: { error: 'not found' } };
+    const tx = rows[0];
+
+    const newDate = b.date !== undefined ? b.date : toISODate(tx.date);
+    const newAmount = b.amount !== undefined ? Number(b.amount) : Number(tx.amount);
+    const newAccount = b.account_id !== undefined ? (b.account_id ? Number(b.account_id) : null) : tx.account_id;
+    const moneyChanged = newDate !== toISODate(tx.date) || Math.abs(newAmount - Number(tx.amount)) > 0.001
+      || newAccount !== tx.account_id;
+    if (moneyChanged) {
+      const lock = await moneyLock(client, tx);
+      if (lock) return { status: 409, body: { error: `Date, amount and account can't be changed here. ${lock}` } };
+      if (!newDate || !newAmount) return { status: 400, body: { error: 'date and a non-zero amount are required.' } };
+      if (!tx.account_id && newAccount) return { status: 400, body: { error: 'A card purchase can’t be moved to an account — delete it and re-enter it.' } };
+      if (tx.account_id && !newAccount) return { status: 400, body: { error: 'Pick an account.' } };
+      if (newAccount && newAccount !== tx.account_id) {
+        const { rows: a } = await client.query('SELECT 1 FROM accounts WHERE id = $1', [newAccount]);
+        if (!a.length) return { status: 400, body: { error: `Account #${newAccount} doesn't exist.` } };
+      }
+    }
+    if (b.is_transfer !== undefined && !!b.is_transfer !== tx.is_transfer && tx.credit_card_id && tx.account_id) {
+      return { status: 409, body: { error: 'Whether a card payment counts as a transfer is set automatically from the card.' } };
+    }
+
+    // Owner: new fields if sent, else keep.
+    const ownerSent = b.segment !== undefined || b.is_segment_split !== undefined;
+    if (ownerSent) {
+      const err = validateSegment(b);
+      if (err) return { status: 400, body: { error: err } };
+    }
+    const owner = ownerSent ? ownerOf(b, {}) : ownerOf(tx);
+    const ledger = b.ledger || (ownerSent ? ledgerForOwner(owner, tx.ledger) : tx.ledger);
+
+    // Splits: replaced when sent ([] or null = not split any more). If the
+    // amount changes on a split transaction, its pieces must be re-sent.
+    let splits = null;
+    if (b.splits !== undefined) {
+      const pieces = Array.isArray(b.splits) ? b.splits : [];
+      const n = normalizeSplits(pieces, newAmount, owner, ledger);
+      if (n.error) return { status: 400, body: { error: n.error } };
+      splits = n.splits;
+    } else if (tx.is_split && Math.abs(newAmount - Number(tx.amount)) > 0.001) {
+      return { status: 400, body: { error: 'This transaction is split — send its pieces again so they add up to the new amount.' } };
+    }
+
+    if (moneyChanged) {
+      if (tx.account_id) await client.query('UPDATE accounts SET opening_balance = opening_balance - $1 WHERE id = $2', [tx.amount, tx.account_id]);
+      if (newAccount) await client.query('UPDATE accounts SET opening_balance = opening_balance + $1 WHERE id = $2', [newAmount, newAccount]);
+    }
+    const needsReview = b.needs_review !== undefined ? !!b.needs_review : tx.needs_review;
+    const { rows: up } = await client.query(
+      `UPDATE transactions SET
+         date = $1, amount = $2, account_id = $3, description = $4, category_id = $5, ledger = $6,
+         is_capex = $7, is_transfer = $8, needs_review = $9, review_note = $10,
+         cleared_date = CASE WHEN cleared THEN $1::date ELSE cleared_date END,
+         is_split = $11,
+         ${SEGMENT_COLUMNS.map((c, i) => `${c} = $${12 + i}`).join(', ')}
+       WHERE id = $${12 + SEGMENT_COLUMNS.length} RETURNING *`,
+      [newDate, newAmount, newAccount,
+       b.description !== undefined ? b.description : tx.description,
+       b.category_id !== undefined ? (b.category_id ? Number(b.category_id) : null) : tx.category_id,
+       ledger,
+       b.is_capex !== undefined ? !!b.is_capex : tx.is_capex,
+       b.is_transfer !== undefined ? !!b.is_transfer : tx.is_transfer,
+       needsReview,
+       needsReview ? (b.review_note !== undefined ? b.review_note : tx.review_note) : null,
+       splits !== null ? splits.length > 0 : tx.is_split,
+       ...SEGMENT_COLUMNS.map((c) => owner[c]), tx.id]
+    );
+    if (splits !== null) {
+      await client.query('DELETE FROM transaction_splits WHERE transaction_id = $1', [tx.id]);
+      for (const s of splits) {
+        await client.query(
+          `INSERT INTO transaction_splits (transaction_id, amount, category_id, memo, ledger, is_capex, ${SEGMENT_COLUMNS.join(', ')})
+           VALUES ($1,$2,$3,$4,$5,$6,${SEGMENT_COLUMNS.map((_, i) => `$${7 + i}`).join(',')})`,
+          [tx.id, s.amount, s.category_id, s.memo, s.ledger, s.is_capex, ...SEGMENT_COLUMNS.map((c) => s.owner[c])]
+        );
+      }
+    }
+    return { status: 200, body: up[0] };
+  });
+  res.status(result.status).json(result.body);
+}));
+
 router.post('/:id/clear', ah(async (req, res) => {
   const { cleared_date = new Date().toISOString().slice(0, 10) } = req.body;
   const { rows } = await pool.query(

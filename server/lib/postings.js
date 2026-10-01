@@ -78,15 +78,16 @@ export async function insertTransaction(client, t) {
     `INSERT INTO transactions
       (account_id, credit_card_id, credit_card_statement_id, ledger, date, amount, description, category_id,
        purchase_class, is_mixed_use, mixed_use_business_pct, is_capex, is_debt_service, is_transfer, is_split,
-       entered_by, cleared, cleared_date, source, external_id, ${SEG_COLS})
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-             ${SEGMENT_COLUMNS.map((_, i) => `$${21 + i}`).join(',')})
+       entered_by, cleared, cleared_date, source, external_id, needs_review, review_note, ${SEG_COLS})
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
+             ${SEGMENT_COLUMNS.map((_, i) => `$${23 + i}`).join(',')})
      RETURNING *`,
     [t.account_id || null, t.credit_card_id || null, t.credit_card_statement_id || null,
      t.ledger || ledgerForOwner(owner), t.date, round2(t.amount), t.description || null, t.category_id || null,
      t.purchase_class || null, !!t.is_mixed_use, t.mixed_use_business_pct ?? null,
      !!t.is_capex, !!t.is_debt_service, !!t.is_transfer, splits.length > 0,
      t.entered_by || 'manual', cleared, cleared ? t.date : null, t.source || null, t.external_id || null,
+     !!t.needs_review, t.needs_review ? (t.review_note || null) : null,
      ...SEGMENT_COLUMNS.map((c) => owner[c])]
   );
   const tx = rows[0];

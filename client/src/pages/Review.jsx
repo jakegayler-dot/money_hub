@@ -25,11 +25,13 @@ export default function Review() {
   const [accounts, setAccounts] = useState([]);
   const [error, setError] = useState(null);
 
+  const [flagged, setFlagged] = useState([]);
   const load = () => {
     Promise.all([
       fetch('/api/statements/review').then((r) => r.json()),
       fetch('/api/statements/imports').then((r) => r.json()),
-    ]).then(([l, i]) => { setLines(l); setImports(i); })
+      fetch('/api/transactions?needs_review=true&limit=500').then((r) => r.json()),
+    ]).then(([l, i, f]) => { setLines(l); setImports(i); setFlagged(Array.isArray(f) ? f : []); })
       .catch((e) => setError(e.message));
   };
   useEffect(() => {
@@ -50,7 +52,7 @@ export default function Review() {
     <>
       <div className="page-header">
         <h1 className="page-title">Review</h1>
-        <span className="page-meta">{lines.length} waiting</span>
+        <span className="page-meta">{lines.length + flagged.length} waiting</span>
       </div>
 
       <div className="panel">
@@ -60,6 +62,17 @@ export default function Review() {
         ) : (
           lines.map((l) => (
             <ReviewItem key={l.id} line={l} categories={categories} accounts={accounts} onDone={changed} />
+          ))
+        )}
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">Transactions flagged for review</div>
+        {flagged.length === 0 ? (
+          <div className="empty-state">Nothing flagged. Entries marked "Needs review" on the Ledgers tab show up here.</div>
+        ) : (
+          flagged.map((t) => (
+            <FlaggedItem key={t.id} tx={t} categories={categories} onDone={changed} />
           ))
         )}
       </div>
@@ -249,6 +262,72 @@ function ReviewItem({ line, categories, accounts, onDone }) {
         <button className="small" onClick={approve} disabled={busy}>Approve</button>
         <button className="small secondary" onClick={() => setEditing(!editing)}>{editing ? 'Hide details' : 'Change details'}</button>
         <button className="small secondary" onClick={reject}>Reject</button>
+        {err && <span className="review-error">{err}</span>}
+      </div>
+    </div>
+  );
+}
+
+// A transaction someone flagged. It already counts; this is where a person
+// confirms or fixes its category and owner, then clears the flag. Anything
+// more (amount, splits) opens it on the Ledgers tab.
+function FlaggedItem({ tx, categories, onDone }) {
+  const [categoryId, setCategoryId] = useState(tx.category_id ? String(tx.category_id) : '');
+  const [segment, setSegment] = useState(tx.is_segment_split ? '' : (tx.segment || ''));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const amount = Number(tx.amount);
+
+  const resolve = async () => {
+    const body = { needs_review: false };
+    if (!tx.is_split) {
+      body.category_id = categoryId ? Number(categoryId) : null;
+      if (segment) { body.segment = segment; body.is_segment_split = false; }
+    }
+    setBusy(true);
+    setErr(null);
+    const r = await fetch(`/api/transactions/${tx.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    setBusy(false);
+    if (!r.ok) { const b = await r.json().catch(() => ({})); setErr(b.error || `HTTP ${r.status}`); return; }
+    onDone();
+  };
+
+  return (
+    <div className="review-item">
+      <div className="review-head">
+        <div>
+          <div className="review-desc">{tx.description || '(no description)'}</div>
+          <div className="review-meta">
+            {tx.date} · {tx.account_name || `${tx.card_name} (card)`}{tx.category_name ? ` · ${tx.category_name}` : ''}
+            {tx.is_split ? ' · split' : ''}
+          </div>
+        </div>
+        <div className={`review-amount ${amount < 0 ? 'neg' : 'pos'}`}>{cents(amount)}</div>
+      </div>
+      <div className="review-reason">{tx.review_note || 'Flagged for review.'}</div>
+      {!tx.is_split && (
+        <div className="review-fields">
+          <div className="field">
+            <label>Category</label>
+            <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+              <option value="">No category</option>
+              {categories.map((c) => <option key={c.id} value={c.id}>{c.full_name || c.name}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Belongs to</label>
+            <select value={segment} onChange={(e) => setSegment(e.target.value)}>
+              <option value="">{tx.is_segment_split ? 'Keep split' : 'Keep as is'}</option>
+              {OWNER_KEYS.map((k) => <option key={k} value={k}>{OWNER_LABELS[k]}</option>)}
+            </select>
+          </div>
+        </div>
+      )}
+      <div className="review-actions">
+        <button className="small" onClick={resolve} disabled={busy}>Looks right — clear flag</button>
+        <a className="small-link" href={`/ledgers?edit=${tx.id}`}>Open in Ledgers to change amount or split</a>
         {err && <span className="review-error">{err}</span>}
       </div>
     </div>

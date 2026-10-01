@@ -315,8 +315,12 @@ router.get('/review', ah(async (req, res) => {
 }));
 
 router.get('/review/count', ah(async (req, res) => {
-  const { rows } = await pool.query(`SELECT COUNT(*)::int AS n FROM statement_lines WHERE status = 'held'`);
-  res.json({ held: rows[0].n });
+  const { rows } = await pool.query(
+    `SELECT (SELECT COUNT(*) FROM statement_lines WHERE status = 'held')::int AS lines,
+            (SELECT COUNT(*) FROM transactions WHERE needs_review)::int AS flagged`
+  );
+  // `held` is the total waiting — statement lines plus flagged transactions.
+  res.json({ held: rows[0].lines + rows[0].flagged, lines: rows[0].lines, flagged: rows[0].flagged });
 }));
 
 router.get('/lines', ah(async (req, res) => {
