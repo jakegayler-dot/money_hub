@@ -151,12 +151,15 @@ function Estimates({ onChange }) {
       ) : (
         <table style={{ marginTop: 12 }}>
           <thead>
-            <tr><th>Name</th><th>Owner</th><th>Amount</th><th>Timing</th><th>Next 12 mo</th><th>Source</th><th>Status</th><th></th></tr>
+            <tr><th>Name</th><th>Owner</th><th>Amount</th><th>Timing</th><th>Next 12 mo</th><th>Status</th><th></th></tr>
           </thead>
           <tbody>
             {visible.map((e) => (
               <tr key={e.id} style={e.status === 'retired' ? { opacity: 0.5 } : undefined}>
-                <td>{e.name}{e.category ? <span style={{ color: 'var(--text-faint)' }}> · {e.category}</span> : null}</td>
+                <td>
+                  {e.name}{e.category ? <span style={{ color: 'var(--text-faint)' }}> · {e.category}</span> : null}
+                  {e.source !== 'manual' && <div className="split-lines">via {e.source}</div>}
+                </td>
                 <td>{ownerSummary(e)}</td>
                 <td style={{ color: e.direction === 'inflow' ? 'var(--positive)' : 'var(--negative)' }}>
                   {e.direction === 'inflow' ? '+' : '−'}{money(Number(e.amount))}
@@ -166,7 +169,6 @@ function Estimates({ onChange }) {
                   {e.end_date && e.frequency !== 'one_time' ? ` → ${String(e.end_date).slice(0, 10)}` : ''}
                 </td>
                 <td>{e.direction === 'inflow' ? '+' : '−'}{money(e.next12_total)}</td>
-                <td>{e.source === 'manual' ? '—' : e.source}</td>
                 <td>
                   {e.status === 'retired'
                     ? <span className="badge">RETIRED</span>

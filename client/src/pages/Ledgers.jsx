@@ -324,7 +324,7 @@ export default function Ledgers() {
         ) : (
           <table>
             <thead>
-              <tr><th>Date</th><th>Account / card</th><th>Ledger</th><th>Owner</th><th>Description</th><th>Amount</th><th>Cleared</th><th></th></tr>
+              <tr><th>Date</th><th>Account / card</th><th>Description</th><th>Owner</th><th>Amount</th><th></th></tr>
             </thead>
             <tbody>
               {visible.map((t) => (
@@ -334,8 +334,6 @@ export default function Ledgers() {
                     {t.account_name || (t.card_name ? `${t.card_name} (card)` : '—')}
                     {t.account_name && t.card_name && <div className="split-lines">to {t.card_name}</div>}
                   </td>
-                  <td>{t.is_split ? 'Split' : t.ledger}</td>
-                  <td>{t.is_split ? 'Split' : ownerSummary(t)}</td>
                   <td>
                     {t.description}
                     {t.is_transfer && <span className="tag">Transfer</span>}
@@ -350,15 +348,21 @@ export default function Ledgers() {
                       </div>
                     ))}
                   </td>
-                  <td>{cents(Number(t.amount))}</td>
                   <td>
-                    {!t.account_id ? <span className="tag">On card</span> : t.cleared ? (
-                      <span className="badge pass">CLEARED</span>
-                    ) : (
-                      <span className="badge warn">OUTSTANDING</span>
-                    )}
+                    {t.is_split ? 'Split' : ownerSummary(t)}
+                    {!t.is_split && <div className="split-lines">{t.ledger}</div>}
                   </td>
-                  <td style={{ whiteSpace: 'nowrap' }}>
+                  <td>
+                    <span className="nowrap">{cents(Number(t.amount))}</span>
+                    <div style={{ marginTop: 4 }}>
+                      {!t.account_id ? <span className="tag" style={{ marginLeft: 0 }}>On card</span> : t.cleared ? (
+                        <span className="badge pass">CLEARED</span>
+                      ) : (
+                        <span className="badge warn">OUTSTANDING</span>
+                      )}
+                    </div>
+                  </td>
+                  <td>
                     {t.account_id && !t.cleared && (
                       <button className="small" onClick={() => markCleared(t.id)}>Mark cleared</button>
                     )}{' '}

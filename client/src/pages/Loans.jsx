@@ -21,9 +21,9 @@ const emptyVerify = { verified_on: today(), balance: '', interest_rate_pct: '', 
 
 // Verification age: never verified is red, over 90 days amber, else green.
 function VerifiedBadge({ loan }) {
-  if (loan.days_since_verified == null) return <span className="badge fail">NEVER</span>;
+  if (loan.days_since_verified == null) return <span className="badge fail">NOT VERIFIED</span>;
   const d = loan.days_since_verified;
-  const label = d === 0 ? 'TODAY' : `${d}D AGO`;
+  const label = d === 0 ? 'VERIFIED TODAY' : `VERIFIED ${d}D AGO`;
   return <span className={`badge ${d > STALE_DAYS ? 'warn' : 'pass'}`} title={`Last verified ${String(loan.last_verified_on).slice(0, 10)}`}>{label}</span>;
 }
 
@@ -410,8 +410,8 @@ export default function Loans() {
           <table>
             <thead>
               <tr>
-                <th>Name</th><th>Lender</th><th>Outstanding</th><th>Rate</th><th>Next payment</th>
-                <th>Secured by</th><th>Equity</th><th>Verified</th><th></th>
+                <th>Loan</th><th>Outstanding</th><th>Rate</th><th>Next payment</th>
+                <th>Secured by</th><th>Equity</th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -420,10 +420,12 @@ export default function Loans() {
                   <tr>
                     <td>
                       {l.name || l.lender}
-                      <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>{PURPOSE_LABELS[l.purpose] || l.purpose} · {SEGMENT_LABELS[l.segment] || 'Unassigned'}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>{l.name && l.lender ? `${l.lender} · ` : ''}{PURPOSE_LABELS[l.purpose] || l.purpose} · {SEGMENT_LABELS[l.segment] || 'Unassigned'}</div>
                     </td>
-                    <td>{l.lender}</td>
-                    <td>{money(Number(l.outstanding_balance))}</td>
+                    <td>
+                      {money(Number(l.outstanding_balance))}
+                      <div style={{ marginTop: 4 }}><VerifiedBadge loan={l} /></div>
+                    </td>
                     <td>
                       {Number(l.interest_rate_pct).toFixed(2)}% <span style={{ color: 'var(--text-faint)' }}>{l.rate_type}</span>
                       <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>{FREQUENCY_LABELS[l.payment_frequency] || 'Monthly'} payments</div>
@@ -439,7 +441,6 @@ export default function Loans() {
                       {l.equity != null ? money(Number(l.equity)) : '—'}
                       {l.asset_loan_count > 1 && <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>after all {l.asset_loan_count} loans</div>}
                     </td>
-                    <td><VerifiedBadge loan={l} /></td>
                     <td>
                       <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
                         <button className="small" onClick={() => (verifyingId === l.id ? setVerifyingId(null) : startVerify(l))}>
@@ -458,7 +459,7 @@ export default function Loans() {
 
                   {verifyingId === l.id && (
                     <tr>
-                      <td colSpan={9} style={{ background: 'var(--panel-alt)' }}>
+                      <td colSpan={7} style={{ background: 'var(--panel-alt)' }}>
                         <div style={{ padding: '12px 4px' }}>
                           <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 10px' }}>
                             Enter what your statement or lender says. The schedule currently expects{' '}
@@ -523,7 +524,7 @@ export default function Loans() {
 
                   {editingId === l.id && editForm && (
                     <tr>
-                      <td colSpan={9} style={{ background: 'var(--panel-alt, rgba(255,255,255,0.03))' }}>
+                      <td colSpan={7} style={{ background: 'var(--panel-alt, rgba(255,255,255,0.03))' }}>
                         <div style={{ padding: '12px 4px' }}>
                           <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 10px' }}>
                             Changing balance, rate, term, start date, frequency or first payment date regenerates this loan's payment
@@ -587,7 +588,7 @@ export default function Loans() {
 
                   {expandedId === l.id && (
                     <tr>
-                      <td colSpan={9} style={{ background: 'var(--panel-alt, rgba(255,255,255,0.03))' }}>
+                      <td colSpan={7} style={{ background: 'var(--panel-alt, rgba(255,255,255,0.03))' }}>
                         {!schedules[l.id] ? (
                           <div className="empty-state">Loading schedule…</div>
                         ) : (

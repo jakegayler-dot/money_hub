@@ -177,7 +177,7 @@ export default function Bills() {
         ) : (
           <table>
             <thead>
-              <tr><th>Due</th><th>Name</th><th>Category</th><th>Ledger</th><th>Owner</th><th>Subtotal</th><th>GST</th><th>Total</th><th>Status</th><th></th></tr>
+              <tr><th>Due</th><th>Name</th><th>Category</th><th>Owner</th><th>Total</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
               {bills.map((b) => {
@@ -188,11 +188,18 @@ export default function Bills() {
                       <td>{b.due_date?.slice(0, 10)}</td>
                       <td>{b.name}</td>
                       <td>{b.category || '—'}</td>
-                      <td>{b.ledger}</td>
-                      <td>{ownerSummary(b)}</td>
-                      <td>{b.has_gst ? money(Number(b.subtotal_amount)) : '—'}</td>
-                      <td>{b.has_gst ? `${money(Number(b.gst_amount))} (${Number(b.gst_pct)}%)` : '—'}</td>
-                      <td>{money(Number(b.amount))}</td>
+                      <td>
+                        {ownerSummary(b)}
+                        <div className="split-lines">{b.ledger}</div>
+                      </td>
+                      <td>
+                        <span className="nowrap">{money(Number(b.amount))}</span>
+                        {b.has_gst && (
+                          <div className="split-lines nowrap">
+                            {money(Number(b.subtotal_amount))} + GST {money(Number(b.gst_amount))} ({Number(b.gst_pct)}%)
+                          </div>
+                        )}
+                      </td>
                       <td>
                         {b.status === 'paid' ? (
                           <span className="badge pass">PAID</span>
@@ -236,7 +243,7 @@ export default function Bills() {
                     </tr>
                     {editingId === b.id && editForm && (
                       <tr>
-                        <td colSpan={10} style={{ background: 'var(--panel-alt, rgba(255,255,255,0.03))' }}>
+                        <td colSpan={7} style={{ background: 'var(--panel-alt, rgba(255,255,255,0.03))' }}>
                           <div style={{ padding: '12px 4px' }}>
                             {b.status === 'paid' && (
                               <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 10px' }}>

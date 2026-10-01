@@ -55,7 +55,7 @@ body {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 232px 1fr;
+  grid-template-columns: 204px 1fr;
   min-height: 100vh;
 }
 
@@ -135,7 +135,7 @@ body {
 
 /* min-width: 0 lets the grid column shrink to the screen; a wide table
    then scrolls inside its panel instead of widening the whole page. */
-main { padding: 30px 36px 60px; max-width: 1240px; min-width: 0; }
+main { padding: 24px 28px 56px; max-width: 1560px; min-width: 0; }
 
 /* ---------- Page header ---------- */
 
@@ -234,9 +234,16 @@ main { padding: 30px 36px 60px; max-width: 1240px; min-width: 0; }
 
 /* ---------- Tables ---------- */
 
-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12.5px; font-feature-settings: 'tnum'; }
+table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; font-feature-settings: 'tnum'; }
 
-th, td { text-align: left; padding: 10px 20px; border-bottom: 1px solid var(--border); }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th:first-child, td:first-child { padding-left: 16px; }
+th:last-child, td:last-child { padding-right: 16px; }
+td[data-num], .nowrap { white-space: nowrap; }
+/* Row buttons: compact, and allowed to stack instead of widening the table. */
+td button.small { padding: 3px 9px; font-size: 10.5px; }
+td:last-child:has(button) { white-space: normal !important; }
+td:last-child:has(button) > span { flex-wrap: wrap; }
 
 th {
   color: var(--text-faint);
@@ -549,6 +556,45 @@ button:disabled { opacity: 0.4; cursor: not-allowed; filter: none; }
   .sidebar nav { display: flex; gap: 2px; }
   .nav-link { white-space: nowrap; padding: 7px 11px; }
   main { padding: 20px 16px 48px; }
-  th, td { padding: 9px 12px; }
   .page-title { font-size: 24px; }
+}
+
+/* Mid-size screens (laptop, tablet, half a monitor): the sidebar becomes a
+   bar across the top so tables get the full width. */
+@media (max-width: 1100px) and (min-width: 761px) {
+  .app-shell { grid-template-columns: 1fr; }
+  .sidebar {
+    position: sticky; top: 0; z-index: 20; height: auto; flex-direction: row; align-items: center;
+    overflow-x: auto; border-right: none; border-bottom: 1px solid var(--border); padding: 10px 16px; gap: 4px;
+    background: var(--bg);
+  }
+  .brand { border-bottom: none; margin-bottom: 0; padding: 0 12px 0 4px; white-space: nowrap; }
+  .brand-sub { display: none; }
+  .sidebar nav { display: flex; gap: 2px; }
+  .nav-link { white-space: nowrap; padding: 7px 11px; }
+  main { padding: 20px 20px 48px; }
+}
+
+/* Phones: every table row becomes a card, one "LABEL  value" line per
+   column, so a whole row is readable without sideways scrolling. Labels
+   come from tableLabels.js. */
+@media (max-width: 700px) {
+  table[data-stack], table[data-stack] > tbody, table[data-stack] > tbody > tr, table[data-stack] > tbody > tr > td { display: block; width: 100%; }
+  table[data-stack] > thead { display: none; }
+  table[data-stack] > tbody > tr { padding: 8px 14px; border-bottom: 1px solid var(--border); }
+  table[data-stack] > tbody > tr:last-child { border-bottom: none; }
+  table[data-stack] > tbody > tr > td {
+    border: none; padding: 3px 0 3px 38%; position: relative; min-height: 20px; text-align: left; white-space: normal;
+  }
+  table[data-stack] > tbody > tr > td[data-num] { white-space: nowrap; }
+  table[data-stack] > tbody > tr > td::before {
+    content: attr(data-label); position: absolute; left: 0; top: 5px; width: 35%;
+    font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  table[data-stack] > tbody > tr > td[data-label=""] { padding-left: 0; }
+  table[data-stack] > tbody > tr > td[data-label=""]::before { display: none; }
+  table[data-stack] > tbody > tr > td:first-child { font-weight: 600; color: var(--text); }
+  table[data-stack] > tbody > tr > td:empty { display: none; }
+  table[data-stack] td:last-child:has(button) { padding-top: 6px; }
 }

@@ -156,18 +156,20 @@ export default function Contracts() {
         ) : (
           <table>
             <thead>
-              <tr><th>Payment expected</th><th>Commodity</th><th>Qty</th><th>Value</th><th>Counterparty</th><th>Source</th><th>Status</th><th></th></tr>
+              <tr><th>Payment expected</th><th>Commodity</th><th>Qty</th><th>Value</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
               {contracts.map((c) => (
                 <Fragment key={c.id}>
                   <tr>
                     <td>{c.expected_payment_date?.slice(0, 10)}</td>
-                    <td>{c.commodity}{c.delivery_date ? <span style={{ fontSize: 11, color: 'var(--text-muted)' }}> · deliv. {c.delivery_date.slice(0, 10)}</span> : null}</td>
+                    <td>{c.commodity}{c.delivery_date ? <span style={{ fontSize: 11, color: 'var(--text-muted)' }}> · deliv. {c.delivery_date.slice(0, 10)}</span> : null}
+                      {(c.counterparty || c.source !== 'manual') && (
+                        <div className="split-lines">{[c.counterparty, c.source !== 'manual' ? `via ${c.source}` : null].filter(Boolean).join(' · ')}</div>
+                      )}
+                    </td>
                     <td>{c.quantity ? `${Number(c.quantity)} ${c.unit || ''}${c.price_per_unit ? ` @ ${money(Number(c.price_per_unit))}` : ''}` : '—'}</td>
                     <td>{money(Number(c.total_value))}</td>
-                    <td>{c.counterparty || '—'}</td>
-                    <td>{c.source === 'manual' ? '—' : c.source}</td>
                     <td>{STATUS_BADGE[c.status] || c.status}</td>
                     <td>
                       {settlingId === c.id ? (
