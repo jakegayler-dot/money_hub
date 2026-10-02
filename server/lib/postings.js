@@ -206,6 +206,31 @@ export async function incomeCategoryFor(client, commodity) {
   return rows[0]?.id || null;
 }
 
+/**
+ * The shared category for a bill's text category ("Utilities", "Fuel:
+ * Diesel"), created if there isn't one — so bills sent in by an agent with
+ * a typed category land on the same list the ledger uses. Same rule as the
+ * migration in schema.sql.
+ */
+export async function expenseCategoryFor(client, text) {
+  const cat = String(text || '').trim();
+  if (!cat) return null;
+  const find = async (name, parent) => (await client.query(
+    `SELECT id FROM expense_categories WHERE kind = 'expense' AND lower(name) = lower($1)
+       AND ($2::int IS NULL OR parent_id = $2) ORDER BY parent_id NULLS FIRST, id LIMIT 1`, [name, parent])).rows[0]?.id || null;
+  const make = async (name, parent) => (await client.query(
+    `INSERT INTO expense_categories (name, class, ledger, kind, parent_id) VALUES ($1, 'variable_seasonal', 'business', 'expense', $2) RETURNING id`,
+    [name, parent])).rows[0].id;
+  const exact = await find(cat, null);
+  if (exact) return exact;
+  const m = cat.match(/^(.*?)\s*(?:›|:| - | — | – )\s*(.*)$/);
+  if (!m || !m[1] || !m[2]) return make(cat, null);
+  const { rows: [top] } = await client.query(
+    `SELECT id FROM expense_categories WHERE kind = 'expense' AND parent_id IS NULL AND lower(name) = lower($1) ORDER BY id LIMIT 1`, [m[1]]);
+  const parent = top?.id || await make(m[1], null);
+  return (await find(m[2], parent)) || make(m[2], parent);
+}
+
 async function categoryIdByName(client, name) {
   if (!name) return null;
   const { rows } = await client.query('SELECT id FROM expense_categories WHERE lower(name) = lower($1) LIMIT 1', [name]);
@@ -233,7 +258,7 @@ export async function payBill(client, billId, {
     tx = await insertTransaction(client, {
       account_id, credit_card_id, ledger: bill.ledger, date, amount: -paid,
       description: `Bill paid: ${bill.name}${paid_by_check ? ' (check)' : ''}`,
-      category_id: await categoryIdByName(client, bill.category), payee: bill.name,
+      category_id: bill.category_id || await categoryIdByName(client, bill.category), payee: bill.name,
       // The bill is the invoice, so its GST is exact; scaled if a different amount was paid.
       gst_amount: bill.has_gst && Number(bill.amount) ? round2(Number(bill.gst_amount) * paid / Number(bill.amount)) : null,
       owner: ownerOf(bill), cleared: !paid_by_check, source, external_id, entered_by,
@@ -254,10 +279,10 @@ async function rollBillForward(client, bill) {
     const nextDue = addMonths(toISODate(bill.due_date), bill.frequency === 'monthly' ? 1 : 3);
     const { rows: next } = await client.query(
       `INSERT INTO bills
-        (name, ledger, category, amount, frequency, due_date, status, notes, has_gst, gst_pct, gst_amount, subtotal_amount, ${SEG_COLS})
-       VALUES ($1,$2,$3,$4,$5,$6,'unpaid',$7,$8,$9,$10,$11,${SEGMENT_COLUMNS.map((_, i) => `$${12 + i}`).join(',')}) RETURNING *`,
+        (name, ledger, category, amount, frequency, due_date, status, notes, has_gst, gst_pct, gst_amount, subtotal_amount, category_id, ${SEG_COLS})
+       VALUES ($1,$2,$3,$4,$5,$6,'unpaid',$7,$8,$9,$10,$11,$12,${SEGMENT_COLUMNS.map((_, i) => `$${13 + i}`).join(',')}) RETURNING *`,
       [bill.name, bill.ledger, bill.category, bill.amount, bill.frequency, nextDue, bill.notes,
-       bill.has_gst, bill.gst_pct, bill.gst_amount, bill.subtotal_amount, ...segmentValues(bill)]
+       bill.has_gst, bill.gst_pct, bill.gst_amount, bill.subtotal_amount, bill.category_id || null, ...segmentValues(bill)]
     );
     nextBill = next[0];
   }
@@ -304,7 +329,7 @@ export async function linkBillToTransaction(client, billId, txId) {
     [tx.date, tx.id, bill.id]
   );
   if (!tx.category_id && !tx.is_split) {
-    const cat = await categoryIdByName(client, bill.category);
+    const cat = bill.category_id || await categoryIdByName(client, bill.category);
     if (cat) await client.query('UPDATE transactions SET category_id = $1 WHERE id = $2', [cat, tx.id]);
   }
   if (!tx.payee_id) await client.query('UPDATE transactions SET payee_id = $1 WHERE id = $2', [await payeeId(client, bill.name), tx.id]);

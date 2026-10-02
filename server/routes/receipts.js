@@ -81,6 +81,26 @@ receiptUpload.post('/', express.raw({ type: () => true, limit: '12mb' }), ah(asy
   const mime = sniff(buf);
   if (mime === 'heic') return res.status(415).json({ error: 'HEIC photo — convert it to JPEG first (the Shortcut’s "Convert Image" step does this).' });
   if (!mime) return res.status(415).json({ error: 'Not a JPEG, PNG, WebP or GIF image.' });
+  // A photo added on the Bills tab belongs to that bill: the bill already
+  // says what it's for, so it isn't read — it's filed as that invoice, and
+  // attaches to the bill's payment once there is one.
+  const billId = Number(req.query.bill_id) || null;
+  if (billId) {
+    const { rows: [bill] } = await pool.query('SELECT * FROM bills WHERE id = $1', [billId]);
+    if (!bill) return res.status(404).json({ error: 'Bill not found.' });
+    const ex = {
+      is_receipt: true, doc_type: 'invoice', party: bill.name,
+      date: toISODate(bill.received_date || bill.due_date), due_date: toISODate(bill.due_date),
+      total: Number(bill.amount), gst: bill.has_gst ? Number(bill.gst_amount) : null,
+      category: bill.category, category_id: bill.category_id, notes: '',
+    };
+    const { rows: [r] } = await pool.query(
+      `INSERT INTO receipts (source, mime, bytes, image, bill_id, extracted, status) VALUES ('app', $1, $2, $3, $4, $5, 'billed') RETURNING id`,
+      [mime, buf.length, buf, billId, ex]
+    );
+    await matchReceipt(r.id).catch((e) => console.error('Invoice attach failed', r.id, e.message));
+    return res.status(201).json({ id: r.id, ok: true, message: 'Invoice photo added to the bill.' });
+  }
   const { rows: [r] } = await pool.query(
     `INSERT INTO receipts (source, mime, bytes, image) VALUES ($1, $2, $3, $4) RETURNING id`,
     [uploadKeyOk(req) ? 'shortcut' : 'app', mime, buf.length, buf]

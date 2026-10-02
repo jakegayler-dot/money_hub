@@ -7,8 +7,9 @@ import {
   linkBillToTransaction, linkLoanPaymentToTransaction, linkContractToTransaction, payeeId, UNCATEGORIZED_INCOME, cleanGst,
 } from '../lib/postings.js';
 import { toISODate } from '../lib/dates.js';
-import { assertOpen } from '../lib/periods.js';
+import { assertOpen, CONFIRMED_SQL, PASSED_SQL } from '../lib/periods.js';
 import { matchPending } from '../lib/receipts.js';
+import { autoLinkBillsSoon } from '../lib/billMatch.js';
 import { cardBalances } from '../lib/cardLedger.js';
 
 const router = Router();
@@ -24,20 +25,31 @@ async function runningBalances(db, { account_id, credit_card_id }) {
     const { rows: [a] } = await db.query('SELECT id, name, opening_balance FROM accounts WHERE id = $1', [account_id]);
     if (!a) return null;
     const { rows } = await db.query(
-      `SELECT id, amount, cleared,
-              SUM(amount) OVER (ORDER BY date DESC, id DESC ROWS UNBOUNDED PRECEDING) - amount AS later
-       FROM transactions WHERE account_id = $1`, [account_id]);
+      `SELECT t.id, t.amount, ${CONFIRMED_SQL('t')} AS confirmed,
+              SUM(t.amount) OVER (ORDER BY t.date DESC, t.id DESC ROWS UNBOUNDED PRECEDING) - t.amount AS later
+       FROM transactions t WHERE t.account_id = $1`, [account_id]);
     const now = Number(a.opening_balance);
-    const outstanding = r2(rows.filter((t) => !t.cleared).reduce((s, t) => s + Number(t.amount), 0));
+    const open = rows.filter((t) => !t.confirmed);
+    const unconfirmed = r2(open.reduce((s, t) => s + Number(t.amount), 0));
     return {
-      summary: { kind: 'account', name: a.name, balance_now: r2(now), outstanding, bank_balance: r2(now - outstanding), outstanding_count: rows.filter((t) => !t.cleared).length },
+      summary: {
+        kind: 'account', name: a.name, balance_now: r2(now),
+        unconfirmed_count: open.length, unconfirmed, confirmed_balance: r2(now - unconfirmed),
+      },
       byId: new Map(rows.map((t) => [t.id, r2(now - Number(t.later))])),
     };
   }
   const { rows: [c] } = await db.query('SELECT * FROM credit_cards WHERE id = $1', [credit_card_id]);
   if (!c) return null;
   const owed = (await cardBalances(db, [c])).get(c.id)?.outstanding ?? 0;
-  const summary = { kind: 'card', name: c.name, balance_now: r2(owed), itemized_from: c.ledger_start_date ? toISODate(c.ledger_start_date) : null };
+  const { rows: [u] } = await db.query(
+    `SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN t.account_id IS NULL THEN -t.amount ELSE t.amount END), 0) AS owed
+     FROM transactions t WHERE t.credit_card_id = $1 AND t.date >= COALESCE($2, '1900-01-01'::date) AND NOT ${CONFIRMED_SQL('t')}`,
+    [c.id, c.ledger_start_date]);
+  const summary = {
+    kind: 'card', name: c.name, balance_now: r2(owed), itemized_from: c.ledger_start_date ? toISODate(c.ledger_start_date) : null,
+    unconfirmed_count: Number(u.n), unconfirmed: r2(u.owed), confirmed_balance: r2(owed - Number(u.owed)),
+  };
   if (!c.ledger_start_date) return { summary, byId: new Map() };
   // Effect on what's owed: a purchase on the card (no account) raises it;
   // a payment from an account (both set, negative) lowers it.
@@ -96,6 +108,7 @@ router.get('/', ah(async (req, res) => {
   if (req.query.id) add('t.id = ?', req.query.id);
   if (q) add('(t.description ILIKE ? OR p.name ILIKE $' + (params.length + 1) + ')', `%${q}%`);
   if (req.query.payee_id) add('t.payee_id = ?', req.query.payee_id);
+  if (req.query.unconfirmed === 'true') conditions.push(`NOT ${CONFIRMED_SQL('t')}`);
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   params.push(Math.min(Number(limit) || 200, 2000));
 
@@ -121,7 +134,9 @@ router.get('/', ah(async (req, res) => {
               (SELECT 'Contract: ' || c.commodity FROM sale_contracts c WHERE c.linked_transaction_id = t.id LIMIT 1)
             ) AS pays,
             EXISTS (SELECT 1 FROM closed_periods cp WHERE cp.month = date_trunc('month', t.date)::date) AS in_closed_month,
-            (SELECT r.id FROM receipts r WHERE r.transaction_id = t.id ORDER BY r.id LIMIT 1) AS receipt_id
+            (SELECT r.id FROM receipts r WHERE r.transaction_id = t.id ORDER BY r.id LIMIT 1) AS receipt_id,
+            ${CONFIRMED_SQL('t')} AS confirmed,
+            ${PASSED_SQL('t')} AS statement_passed
      FROM transactions t
      LEFT JOIN accounts a ON a.id = t.account_id
      LEFT JOIN credit_cards cc ON cc.id = t.credit_card_id
@@ -233,6 +248,7 @@ router.post('/', ah(async (req, res) => {
     return t;
   });
   setImmediate(() => matchPending().catch(() => {}));
+  autoLinkBillsSoon(); // a payment for a bill on file pays that bill
   res.status(201).json(row);
 }));
 

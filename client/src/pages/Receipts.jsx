@@ -16,7 +16,7 @@ const DOC_LABEL = { receipt: 'Receipt', invoice: 'Invoice', sales_ticket: 'Sales
 
 // Phone photos are 3–6 MB. Shrink to 1600 px on the long side as JPEG —
 // ~150–250 KB and still sharp enough to read every line.
-async function compress(file) {
+export async function compress(file) {
   const url = URL.createObjectURL(file);
   try {
     const img = await new Promise((ok, fail) => { const i = new Image(); i.onload = () => ok(i); i.onerror = fail; i.src = url; });

@@ -1028,3 +1028,54 @@ SELECT v.name, 'variable_seasonal', 'business', 'expense', p.id
 FROM (VALUES ('Levies & checkoff'), ('Trucking & freight'), ('Grading, drying & dockage'), ('Commission & yardage')) AS v(name)
 JOIN expense_categories p ON lower(p.name) = 'marketing & sales costs' AND p.parent_id IS NULL
 WHERE NOT EXISTS (SELECT 1 FROM expense_categories c WHERE lower(c.name) = lower(v.name));
+
+-- Bills use the same category list as the ledger (category_id). The text
+-- `category` is kept as that category's name for older readers. Old
+-- free-text bill categories are moved onto the list: an existing category
+-- of the same name is used; "Fuel: Diesel" / "Fuel › Diesel" / "Land
+-- Rent - Greenfeed" become a subcategory under its parent; anything else
+-- becomes a category of its own. Same rule as expenseCategoryFor() in
+-- lib/postings.js, which handles bills that arrive later with text.
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS category_id INTEGER REFERENCES expense_categories(id) ON DELETE SET NULL;
+DO $$
+DECLARE
+  r RECORD; pname TEXT; cname TEXT; pid INTEGER; cid INTEGER;
+  sep CONSTANT TEXT := '\s*(›|:| - | — | – )\s*';
+BEGIN
+  FOR r IN SELECT DISTINCT trim(category) AS cat FROM bills
+           WHERE category_id IS NULL AND COALESCE(trim(category), '') <> '' LOOP
+    cid := NULL; pid := NULL;
+    SELECT id INTO cid FROM expense_categories
+      WHERE kind = 'expense' AND lower(name) = lower(r.cat) ORDER BY parent_id NULLS FIRST, id LIMIT 1;
+    IF cid IS NULL AND r.cat ~ sep THEN
+      pname := trim(substring(r.cat FROM '^(.*?)' || sep));
+      cname := trim(regexp_replace(r.cat, '^.*?' || sep, ''));
+      SELECT id INTO pid FROM expense_categories
+        WHERE kind = 'expense' AND parent_id IS NULL AND lower(name) = lower(pname) ORDER BY id LIMIT 1;
+      IF pid IS NULL THEN
+        INSERT INTO expense_categories (name, class, ledger, kind) VALUES (pname, 'variable_seasonal', 'business', 'expense')
+        RETURNING id INTO pid;
+      END IF;
+      SELECT id INTO cid FROM expense_categories
+        WHERE kind = 'expense' AND parent_id = pid AND lower(name) = lower(cname) LIMIT 1;
+      IF cid IS NULL THEN
+        INSERT INTO expense_categories (name, class, ledger, kind, parent_id) VALUES (cname, 'variable_seasonal', 'business', 'expense', pid)
+        RETURNING id INTO cid;
+      END IF;
+    ELSIF cid IS NULL THEN
+      INSERT INTO expense_categories (name, class, ledger, kind) VALUES (r.cat, 'variable_seasonal', 'business', 'expense')
+      RETURNING id INTO cid;
+    END IF;
+    UPDATE bills SET category_id = cid, category = (SELECT name FROM expense_categories WHERE id = cid)
+      WHERE category_id IS NULL AND trim(category) = r.cat;
+  END LOOP;
+END $$;
+
+-- "That payment wasn't this bill": undoing an automatic or confirmed link
+-- remembers the pair so the matcher never offers it again.
+CREATE TABLE IF NOT EXISTS bill_link_rejections (
+  bill_id        INTEGER NOT NULL REFERENCES bills(id) ON DELETE CASCADE,
+  transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (bill_id, transaction_id)
+);

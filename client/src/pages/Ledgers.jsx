@@ -27,6 +27,17 @@ function sortRows(rows, { key, dir }) {
   });
 }
 
+// Confirmed = a bank or card statement line has claimed it. Until then it's
+// Money Hub's record only: typed in, a bill marked paid, a contract settled.
+function ConfirmBadge({ t }) {
+  if (t.confirmed) return <span className="badge pass" title="On a bank or card statement">CONFIRMED</span>;
+  if (t.statement_passed) {
+    return <span className="badge fail" title="A later statement for this account came in without it. Check it was really paid, and its amount and date.">NOT ON STATEMENT</span>;
+  }
+  if (t.account_id && !t.cleared) return <span className="badge warn" title="Cheque written, not through the bank yet">OUTSTANDING CHEQUE</span>;
+  return <span className="badge warn" title="Entered in Money Hub — confirms when the statement with it comes in">UNCONFIRMED</span>;
+}
+
 const emptyForm = {
   source: 'account', account_id: '', credit_card_id: '', ledger: '', date: '', amount: '', description: '',
   category_id: '', is_mixed_use: false, mixed_use_business_pct: '', is_capex: false, is_transfer: false,
@@ -49,6 +60,7 @@ export default function Ledgers() {
   const [filter, setFilter] = useState('all');
   const [outstandingOnly, setOutstandingOnly] = useState(false);
   const [reviewOnly, setReviewOnly] = useState(false);
+  const [unconfirmedOnly, setUnconfirmedOnly] = useState(() => !!new URLSearchParams(window.location.search).get('unconfirmed'));
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState(() => {
     try { return JSON.parse(window.localStorage.getItem('moneyhub.ledgerSort')) || { key: 'date', dir: 'desc' }; } catch { return { key: 'date', dir: 'desc' }; }
@@ -75,6 +87,7 @@ export default function Ledgers() {
     const params = new URLSearchParams();
     if (filter !== 'all') params.set('ledger', filter);
     if (reviewOnly) params.set('needs_review', 'true');
+    if (unconfirmedOnly) params.set('unconfirmed', 'true');
     if (search.trim()) params.set('q', search.trim());
     if (payeeFilter) params.set('payee_id', payeeFilter);
     const [kind, whereId] = where.split(':');
@@ -87,7 +100,7 @@ export default function Ledgers() {
     else setBalance(null);
   };
 
-  useEffect(load, [filter, reviewOnly, payeeFilter, where]);
+  useEffect(load, [filter, reviewOnly, unconfirmedOnly, payeeFilter, where]);
   useEffect(() => { try { window.localStorage.setItem('moneyhub.ledgerWhere', where); } catch { /* private mode */ } }, [where]);
   // /ledgers?edit=ID (from the Review tab) opens that transaction for editing.
   useEffect(() => {
@@ -494,6 +507,10 @@ export default function Ledgers() {
               Needs review only
             </label>
             <label style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <input type="checkbox" checked={unconfirmedOnly} onChange={(e) => setUnconfirmedOnly(e.target.checked)} />
+              Unconfirmed only
+            </label>
+            <label style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <input type="checkbox" checked={outstandingOnly} onChange={(e) => setOutstandingOnly(e.target.checked)} />
               Outstanding checks only
             </label>
@@ -504,16 +521,19 @@ export default function Ledgers() {
             {balance.kind === 'account' ? (
               <>
                 <span><b>{cents(balance.balance_now)}</b> balance in Money Hub</span>
-                {balance.outstanding_count > 0 ? (
+                {balance.unconfirmed_count > 0 ? (
                   <span>
-                    <b>{cents(balance.bank_balance)}</b> the bank should show — {balance.outstanding_count} outstanding
-                    {' '}({cents(balance.outstanding)}) not through yet
+                    <b>{cents(balance.confirmed_balance)}</b> confirmed by statements — {balance.unconfirmed_count} unconfirmed
+                    {' '}({cents(balance.unconfirmed)}) not on a statement yet
                   </span>
-                ) : <span>Nothing outstanding — the bank should show the same.</span>}
+                ) : <span>Every entry is confirmed by a statement.</span>}
               </>
             ) : (
               <>
                 <span><b>{cents(balance.balance_now)}</b> owed on {balance.name}</span>
+                {balance.unconfirmed_count > 0 && (
+                  <span><b>{cents(balance.confirmed_balance)}</b> confirmed by statements — {balance.unconfirmed_count} unconfirmed ({cents(balance.unconfirmed)})</span>
+                )}
                 <span>{balance.itemized_from ? `Running balance counted from ${balance.itemized_from}.` : 'Not itemized — set a starting balance on Credit Cards to see a running balance.'}</span>
               </>
             )}
@@ -569,11 +589,7 @@ export default function Ledgers() {
                     <span className="nowrap">{cents(Number(t.amount))}</span>
                     {t.gst_amount != null && Number(t.gst_amount) > 0 && <div className="split-lines nowrap">incl. GST {cents(Number(t.gst_amount))}</div>}
                     <div style={{ marginTop: 4 }}>
-                      {!t.account_id ? <span className="tag" style={{ marginLeft: 0 }}>On card</span> : t.cleared ? (
-                        <span className="badge pass">CLEARED</span>
-                      ) : (
-                        <span className="badge warn">OUTSTANDING</span>
-                      )}
+                      <ConfirmBadge t={t} />
                     </div>
                   </td>
                   {balance && (

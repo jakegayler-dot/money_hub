@@ -4,6 +4,7 @@ import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { requireIngestKey } from '../lib/ingestAuth.js';
 import { matchPending } from '../lib/receipts.js';
+import { autoLinkBillsSoon } from '../lib/billMatch.js';
 import { OWNERS } from '../lib/segments.js';
 import { toISODate, todayISO, addDays } from '../lib/dates.js';
 import { processLine, reconcileImport, KINDS } from '../lib/statementIngest.js';
@@ -286,6 +287,7 @@ router.post('/ingest', requireIngestKey, ah(async (req, res) => {
   const { rows: [freshImp] } = await pool.query('SELECT * FROM statement_imports WHERE id = $1', [imp.id]);
   // New transactions may be what waiting receipts belong to.
   setImmediate(() => matchPending().catch(() => {}));
+  autoLinkBillsSoon(); // a payment for a bill on file pays that bill
   res.json({
     import_id: imp.id,
     target: { type: target.type, id: target.row.id, name: target.row.name },

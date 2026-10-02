@@ -2,7 +2,9 @@ import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { validateSegment, segmentValues, SEGMENT_COLUMNS } from '../lib/segments.js';
-import { payBill, removeTransaction } from '../lib/postings.js';
+import { payBill, removeTransaction, linkBillToTransaction, expenseCategoryFor } from '../lib/postings.js';
+import { autoLinkBills, autoLinkBillsSoon, billCandidates } from '../lib/billMatch.js';
+import { CONFIRMED_SQL } from '../lib/periods.js';
 import { todayISO, toISODate, addMonths } from '../lib/dates.js';
 import { matchPending } from '../lib/receipts.js';
 
@@ -24,21 +26,66 @@ function splitGst(amount, hasGst, pct) {
   return { gst_amount: gst, subtotal_amount: Math.round((total - gst) * 100) / 100 };
 }
 
-// Default view: unpaid bills first (soonest due first), then paid history.
+// A bill's category is one from the shared category list; `category`
+// (text) is kept as that category's name for anything still reading it.
+async function categoryName(id) {
+  if (!id) return null;
+  const { rows } = await pool.query('SELECT name FROM expense_categories WHERE id = $1', [id]);
+  return rows[0]?.name ?? null;
+}
+
+// Each bill with its category, the ledger entry that paid it (and whether a
+// statement has confirmed that entry), its invoice photo, and — for unpaid
+// bills — payments already in the ledger that look like they paid it.
+// Unambiguous payments are linked first, so the list is current.
 router.get('/', ah(async (req, res) => {
-  const { status } = req.query;
-  const where = status ? 'WHERE status = $1' : '';
+  try { await autoLinkBills(); } catch (e) { console.error('Bill auto-link failed:', e.message); }
+  const status = ['paid', 'unpaid'].includes(req.query.status) ? req.query.status : null;
+  const where = status ? 'WHERE b.status = $1' : '';
   const params = status ? [status] : [];
   const { rows } = await pool.query(
-    `SELECT * FROM bills ${where} ORDER BY (status = 'unpaid') DESC, due_date ASC`,
+    `SELECT b.*,
+            CASE WHEN pc.id IS NULL THEN ec.name ELSE pc.name || ' › ' || ec.name END AS category_full,
+            t.date AS paid_tx_date, t.amount AS paid_tx_amount, t.description AS paid_tx_description,
+            a.name AS paid_account, cc.name AS paid_card,
+            CASE WHEN t.id IS NULL THEN NULL ELSE ${CONFIRMED_SQL('t')} END AS paid_confirmed,
+            (SELECT r.id FROM receipts r
+             WHERE r.bill_id = b.id OR (b.linked_transaction_id IS NOT NULL AND r.transaction_id = b.linked_transaction_id)
+             ORDER BY (r.bill_id = b.id) DESC, r.id LIMIT 1) AS invoice_receipt_id
+     FROM bills b
+     LEFT JOIN expense_categories ec ON ec.id = b.category_id
+     LEFT JOIN expense_categories pc ON pc.id = ec.parent_id
+     LEFT JOIN transactions t ON t.id = b.linked_transaction_id
+     LEFT JOIN accounts a ON a.id = t.account_id
+     LEFT JOIN credit_cards cc ON cc.id = t.credit_card_id
+     ${where}
+     ORDER BY (b.status = 'unpaid') DESC, b.due_date ASC`,
     params
   );
-  res.json(rows);
+  const out = [];
+  for (const b of rows) {
+    out.push({
+      ...b,
+      paid_tx_date: b.paid_tx_date ? toISODate(b.paid_tx_date) : null,
+      paid_tx_amount: b.paid_tx_amount == null ? null : Number(b.paid_tx_amount),
+      suggestions: b.status === 'unpaid' ? await billCandidates(pool, b, 4) : [],
+    });
+  }
+  res.json(out);
+}));
+
+// "This payment paid this bill" — a ledger entry already there.
+router.post('/:id/link', ah(async (req, res) => {
+  const txId = Number(req.body?.transaction_id);
+  if (!txId) return res.status(400).json({ error: 'transaction_id is required.' });
+  const r = await withTransaction((client) => linkBillToTransaction(client, Number(req.params.id), txId));
+  setImmediate(() => matchPending().catch(() => {}));
+  res.json({ ok: true, nextBill: r.nextBill });
 }));
 
 router.post('/', ah(async (req, res) => {
   const {
-    name, ledger = 'business', category = null, amount, frequency = 'one_time',
+    name, ledger = 'business', category_id = null, amount, frequency = 'one_time',
     received_date = null, due_date, notes = null,
     has_gst = false, gst_pct = 5,
   } = req.body;
@@ -49,15 +96,19 @@ router.post('/', ah(async (req, res) => {
   // Empty strings from an optional form field are not valid DATE input —
   // coerce them (and empty text) to NULL rather than letting the insert fail.
   const { gst_amount, subtotal_amount } = splitGst(amount, has_gst, gst_pct);
+  // An agent may send a typed category instead of an id — put it on the shared list.
+  const catId = category_id || (req.body.category ? await expenseCategoryFor(pool, req.body.category) : null);
+  const category = await categoryName(catId);
   const { rows } = await pool.query(
     `INSERT INTO bills
       (name, ledger, category, amount, frequency, received_date, due_date, notes, has_gst, gst_pct, gst_amount, subtotal_amount,
-       ${SEG_COLS})
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,${segPlaceholders(13)}) RETURNING *`,
-    [name, ledger, category || null, amount, frequency, received_date || null, due_date, notes || null,
+       ${SEG_COLS}, category_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,${segPlaceholders(13)},$${13 + SEGMENT_COLUMNS.length}) RETURNING *`,
+    [name, ledger, category, amount, frequency, received_date || null, due_date, notes || null,
      !!has_gst, gst_pct, gst_amount, subtotal_amount,
-     ...segmentValues(req.body)]
+     ...segmentValues(req.body), catId]
   );
+  autoLinkBillsSoon(); // already paid? find the payment
   res.status(201).json(rows[0]);
 }));
 
@@ -81,6 +132,7 @@ router.post('/:id/pay', ah(async (req, res) => {
   const r = await withTransaction((client) => payBill(client, req.params.id, { account_id, date: paid_date, paid_by_check }));
   if (!r) return res.status(404).json({ error: 'not found' });
   setImmediate(() => matchPending().catch(() => {})); // a photographed invoice attaches to this payment
+  autoLinkBillsSoon(); // a recurring bill's next cycle may already be paid
   res.json({ paid: r.bill.id, nextBill: r.nextBill });
 }));
 
@@ -113,6 +165,10 @@ router.post('/:id/unpay', ah(async (req, res) => {
     // A bill matched to a transaction that was already in the ledger just
     // lets go of it; a payment made from the Bills tab is deleted.
     if (bill.linked_transaction_id && !bill.linked_existing) await removeTransaction(client, bill.linked_transaction_id);
+    if (bill.linked_transaction_id && bill.linked_existing) {
+      await client.query('INSERT INTO bill_link_rejections (bill_id, transaction_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [bill.id, bill.linked_transaction_id]);
+    }
     await client.query('UPDATE bills SET linked_existing = false WHERE id = $1', [bill.id]);
     // Paying a recurring bill created next cycle's bill. Reopening this one
     // makes that copy a duplicate (the forecast would count the cycle
@@ -134,7 +190,10 @@ router.post('/:id/unpay', ah(async (req, res) => {
 }));
 
 router.patch('/:id', ah(async (req, res) => {
-  const { name, amount, due_date, category, notes, has_gst, gst_pct } = req.body;
+  const { name, amount, due_date, notes, has_gst, gst_pct } = req.body;
+  if (req.body.category_id === undefined && req.body.category) req.body.category_id = await expenseCategoryFor(pool, req.body.category);
+  const setsCategory = req.body.category_id !== undefined;
+  const category = setsCategory ? await categoryName(req.body.category_id) : undefined;
 
   const { rows: currentRows } = await pool.query('SELECT * FROM bills WHERE id = $1', [req.params.id]);
   if (!currentRows.length) return res.status(404).json({ error: 'not found' });
@@ -173,7 +232,8 @@ router.patch('/:id', ah(async (req, res) => {
          name = COALESCE($1, name),
          amount = COALESCE($2, amount),
          due_date = COALESCE($3, due_date),
-         category = COALESCE($4, category),
+         category = CASE WHEN $${11 + SEGMENT_COLUMNS.length} THEN $4 ELSE category END,
+         category_id = CASE WHEN $${11 + SEGMENT_COLUMNS.length} THEN $${12 + SEGMENT_COLUMNS.length}::int ELSE category_id END,
          notes = COALESCE($5, notes),
          has_gst = $6,
          gst_pct = $7,
@@ -182,9 +242,14 @@ router.patch('/:id', ah(async (req, res) => {
          ${segSet(10)}
        WHERE id = $${10 + SEGMENT_COLUMNS.length} RETURNING *`,
       [name, amount, due_date, category, notes, effectiveHasGst, effectiveGstPct, gst_amount, subtotal_amount,
-       ...segVals, req.params.id]
+       ...segVals, req.params.id, setsCategory, req.body.category_id || null]
     );
     const updated = rows[0];
+    // The payment carries the bill's category when it had none of its own.
+    if (setsCategory && updated.linked_transaction_id && req.body.category_id) {
+      await client.query('UPDATE transactions SET category_id = $1 WHERE id = $2 AND category_id IS NULL AND NOT is_split',
+        [req.body.category_id, updated.linked_transaction_id]);
+    }
 
     if (touchesSegment && updated.linked_transaction_id) {
       await client.query(
@@ -195,6 +260,7 @@ router.patch('/:id', ah(async (req, res) => {
     return updated;
   });
 
+  if (bill.status === 'unpaid') autoLinkBillsSoon();
   res.json(bill);
 }));
 

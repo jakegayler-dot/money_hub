@@ -240,14 +240,14 @@ async function billFromInvoice(id, ex, client) {
     const name = `${ex.party || 'Invoice'}${ex.invoice_number ? ` #${ex.invoice_number}` : ''}`;
     const category = ex.category ? String(ex.category).split('›').pop().trim() : null;
     const { rows: [b] } = await client.query(
-      `INSERT INTO bills (name, ledger, category, amount, frequency, received_date, due_date, notes,
+      `INSERT INTO bills (name, ledger, category, category_id, amount, frequency, received_date, due_date, notes,
                           has_gst, gst_pct, gst_amount, subtotal_amount, ${SEGMENT_COLUMNS.join(', ')})
-       VALUES ($1, $2, $3, $4, 'one_time', $5, $6, $7, $8, $9, $10, $11, ${SEGMENT_COLUMNS.map((_, i) => `$${12 + i}`).join(', ')})
+       VALUES ($1, $2, $3, $12, $4, 'one_time', $5, $6, $7, $8, $9, $10, $11, ${SEGMENT_COLUMNS.map((_, i) => `$${13 + i}`).join(', ')})
        RETURNING id`,
       [name, ['jake', 'ashley'].includes(ex.owner) ? 'personal' : 'business', category, total, ex.date, due,
        'Created from a photographed invoice (Receipts).',
        gst > 0, gst > 0 && total - gst > 0 ? r2((gst / (total - gst)) * 100) : 5, gst, r2(total - gst),
-       ...SEGMENT_COLUMNS.map((c) => owner[c])]
+       ex.category_id || null, ...SEGMENT_COLUMNS.map((c) => owner[c])]
     );
     billId = b.id;
   }

@@ -1,9 +1,41 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { money } from '../format.js';
-import { OwnerFields, ownerPayload, ownerFieldsFrom, ownerSummary, emptyOwnerFields } from '../owners.jsx';
+import { OwnerFields, ownerPayload, ownerFieldsFrom, ownerSummary, emptyOwnerFields, OWNER_LABELS, OWNER_KEYS } from '../owners.jsx';
+import CategorySelect from '../components/CategorySelect.jsx';
+import { cents } from '../components/SplitEditor.jsx';
+import { compress } from './Receipts.jsx';
+
+// Sorting, remembered per browser. Ties fall back to soonest due.
+const COLUMNS = [['due', 'Due'], ['name', 'Name'], ['category', 'Category'], ['owner', 'Owner'], ['amount', 'Total'], ['status', 'Status']];
+const today = () => new Date().toISOString().slice(0, 10);
+const statusRank = (b) => (b.status === 'paid' ? 2 : b.due_date?.slice(0, 10) < today() ? 0 : 1);
+const sortValue = {
+  due: (b) => b.due_date?.slice(0, 10) || '',
+  name: (b) => (b.name || '').toLowerCase(),
+  category: (b) => (b.category_full || b.category || '~').toLowerCase(),
+  owner: (b) => ownerSummary(b).toLowerCase(),
+  amount: (b) => Number(b.amount),
+  status: statusRank,
+};
+function sortBills(rows, { key, dir }) {
+  const get = sortValue[key] || sortValue.due;
+  const sign = dir === 'asc' ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const x = get(a);
+    const y = get(b);
+    const c = typeof x === 'number' ? x - y : String(x).localeCompare(String(y));
+    return c * sign || String(a.due_date).localeCompare(String(b.due_date)) || a.id - b.id;
+  });
+}
+// Owner filter: a split bill shows under every owner it's split to.
+const belongsTo = (b, owner) => {
+  if (!owner) return true;
+  if (b.is_segment_split) return owner !== 'none' && Number(b[`segment_${owner}_pct`]) > 0;
+  return owner === 'none' ? !b.segment : b.segment === owner;
+};
 
 const emptyForm = {
-  name: '', ledger: 'business', category: '', amount: '', frequency: 'one_time',
+  name: '', ledger: 'business', category_id: '', amount: '', frequency: 'one_time',
   received_date: '', due_date: '', notes: '',
   has_gst: false, gst_pct: '5',
   ...emptyOwnerFields,
@@ -20,6 +52,16 @@ export default function Bills() {
   const [payByCheck, setPayByCheck] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(null);
+  const [categories, setCategories] = useState([]);
+  const [search, setSearch] = useState('');
+  const [catFilter, setCatFilter] = useState('');
+  const [ownerFilter, setOwnerFilter] = useState('');
+  const [sort, setSort] = useState(() => {
+    try { return JSON.parse(window.localStorage.getItem('moneyhub.billSort')) || { key: 'due', dir: 'asc' }; } catch { return { key: 'due', dir: 'asc' }; }
+  });
+  useEffect(() => { try { window.localStorage.setItem('moneyhub.billSort', JSON.stringify(sort)); } catch { /* private mode */ } }, [sort]);
+  const [photoFor, setPhotoFor] = useState(null);
+  const photoRef = useRef(null);
 
   const load = () => {
     const q = filter === 'all' ? '' : `?status=${filter}`;
@@ -34,7 +76,39 @@ export default function Bills() {
   useEffect(load, [filter]);
   useEffect(() => {
     fetch('/api/accounts').then((r) => r.json()).then(setAccounts);
+    const loadCats = () => fetch('/api/expenses').then((r) => r.json()).then((c) => setCategories(Array.isArray(c) ? c : []));
+    loadCats();
+    window.addEventListener('categories-changed', loadCats);
+    return () => window.removeEventListener('categories-changed', loadCats);
   }, []);
+
+  const post = async (url, body, what) => {
+    setError(null);
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      setError(b?.error || `Could not ${what} (HTTP ${res.status}).`);
+      return false;
+    }
+    load();
+    return true;
+  };
+
+  const addPhoto = async (file) => {
+    const id = photoFor;
+    setPhotoFor(null);
+    if (!file || !id) return;
+    setError(null);
+    try {
+      const blob = await compress(file);
+      const res = await fetch(`/api/receipts/upload?bill_id=${id}`, { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob });
+      if (!res.ok) { const b = await res.json().catch(() => ({})); setError(b.error || `Upload failed (HTTP ${res.status}).`); }
+    } catch {
+      setError(`Couldn't open ${file.name} as an image.`);
+    }
+    if (photoRef.current) photoRef.current.value = '';
+    load();
+  };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -45,7 +119,7 @@ export default function Bills() {
       body: JSON.stringify({
         ...form,
         amount: Number(form.amount),
-        category: form.category || null,
+        category_id: form.category_id ? Number(form.category_id) : null,
         received_date: form.received_date || null,
         notes: form.notes || null,
         gst_pct: form.has_gst ? Number(form.gst_pct) : 5,
@@ -92,7 +166,7 @@ export default function Bills() {
   const startEdit = (b) => {
     setEditingId(b.id);
     setEditForm({
-      name: b.name, category: b.category || '', amount: b.amount, due_date: b.due_date?.slice(0, 10),
+      name: b.name, category_id: b.category_id || '', amount: b.amount, due_date: b.due_date?.slice(0, 10),
       notes: b.notes || '', has_gst: b.has_gst, gst_pct: b.gst_pct,
       ...ownerFieldsFrom(b),
     });
@@ -108,6 +182,7 @@ export default function Bills() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...editForm,
+        category_id: editForm.category_id ? Number(editForm.category_id) : null,
         amount: Number(editForm.amount),
         gst_pct: Number(editForm.gst_pct),
         ...ownerPayload(editForm),
@@ -132,6 +207,16 @@ export default function Bills() {
     }
     load();
   };
+
+  const usedCats = [...new Map(bills.filter((b) => b.category_id).map((b) => [b.category_id, b.category_full || b.category])).entries()]
+    .sort((a, b) => String(a[1]).localeCompare(String(b[1])));
+  const q = search.trim().toLowerCase();
+  const shown = sortBills(bills.filter((b) => {
+    if (q && !`${b.name} ${b.category_full || b.category || ''} ${b.notes || ''} ${b.paid_tx_description || ''}`.toLowerCase().includes(q)) return false;
+    if (catFilter === 'none' ? b.category_id : catFilter && String(b.category_id) !== catFilter) return false;
+    return belongsTo(b, ownerFilter);
+  }), sort);
+  const filtering = q || catFilter || ownerFilter;
 
   const totalUnpaid = bills
     .filter((b) => b.status === 'unpaid')
@@ -158,36 +243,77 @@ export default function Bills() {
       )}
 
       <div className="panel">
-        <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span>Invoices received, sorted by due date</span>
-          <select value={filter} onChange={(e) => setFilter(e.target.value)}>
-            <option value="unpaid">Unpaid</option>
-            <option value="paid">Paid</option>
-            <option value="all">All</option>
-          </select>
+        <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+          <span>Invoices received{filtering ? ` — ${shown.length} of ${bills.length}` : ''}</span>
+          <span style={{ display: 'inline-flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', textTransform: 'none', letterSpacing: 0 }}>
+            <input aria-label="Search bills" placeholder="Search name, category, notes" value={search}
+              onChange={(e) => setSearch(e.target.value)} style={{ width: 200 }} />
+            <select aria-label="Category" value={catFilter} onChange={(e) => setCatFilter(e.target.value)}>
+              <option value="">All categories</option>
+              {usedCats.map(([id, name]) => <option key={id} value={String(id)}>{name}</option>)}
+              <option value="none">No category</option>
+            </select>
+            <select aria-label="Owner" value={ownerFilter} onChange={(e) => setOwnerFilter(e.target.value)}>
+              <option value="">All owners</option>
+              {OWNER_KEYS.map((k) => <option key={k} value={k}>{OWNER_LABELS[k]}</option>)}
+              <option value="none">Unassigned</option>
+            </select>
+            <select aria-label="Status" value={filter} onChange={(e) => setFilter(e.target.value)}>
+              <option value="unpaid">Unpaid</option>
+              <option value="paid">Paid</option>
+              <option value="all">All</option>
+            </select>
+          </span>
         </div>
-        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0 12px' }}>
-          Marking a bill paid asks which account it came out of, and moves that account's balance —
-          it isn't just a status label. Check "By check" if it might sit uncashed for a while;
-          it still leaves the balance right away, but the Ledgers tab will flag it as
-          not-yet-cleared until you reconcile it against your bank statement.
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 16px 12px' }}>
+          A bill is marked paid on its own when the payment for exactly its total shows up in the ledger — from a statement or
+          entered by hand. If more than one payment fits, it's listed under the bill to confirm. "Mark paid" is for paying it
+          yourself now; that entry stays unconfirmed until the bank statement shows it.
         </p>
-        {bills.length === 0 ? (
-          <div className="empty-state">Nothing to show.</div>
+        <input ref={photoRef} type="file" accept="image/*" hidden onChange={(e) => addPhoto(e.target.files?.[0])} />
+        {shown.length === 0 ? (
+          <div className="empty-state">{bills.length ? 'No bills match.' : 'Nothing to show.'}</div>
         ) : (
           <table>
             <thead>
-              <tr><th>Due</th><th>Name</th><th>Category</th><th>Owner</th><th>Total</th><th>Status</th><th></th></tr>
+              <tr>
+                {COLUMNS.map(([key, label]) => (
+                  <th key={key} className="sortable" aria-sort={sort.key === key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                    <button type="button" onClick={() => setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'amount' ? 'desc' : 'asc' }))}>
+                      {label}<span className="sort-mark" aria-hidden="true">{sort.key === key ? (sort.dir === 'asc' ? '▲' : '▼') : ''}</span>
+                    </button>
+                  </th>
+                ))}
+                <th></th>
+              </tr>
             </thead>
             <tbody>
-              {bills.map((b) => {
-                const overdue = b.status === 'unpaid' && new Date(b.due_date) < new Date();
+              {shown.map((b) => {
+                const overdue = b.status === 'unpaid' && b.due_date?.slice(0, 10) < today();
                 return (
                   <Fragment key={b.id}>
                     <tr>
                       <td>{b.due_date?.slice(0, 10)}</td>
-                      <td>{b.name}</td>
-                      <td>{b.category || '—'}</td>
+                      <td>
+                        {b.name}
+                        {b.frequency !== 'one_time' && <span className="tag">{b.frequency === 'monthly' ? 'Monthly' : 'Quarterly'}</span>}
+                        <div>
+                          {b.invoice_receipt_id ? (
+                            <a className="tag" style={{ marginLeft: 0 }} href={`/api/receipts/${b.invoice_receipt_id}/image`} target="_blank" rel="noreferrer">Invoice</a>
+                          ) : (
+                            <button type="button" className="small-link" onClick={() => { setPhotoFor(b.id); photoRef.current?.click(); }}>Add invoice photo</button>
+                          )}
+                        </div>
+                        {b.notes && <div className="split-lines">{b.notes}</div>}
+                      </td>
+                      <td>
+                        {b.category_id ? (b.category_full || b.category) : b.category ? (
+                          <>
+                            <span style={{ color: 'var(--text-muted)' }}>{b.category}</span>
+                            <div className="split-lines" style={{ color: 'var(--gold-bright)' }}>Not in your categories — Edit to pick one</div>
+                          </>
+                        ) : '—'}
+                      </td>
                       <td>
                         {ownerSummary(b)}
                         <div className="split-lines">{b.ledger}</div>
@@ -202,11 +328,35 @@ export default function Bills() {
                       </td>
                       <td>
                         {b.status === 'paid' ? (
-                          <span className="badge pass">PAID</span>
-                        ) : overdue ? (
-                          <span className="badge fail">OVERDUE</span>
+                          <>
+                            <span className="badge pass">PAID</span>
+                            {b.linked_transaction_id ? (
+                              <div className="split-lines">
+                                {b.paid_tx_date} · {b.paid_account || (b.paid_card ? `${b.paid_card} (card)` : '')} · {cents(b.paid_tx_amount)}
+                                <div>
+                                  {b.paid_confirmed ? 'On statement' : 'Not on a statement yet'} ·{' '}
+                                  <a className="small-link" href={`/ledgers?edit=${b.linked_transaction_id}`}>Open entry</a>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="split-lines">Marked paid {b.paid_date?.slice(0, 10)} — no ledger entry</div>
+                            )}
+                          </>
                         ) : (
-                          <span className="badge warn">UNPAID</span>
+                          <>
+                            {overdue ? <span className="badge fail">OVERDUE</span> : <span className="badge warn">UNPAID</span>}
+                            {(b.suggestions || []).length > 0 && (
+                              <div className="bill-suggest">
+                                <div className="split-lines">Paid by one of these?</div>
+                                {b.suggestions.map((t) => (
+                                  <div key={t.id} className="split-lines">
+                                    <button type="button" className="small" onClick={() => post(`/api/bills/${b.id}/link`, { transaction_id: t.id }, 'link it')}>This one</button>{' '}
+                                    {t.date} · {t.account} · {t.description}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </>
                         )}
                       </td>
                       <td>
@@ -234,7 +384,7 @@ export default function Bills() {
                               {editingId === b.id ? 'Close' : 'Edit'}
                             </button>
                             {b.status === 'paid' && (
-                              <button className="small secondary" onClick={() => undoPayment(b.id)}>Undo payment</button>
+                              <button className="small secondary" onClick={() => undoPayment(b.id)} title={b.linked_existing ? 'This bill wasn\'t paid by that entry — unlink it (the entry stays)' : 'Reverse the payment made from this tab'}>{b.linked_existing ? 'Not this payment' : 'Undo payment'}</button>
                             )}
                             <button className="small secondary" onClick={() => remove(b.id)}>Delete</button>
                           </span>
@@ -259,7 +409,8 @@ export default function Bills() {
                               </div>
                               <div className="field">
                                 <label>Category</label>
-                                <input value={editForm.category} onChange={(e) => setEditForm({ ...editForm, category: e.target.value })} />
+                                <CategorySelect categories={categories} value={editForm.category_id}
+                                  onChange={(v) => setEditForm({ ...editForm, category_id: v })} />
                               </div>
                               <div className="field">
                                 <label>Amount</label>
@@ -320,7 +471,7 @@ export default function Bills() {
           </div>
           <div className="field">
             <label>Category</label>
-            <input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="e.g. Inputs, Utilities" />
+            <CategorySelect categories={categories} value={form.category_id} onChange={(v) => setForm({ ...form, category_id: v })} />
           </div>
           <OwnerFields state={form} setState={setForm} />
           <div className="field">

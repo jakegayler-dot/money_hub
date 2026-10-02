@@ -673,3 +673,7 @@ th.sortable button:focus-visible { outline: 1px solid var(--gold); outline-offse
 /* Ledger: balance of the one account or card being shown */
 .balance-strip { display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 8px 16px; font-size: 13px; border-bottom: 1px solid var(--border); color: var(--text-muted); }
 .balance-strip b { color: var(--text); font-size: 15px; }
+
+/* Bills: payments that look like they paid an unpaid bill */
+.bill-suggest { margin-top: 6px; display: grid; gap: 4px; max-width: 320px; }
+button.small-link { background: none; border: 0; padding: 0; cursor: pointer; font-family: inherit; font-size: 11px; font-weight: 400; }

@@ -43,3 +43,23 @@ export async function assertNoClosedFrom(db, fromDate, what) {
     throw new ClosedPeriodError(`${monthLabel(rows[0].month)} is closed, and changing ${what} would change its balances. Reopen it on the Books tab first.`);
   }
 }
+
+// A transaction is CONFIRMED once a bank or card statement line has claimed
+// it (posted it, or matched it to what was entered by hand). Anything else
+// — typed in, a bill marked paid, a contract settled, a loan payment
+// recorded — is the user's word until the statement shows it.
+export const CONFIRMED_SQL = (t = 't') =>
+  `(${t}.source IS NOT NULL OR EXISTS (SELECT 1 FROM statement_lines csl WHERE csl.transaction_id = ${t}.id))`;
+
+// Unconfirmed, and a statement for the same account (or card, for a card
+// purchase) covers its date and runs at least a week past it: that
+// statement came in without it. Coverage is the import's period, or the
+// span of its lines when the agent didn't send one. The week is the same
+// slack the matcher allows between a typed date and the bank's date.
+export const PASSED_SQL = (t = 't') => `(NOT ${CONFIRMED_SQL(t)} AND EXISTS (
+  SELECT 1 FROM statement_imports si
+  JOIN LATERAL (SELECT MIN(date) AS lo, MAX(date) AS hi FROM statement_lines WHERE import_id = si.id) sp ON true
+  WHERE (CASE WHEN ${t}.account_id IS NOT NULL THEN si.account_id = ${t}.account_id
+              ELSE si.credit_card_id = ${t}.credit_card_id END)
+    AND COALESCE(si.period_start, sp.lo) <= ${t}.date
+    AND COALESCE(si.period_end, sp.hi) >= ${t}.date + 7))`;

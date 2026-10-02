@@ -5,7 +5,7 @@ import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { reconcileImport } from '../lib/statementIngest.js';
 import { toISODate, todayISO, addDays } from '../lib/dates.js';
-import { monthKey, monthLabel } from '../lib/periods.js';
+import { monthKey, monthLabel, PASSED_SQL } from '../lib/periods.js';
 
 const router = Router();
 const r2 = (n) => Math.round(Number(n) * 100) / 100;
@@ -56,7 +56,7 @@ async function ledgers(db) {
 async function looseEnds(db) {
   const year = new Date().getFullYear();
   const q = async (sql, params = []) => Number((await db.query(sql, params)).rows[0].n);
-  const [held, flagged, uncatSpend, uncatIncome, oneSided, unverified, pastDueBills, overdueLoans, noReceipt, receiptsWaiting] = await Promise.all([
+  const [held, flagged, uncatSpend, uncatIncome, oneSided, unverified, pastDueBills, overdueLoans, noReceipt, receiptsWaiting, notOnStatement] = await Promise.all([
     q(`SELECT COUNT(*) AS n FROM statement_lines WHERE status = 'held'`),
     q(`SELECT COUNT(*) AS n FROM transactions WHERE needs_review`),
     q(`SELECT COUNT(*) AS n FROM transaction_lines WHERE amount < 0 AND category_id IS NULL AND NOT is_transfer
@@ -79,8 +79,10 @@ async function looseEnds(db) {
               OR (t.segment IS NULL AND NOT t.is_segment_split AND t.ledger = 'business'))
          AND NOT EXISTS (SELECT 1 FROM receipts r WHERE r.transaction_id = t.id)`, [year]),
     q(`SELECT COUNT(*) AS n FROM receipts WHERE status IN ('unmatched', 'unread')`),
+    q(`SELECT COUNT(*) AS n FROM transactions t WHERE ${PASSED_SQL('t')}`),
   ]);
   return [
+    { key: 'not_on_statement', label: 'Entered by hand (or marked paid) but a later statement came in without it — really paid? right amount and date?', count: notOnStatement, level: 'block', link: '/ledgers?unconfirmed=1' },
     { key: 'held', label: 'Statement lines waiting on Review', count: held, level: 'block', link: '/review' },
     { key: 'flagged', label: 'Transactions flagged for review', count: flagged, level: 'block', link: '/review' },
     { key: 'uncat_income', label: `Income with no category (${year})`, count: uncatIncome, level: 'block', link: '/review' },
@@ -105,9 +107,10 @@ async function months(db, books) {
   let key = monthKey(span.first);
   while (key < thisMonth) {
     const end = monthEnd(key);
-    const [{ rows: [h] }, { rows: [f] }] = await Promise.all([
+    const [{ rows: [h] }, { rows: [f] }, { rows: [u] }] = await Promise.all([
       db.query(`SELECT COUNT(*) AS n FROM statement_lines WHERE status = 'held' AND date BETWEEN $1 AND $2`, [key, end]),
       db.query(`SELECT COUNT(*) AS n FROM transactions WHERE needs_review AND date BETWEEN $1 AND $2`, [key, end]),
+      db.query(`SELECT COUNT(*) AS n FROM transactions t WHERE t.date BETWEEN $1 AND $2 AND ${PASSED_SQL('t')}`, [key, end]),
     ]);
     const blockers = [];
     // Each account and card needs its own reconciled statement (or balance
@@ -122,6 +125,7 @@ async function months(db, books) {
       }
     }
     if (Number(h.n)) blockers.push(`${h.n} statement line${Number(h.n) === 1 ? '' : 's'} on Review`);
+    if (Number(u.n)) blockers.push(`${u.n} entr${Number(u.n) === 1 ? 'y' : 'ies'} the statement came in without`);
     if (Number(f.n)) blockers.push(`${f.n} flagged transaction${Number(f.n) === 1 ? '' : 's'}`);
     const c = closedBy.get(key);
     list.push({
