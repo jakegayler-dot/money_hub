@@ -9,8 +9,53 @@ import {
 import { toISODate } from '../lib/dates.js';
 import { assertOpen } from '../lib/periods.js';
 import { matchPending } from '../lib/receipts.js';
+import { cardBalances } from '../lib/cardLedger.js';
 
 const router = Router();
+const r2 = (n) => Math.round(Number(n) * 100) / 100;
+
+// Running balance for one account or card, worked back from its balance
+// today: the balance after a row is today's balance minus everything
+// dated after it (same-day rows in entry order). For an account that's
+// its book balance — what the bank shows once outstanding checks clear.
+// For a card it's what's owed, counted from its itemizing start date.
+async function runningBalances(db, { account_id, credit_card_id }) {
+  if (account_id) {
+    const { rows: [a] } = await db.query('SELECT id, name, opening_balance FROM accounts WHERE id = $1', [account_id]);
+    if (!a) return null;
+    const { rows } = await db.query(
+      `SELECT id, amount, cleared,
+              SUM(amount) OVER (ORDER BY date DESC, id DESC ROWS UNBOUNDED PRECEDING) - amount AS later
+       FROM transactions WHERE account_id = $1`, [account_id]);
+    const now = Number(a.opening_balance);
+    const outstanding = r2(rows.filter((t) => !t.cleared).reduce((s, t) => s + Number(t.amount), 0));
+    return {
+      summary: { kind: 'account', name: a.name, balance_now: r2(now), outstanding, bank_balance: r2(now - outstanding), outstanding_count: rows.filter((t) => !t.cleared).length },
+      byId: new Map(rows.map((t) => [t.id, r2(now - Number(t.later))])),
+    };
+  }
+  const { rows: [c] } = await db.query('SELECT * FROM credit_cards WHERE id = $1', [credit_card_id]);
+  if (!c) return null;
+  const owed = (await cardBalances(db, [c])).get(c.id)?.outstanding ?? 0;
+  const summary = { kind: 'card', name: c.name, balance_now: r2(owed), itemized_from: c.ledger_start_date ? toISODate(c.ledger_start_date) : null };
+  if (!c.ledger_start_date) return { summary, byId: new Map() };
+  // Effect on what's owed: a purchase on the card (no account) raises it;
+  // a payment from an account (both set, negative) lowers it.
+  const { rows } = await db.query(
+    `SELECT id, SUM(eff) OVER (ORDER BY date DESC, id DESC ROWS UNBOUNDED PRECEDING) - eff AS later
+     FROM (SELECT id, date, CASE WHEN account_id IS NULL THEN -amount ELSE amount END AS eff
+           FROM transactions WHERE credit_card_id = $1 AND date >= $2) x`, [c.id, c.ledger_start_date]);
+  return { summary, byId: new Map(rows.map((t) => [t.id, r2(owed - Number(t.later))])) };
+}
+
+// Today's balance for the account or card the ledger is filtered to.
+router.get('/balance', ah(async (req, res) => {
+  const { account_id, credit_card_id } = req.query;
+  if (!account_id && !credit_card_id) return res.status(400).json({ error: 'account_id or credit_card_id is required.' });
+  const rb = await runningBalances(pool, { account_id, credit_card_id });
+  if (!rb) return res.status(404).json({ error: 'not found' });
+  res.json(rb.summary);
+}));
 
 // What a payment out of the ledger could be paying: every unpaid bill, and
 // every unrecorded scheduled loan payment due within the next 90 days
@@ -86,7 +131,11 @@ router.get('/', ah(async (req, res) => {
      ORDER BY t.date DESC, t.id DESC LIMIT $${params.length}`,
     params
   );
-  res.json(rows.map((r) => ({ ...r, date: toISODate(r.date), cleared_date: toISODate(r.cleared_date) })));
+  const rb = (account_id || credit_card_id) ? await runningBalances(pool, { account_id, credit_card_id }) : null;
+  res.json(rows.map((r) => ({
+    ...r, date: toISODate(r.date), cleared_date: toISODate(r.cleared_date),
+    ...(rb ? { running_balance: rb.byId.get(r.id) ?? null } : {}),
+  })));
 }));
 
 // Manual entry. Either out of/into an account (account_id), or charged to

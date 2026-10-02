@@ -9,7 +9,10 @@ const STATUS = {
   review: <span className="badge warn">PICK THE TRANSACTION</span>,
   failed: <span className="badge fail">COULDN'T READ</span>,
   not_receipt: <span className="badge">NOT A RECEIPT</span>,
+  billed: <span className="badge warn">BILL — NOT PAID YET</span>,
 };
+
+const DOC_LABEL = { receipt: 'Receipt', invoice: 'Invoice', sales_ticket: 'Sales ticket' };
 
 // Phone photos are 3–6 MB. Shrink to 1600 px on the long side as JPEG —
 // ~150–250 KB and still sharp enough to read every line.
@@ -81,11 +84,11 @@ export default function Receipts() {
   return (
     <>
       <div className="page-header">
-        <h1 className="page-title">Receipts</h1>
+        <h1 className="page-title">Receipts & documents</h1>
         <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
           {uploading && <span className="page-meta">{uploading}</span>}
           <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => upload(e.target.files)} />
-          <button onClick={() => fileRef.current?.click()} disabled={!!uploading}>Add receipts</button>
+          <button onClick={() => fileRef.current?.click()} disabled={!!uploading}>Add photos</button>
         </span>
       </div>
 
@@ -153,9 +156,13 @@ export function ReceiptRow({ r, act }) {
       <div className="receipt-body">
         <div className="review-head">
           <div>
-            <div className="review-desc">{ex.party || (r.status === 'reading' ? 'Reading…' : 'Unknown business')}</div>
+            <div className="review-desc">
+              {ex.party || (r.status === 'reading' ? 'Reading…' : 'Unknown business')}
+              {ex.doc_type && ex.doc_type !== 'receipt' && <span className="badge" style={{ marginLeft: 8 }}>{DOC_LABEL[ex.doc_type]}</span>}
+            </div>
             <div className="review-meta">
-              {ex.date || '—'} · {ex.total != null ? cents(ex.total) : '—'}{ex.gst != null ? ` · GST ${cents(ex.gst)}` : ''}
+              {ex.date || '—'} · {ex.total != null ? `${ex.doc_type === 'sales_ticket' ? 'net ' : ''}${cents(ex.total)}` : '—'}
+              {ex.doc_type === 'invoice' && ex.due_date ? ` · due ${ex.due_date}` : ''}{ex.invoice_number ? ` · #${ex.invoice_number}` : ''}{ex.gst != null ? ` · GST ${cents(ex.gst)}` : ''}
               {ex.category ? ` · ${ex.category}` : ''}{ex.card_last4 ? ` · card ••${ex.card_last4}` : ''}
             </div>
           </div>
@@ -167,7 +174,27 @@ export function ReceiptRow({ r, act }) {
             <a className="small-link" href={`/ledgers?edit=${r.transaction_id}`}>Open</a>
           </div>
         )}
-        {r.status === 'unmatched' && <div className="split-lines">No {ex.total != null ? cents(-ex.total) : ''} transaction near {ex.date} yet — matches when that statement comes in.</div>}
+        {r.status === 'billed' && (
+          <div className="split-lines">
+            Added to Bills{r.bill_name ? ` as "${r.bill_name}"` : ''}{r.bill_amount != null ? ` · ${cents(r.bill_amount)}` : ''}
+            {r.bill_due ? ` · due ${r.bill_due}` : ''} — attaches to the payment once it's paid.{' '}
+            <a className="small-link" href="/bills">Bills</a>
+          </div>
+        )}
+        {r.status === 'unmatched' && (
+          <div className="split-lines">
+            {ex.doc_type === 'sales_ticket'
+              ? `No ${ex.total != null ? cents(ex.total) : ''} deposit since ${ex.date} yet — matches when it lands (up to 45 days after).`
+              : `No ${ex.total != null ? cents(-ex.total) : ''} transaction near ${ex.date} yet — matches when that statement comes in.`}
+          </div>
+        )}
+        {ex.doc_type === 'sales_ticket' && (ex.gross != null || (ex.deductions || []).length > 0) && (
+          <div className="split-lines">
+            {ex.commodity ? `${ex.commodity}${ex.quantity ? ` · ${ex.quantity} ${ex.unit || ''}` : ''} · ` : ''}
+            {ex.gross != null ? `gross ${cents(ex.gross)}` : ''}
+            {(ex.deductions || []).map((d, i) => <span key={i}> · {d.description} −{cents(Math.abs(d.amount))}</span>)}
+          </div>
+        )}
         {r.status === 'failed' && <div className="review-error">{r.error}</div>}
         {ex.notes && <div className="split-lines">{ex.notes}</div>}
         {Array.isArray(ex.items) && ex.items.length > 0 && (
@@ -189,15 +216,25 @@ export function ReceiptRow({ r, act }) {
 
         {edit && (
           <div className="review-fields">
+            <div className="field"><label>Type</label>
+              <select value={edit.doc_type} onChange={(e) => setEdit({ ...edit, doc_type: e.target.value })}>
+                <option value="receipt">Receipt (already paid)</option>
+                <option value="invoice">Invoice (to pay)</option>
+                <option value="sales_ticket">Sales ticket (money in)</option>
+              </select>
+            </div>
             <div className="field"><label>Date</label><input type="date" value={edit.date} onChange={(e) => setEdit({ ...edit, date: e.target.value })} /></div>
-            <div className="field"><label>Total paid</label><input type="number" step="0.01" value={edit.total} onChange={(e) => setEdit({ ...edit, total: e.target.value })} /></div>
+            <div className="field"><label>{edit.doc_type === 'sales_ticket' ? 'Net paid to you' : edit.doc_type === 'invoice' ? 'Amount owing' : 'Total paid'}</label><input type="number" step="0.01" value={edit.total} onChange={(e) => setEdit({ ...edit, total: e.target.value })} /></div>
             <div className="field"><label>GST on it</label><input type="number" step="0.01" value={edit.gst} onChange={(e) => setEdit({ ...edit, gst: e.target.value })} /></div>
-            <div className="field"><label>Business</label><input value={edit.party} onChange={(e) => setEdit({ ...edit, party: e.target.value })} /></div>
+            <div className="field"><label>{edit.doc_type === 'sales_ticket' ? 'Buyer' : 'Business'}</label><input value={edit.party} onChange={(e) => setEdit({ ...edit, party: e.target.value })} /></div>
+            {edit.doc_type === 'invoice' && (
+              <div className="field"><label>Due date</label><input type="date" value={edit.due_date} onChange={(e) => setEdit({ ...edit, due_date: e.target.value })} /></div>
+            )}
           </div>
         )}
         {suggest && (
           <div className="review-cands">
-            {suggest.length === 0 ? <span className="split-lines">No spending within 30 days of {ex.date || 'today'}.</span> : suggest.map((t) => (
+            {suggest.length === 0 ? <span className="split-lines">No {ex.doc_type === 'sales_ticket' ? 'deposits' : 'spending'} within 30 days of {ex.date || 'today'}.</span> : suggest.map((t) => (
               <label key={t.id}>
                 <button className="small" onClick={() => act('POST', `/api/receipts/${r.id}/attach`, { transaction_id: t.id })}>Attach</button>
                 {t.description} <span className="cand-meta">{t.date} · {cents(t.amount)} · {t.account_name || `${t.card_name} (card)`}</span>
@@ -213,7 +250,7 @@ export function ReceiptRow({ r, act }) {
               <button className="small secondary" onClick={() => setEdit(null)}>Cancel</button>
             </>
           ) : (
-            <button className="small secondary" onClick={() => setEdit({ date: ex.date || '', total: ex.total ?? '', gst: ex.gst ?? '', party: ex.party || '' })}>
+            <button className="small secondary" onClick={() => setEdit({ doc_type: ex.doc_type || 'receipt', date: ex.date || '', total: ex.total ?? '', gst: ex.gst ?? '', party: ex.party || '', due_date: ex.due_date || '' })}>
               {r.status === 'unread' ? 'Enter date + total' : 'Correct'}
             </button>
           )}
@@ -253,6 +290,11 @@ function Setup({ keySet }) {
             Headers: <code>X-Receipt-Key</code> = your key, Request Body <strong>File</strong> = the Converted Image.</li>
           <li><strong>Show Notification</strong> — "Receipt sent".</li>
         </ol>
+        <p>
+          The same button works for <strong>invoices</strong> and <strong>sales tickets</strong> (grain settlements, cash tickets,
+          auction statements). An unpaid invoice goes into Bills with its due date and attaches to the payment later. A sales ticket
+          finds its deposit, splits it into the gross sale and each deduction (levies, freight, dockage…), and settles the open contract.
+        </p>
         <p>
           Then long-press the shortcut → <strong>Add to Home Screen</strong> (or Settings → Action Button → Shortcut → Receipt on
           an iPhone 15 Pro or newer). One tap opens the camera; Money Hub reads and files it from there.

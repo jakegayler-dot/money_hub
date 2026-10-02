@@ -56,6 +56,14 @@ export default function Ledgers() {
   useEffect(() => { try { window.localStorage.setItem('moneyhub.ledgerSort', JSON.stringify(sort)); } catch { /* not saved */ } }, [sort]);
   // /ledgers?payee=ID (from the payee totals) shows only that payee's entries.
   const [payeeFilter, setPayeeFilter] = useState(() => new URLSearchParams(window.location.search).get('payee') || '');
+  // One account ("a:ID") or card ("c:ID") — shows its running balance.
+  const [where, setWhere] = useState(() => {
+    const q = new URLSearchParams(window.location.search);
+    if (q.get('account')) return `a:${q.get('account')}`;
+    if (q.get('card')) return `c:${q.get('card')}`;
+    try { return window.localStorage.getItem('moneyhub.ledgerWhere') || ''; } catch { return ''; }
+  });
+  const [balance, setBalance] = useState(null);
   const [editing, setEditing] = useState(null); // the transaction being edited
   const [error, setError] = useState(null);
   const payees = usePayees();
@@ -69,11 +77,18 @@ export default function Ledgers() {
     if (reviewOnly) params.set('needs_review', 'true');
     if (search.trim()) params.set('q', search.trim());
     if (payeeFilter) params.set('payee_id', payeeFilter);
+    const [kind, whereId] = where.split(':');
+    const one = kind === 'a' ? `account_id=${whereId}` : kind === 'c' ? `credit_card_id=${whereId}` : null;
+    if (kind === 'a') params.set('account_id', whereId);
+    if (kind === 'c') params.set('credit_card_id', whereId);
     params.set('limit', '2000');
     fetch(`/api/transactions?${params}`).then((r) => r.json()).then((d) => setTransactions(Array.isArray(d) ? d : []));
+    if (one) fetch(`/api/transactions/balance?${one}`).then((r) => (r.ok ? r.json() : null)).then(setBalance).catch(() => setBalance(null));
+    else setBalance(null);
   };
 
-  useEffect(load, [filter, reviewOnly, payeeFilter]);
+  useEffect(load, [filter, reviewOnly, payeeFilter, where]);
+  useEffect(() => { try { window.localStorage.setItem('moneyhub.ledgerWhere', where); } catch { /* private mode */ } }, [where]);
   // /ledgers?edit=ID (from the Review tab) opens that transaction for editing.
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get('edit');
@@ -458,6 +473,17 @@ export default function Ledgers() {
             {outstandingCount > 0 && ` — ${outstandingCount} outstanding check${outstandingCount === 1 ? '' : 's'} totaling ${money(outstandingTotal)}`}
           </span>
           <span style={{ display: 'inline-flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', textTransform: 'none', letterSpacing: 0 }}>
+            <select aria-label="Account or card" value={where} onChange={(e) => setWhere(e.target.value)}>
+              <option value="">All accounts &amp; cards</option>
+              <optgroup label="Accounts">
+                {accounts.map((a) => <option key={a.id} value={`a:${a.id}`}>{a.name}</option>)}
+              </optgroup>
+              {cards.length > 0 && (
+                <optgroup label="Credit cards">
+                  {cards.map((c) => <option key={c.id} value={`c:${c.id}`}>{c.name}</option>)}
+                </optgroup>
+              )}
+            </select>
             <form onSubmit={(e) => { e.preventDefault(); load(); }} style={{ display: 'inline-flex', gap: 4 }}>
               <input aria-label="Search descriptions" placeholder="Search descriptions" value={search}
                 onChange={(e) => setSearch(e.target.value)} style={{ width: 180 }} />
@@ -473,6 +499,26 @@ export default function Ledgers() {
             </label>
           </span>
         </div>
+        {balance && (
+          <div className="balance-strip">
+            {balance.kind === 'account' ? (
+              <>
+                <span><b>{cents(balance.balance_now)}</b> balance in Money Hub</span>
+                {balance.outstanding_count > 0 ? (
+                  <span>
+                    <b>{cents(balance.bank_balance)}</b> the bank should show — {balance.outstanding_count} outstanding
+                    {' '}({cents(balance.outstanding)}) not through yet
+                  </span>
+                ) : <span>Nothing outstanding — the bank should show the same.</span>}
+              </>
+            ) : (
+              <>
+                <span><b>{cents(balance.balance_now)}</b> owed on {balance.name}</span>
+                <span>{balance.itemized_from ? `Running balance counted from ${balance.itemized_from}.` : 'Not itemized — set a starting balance on Credit Cards to see a running balance.'}</span>
+              </>
+            )}
+          </div>
+        )}
         {visible.length === 0 ? (
           <div className="empty-state">{outstandingOnly ? 'Nothing outstanding.' : 'No transactions recorded yet.'}</div>
         ) : (
@@ -486,6 +532,7 @@ export default function Ledgers() {
                     </button>
                   </th>
                 ))}
+                {balance && <th className="num" title={sort.key === 'date' ? '' : 'Sort by date to read it top to bottom'}>{balance.kind === 'card' ? 'Owed after' : 'Balance'}</th>}
                 <th></th>
               </tr>
             </thead>
@@ -529,6 +576,11 @@ export default function Ledgers() {
                       )}
                     </div>
                   </td>
+                  {balance && (
+                    <td className="nowrap" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                      {t.running_balance == null ? '—' : cents(t.running_balance)}
+                    </td>
+                  )}
                   <td>
                     {t.account_id && !t.cleared && (
                       <button className="small" onClick={() => markCleared(t.id)}>Mark cleared</button>

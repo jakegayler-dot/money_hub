@@ -1013,3 +1013,18 @@ CREATE INDEX IF NOT EXISTS idx_receipts_tx ON receipts (transaction_id);
 -- A contract settled by a deposit that was already in the ledger: undoing
 -- the settlement unlinks that deposit instead of deleting it.
 ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS linked_existing BOOLEAN NOT NULL DEFAULT false;
+
+-- Invoices photographed through Receipts become unpaid bills; the photo
+-- points at the bill until it's paid, then at the payment.
+ALTER TABLE receipts ADD COLUMN IF NOT EXISTS bill_id INTEGER REFERENCES bills(id) ON DELETE SET NULL;
+
+-- Deductions on grain settlements and livestock sale statements: farm
+-- sales are reported gross, with these as expenses.
+INSERT INTO expense_categories (name, class, ledger, kind, parent_id)
+SELECT 'Marketing & sales costs', 'variable_seasonal', 'business', 'expense', NULL
+WHERE NOT EXISTS (SELECT 1 FROM expense_categories WHERE lower(name) = 'marketing & sales costs');
+INSERT INTO expense_categories (name, class, ledger, kind, parent_id)
+SELECT v.name, 'variable_seasonal', 'business', 'expense', p.id
+FROM (VALUES ('Levies & checkoff'), ('Trucking & freight'), ('Grading, drying & dockage'), ('Commission & yardage')) AS v(name)
+JOIN expense_categories p ON lower(p.name) = 'marketing & sales costs' AND p.parent_id IS NULL
+WHERE NOT EXISTS (SELECT 1 FROM expense_categories c WHERE lower(c.name) = lower(v.name));

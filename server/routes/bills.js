@@ -4,6 +4,7 @@ import { ah } from '../lib/asyncHandler.js';
 import { validateSegment, segmentValues, SEGMENT_COLUMNS } from '../lib/segments.js';
 import { payBill, removeTransaction } from '../lib/postings.js';
 import { todayISO, toISODate, addMonths } from '../lib/dates.js';
+import { matchPending } from '../lib/receipts.js';
 
 // "$13,$14,..." placeholder run for the segment columns, starting at n.
 const segPlaceholders = (n) => SEGMENT_COLUMNS.map((_, i) => `$${n + i}`).join(',');
@@ -79,6 +80,7 @@ router.post('/:id/pay', ah(async (req, res) => {
   } = req.body;
   const r = await withTransaction((client) => payBill(client, req.params.id, { account_id, date: paid_date, paid_by_check }));
   if (!r) return res.status(404).json({ error: 'not found' });
+  setImmediate(() => matchPending().catch(() => {})); // a photographed invoice attaches to this payment
   res.json({ paid: r.bill.id, nextBill: r.nextBill });
 }));
 

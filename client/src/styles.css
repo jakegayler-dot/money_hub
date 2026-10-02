@@ -669,3 +669,7 @@ th.sortable button {
 th.sortable button:hover, th.sortable[aria-sort='ascending'] button, th.sortable[aria-sort='descending'] button { color: var(--gold-bright); }
 th.sortable button:focus-visible { outline: 1px solid var(--gold); outline-offset: 2px; }
 .sort-mark { font-size: 8px; min-width: 8px; }
+
+/* Ledger: balance of the one account or card being shown */
+.balance-strip { display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 8px 16px; font-size: 13px; border-bottom: 1px solid var(--border); color: var(--text-muted); }
+.balance-strip b { color: var(--text); font-size: 15px; }

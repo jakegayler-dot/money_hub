@@ -177,6 +177,13 @@ export async function removeTransaction(client, txId) {
      WHERE transaction_id = $1`,
     [txId]
   );
+  // Its receipt goes back to waiting (an invoice back to its unpaid bill).
+  await client.query(
+    `UPDATE receipts SET transaction_id = NULL, matched_at = NULL,
+       status = CASE WHEN bill_id IS NOT NULL THEN 'billed' ELSE 'unmatched' END
+     WHERE transaction_id = $1`,
+    [txId]
+  );
   if (tx.account_id) {
     await client.query('UPDATE accounts SET opening_balance = opening_balance - $1 WHERE id = $2', [tx.amount, tx.account_id]);
   }

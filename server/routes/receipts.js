@@ -92,13 +92,18 @@ receiptUpload.post('/', express.raw({ type: () => true, limit: '12mb' }), ah(asy
 const router = Router();
 
 const LIST = `
-  SELECT r.id, r.uploaded_at, r.source, r.bytes, r.status, r.extracted, r.candidates, r.transaction_id, r.error, r.matched_at,
+  SELECT r.id, r.uploaded_at, r.source, r.bytes, r.status, r.extracted, r.candidates, r.transaction_id, r.error, r.matched_at, r.bill_id,
+         b.name AS bill_name, b.due_date AS bill_due, b.status AS bill_status, b.amount AS bill_amount,
          t.date AS tx_date, t.amount AS tx_amount, t.description AS tx_description, a.name AS tx_account, cc.name AS tx_card
   FROM receipts r
   LEFT JOIN transactions t ON t.id = r.transaction_id
   LEFT JOIN accounts a ON a.id = t.account_id
-  LEFT JOIN credit_cards cc ON cc.id = t.credit_card_id`;
-const shape = (r) => ({ ...r, tx_date: toISODate(r.tx_date), tx_amount: r.tx_amount == null ? null : Number(r.tx_amount) });
+  LEFT JOIN credit_cards cc ON cc.id = t.credit_card_id
+  LEFT JOIN bills b ON b.id = r.bill_id`;
+const shape = (r) => ({
+  ...r, tx_date: toISODate(r.tx_date), tx_amount: r.tx_amount == null ? null : Number(r.tx_amount),
+  bill_due: r.bill_due ? toISODate(r.bill_due) : null, bill_amount: r.bill_amount == null ? null : Number(r.bill_amount),
+});
 
 router.get('/', ah(async (req, res) => {
   const params = [];
@@ -147,9 +152,10 @@ router.patch('/:id', ah(async (req, res) => {
   const { rows: [r] } = await pool.query('SELECT * FROM receipts WHERE id = $1', [req.params.id]);
   if (!r) return res.status(404).json({ error: 'not found' });
   const ex = { ...(r.extracted || {}), is_receipt: true };
-  for (const k of ['date', 'total', 'gst', 'party']) if (req.body[k] !== undefined) ex[k] = req.body[k] === '' ? null : req.body[k];
+  for (const k of ['date', 'total', 'gst', 'party', 'due_date', 'doc_type']) if (req.body[k] !== undefined) ex[k] = req.body[k] === '' ? null : req.body[k];
   if (ex.total != null) ex.total = Number(ex.total);
   if (ex.gst != null) ex.gst = Number(ex.gst);
+  if (!['receipt', 'invoice', 'sales_ticket'].includes(ex.doc_type)) ex.doc_type = 'receipt';
   const status = r.status === 'matched' ? 'matched' : 'unmatched';
   await pool.query('UPDATE receipts SET extracted = $2, status = $3, error = NULL WHERE id = $1', [r.id, ex, status]);
   if (status !== 'matched') await matchReceipt(r.id);
@@ -161,12 +167,13 @@ router.patch('/:id', ah(async (req, res) => {
 router.get('/:id/suggest', ah(async (req, res) => {
   const { rows: [r] } = await pool.query('SELECT extracted FROM receipts WHERE id = $1', [req.params.id]);
   const ex = r?.extracted || {};
+  const incoming = ex.doc_type === 'sales_ticket';
   const total = Number(ex.total) || 0;
   const date = ex.date || toISODate(new Date());
   const { rows } = await pool.query(
     `SELECT t.id, t.date, t.amount, t.description, a.name AS account_name, cc.name AS card_name
      FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id LEFT JOIN credit_cards cc ON cc.id = t.credit_card_id
-     WHERE t.amount < 0 AND NOT t.is_transfer AND t.date BETWEEN $1::date - 30 AND $1::date + 30
+     WHERE ${incoming ? 't.amount > 0' : 't.amount < 0'} AND NOT t.is_transfer AND t.date BETWEEN $1::date - 30 AND $1::date + ${incoming ? 60 : 30}
        AND NOT EXISTS (SELECT 1 FROM receipts x WHERE x.transaction_id = t.id)
      ORDER BY abs(abs(t.amount) - $2), abs(t.date - $1::date) LIMIT 12`,
     [date, total]
