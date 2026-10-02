@@ -660,3 +660,12 @@ td.group-row {
 .receipt-body details summary { cursor: pointer; }
 .review-cands label button { margin-right: 4px; }
 @media (max-width: 700px) { .receipt-row { grid-template-columns: 64px 1fr; } .receipt-thumb { width: 64px; height: 86px; } }
+
+/* Sortable table headers */
+th.sortable button {
+  all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+  font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit;
+}
+th.sortable button:hover, th.sortable[aria-sort='ascending'] button, th.sortable[aria-sort='descending'] button { color: var(--gold-bright); }
+th.sortable button:focus-visible { outline: 1px solid var(--gold); outline-offset: 2px; }
+.sort-mark { font-size: 8px; min-width: 8px; }

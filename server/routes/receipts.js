@@ -33,10 +33,51 @@ function sniff(buf) {
   return null;
 }
 
+// A Shortcut can send the photo three ways: as the raw body ("File"), as a
+// form field ("Form" — multipart), or base64 inside JSON. Take any of them.
+function imageFrom(req) {
+  const buf = Buffer.isBuffer(req.body) ? req.body : null;
+  if (!buf || !buf.length) return null;
+  const type = String(req.get('content-type') || '');
+  const boundary = /multipart\/form-data/i.test(type) && (type.match(/boundary=(?:"([^"]+)"|([^;]+))/i) || []).slice(1).find(Boolean);
+  if (boundary) {
+    const sep = Buffer.from(`--${boundary}`);
+    let at = buf.indexOf(sep);
+    while (at !== -1) {
+      const next = buf.indexOf(sep, at + sep.length);
+      if (next === -1) break;
+      const part = buf.subarray(at + sep.length, next);
+      const headEnd = part.indexOf('\r\n\r\n');
+      if (headEnd !== -1) {
+        const body = part.subarray(headEnd + 4, part.length - 2); // drop the trailing CRLF
+        if (body.length > 64 && sniff(body)) return body;
+      }
+      at = next;
+    }
+    return null;
+  }
+  if (/json/i.test(type)) {
+    try {
+      const j = JSON.parse(buf.toString('utf8'));
+      const b64 = j.image || j.file || j.photo || Object.values(j).find((v) => typeof v === 'string' && v.length > 1000);
+      return b64 ? Buffer.from(String(b64).replace(/^data:[^,]+,/, ''), 'base64') : null;
+    } catch { return null; }
+  }
+  return buf;
+}
+
 receiptUpload.post('/', express.raw({ type: () => true, limit: '12mb' }), ah(async (req, res) => {
   if (!isAuthorized(req) && !uploadKeyOk(req)) return res.status(401).json({ error: 'Missing or wrong X-Receipt-Key.' });
-  const buf = Buffer.isBuffer(req.body) ? req.body : null;
-  if (!buf || !buf.length) return res.status(400).json({ error: 'Send the photo as the request body.' });
+  const buf = imageFrom(req);
+  if (!buf || !buf.length) {
+    const got = Buffer.isBuffer(req.body) ? req.body.length : 0;
+    console.warn(`Receipt upload with no image: content-type "${req.get('content-type') || 'none'}", ${got} bytes`);
+    return res.status(400).json({
+      error: got
+        ? `Got ${got} bytes as "${req.get('content-type') || 'no type'}" but no photo in it. In the Shortcut set Request Body to File and pick the Converted Image.`
+        : 'No photo arrived. In the Shortcut, set Request Body to File and tap the File field to pick "Converted Image".',
+    });
+  }
   const mime = sniff(buf);
   if (mime === 'heic') return res.status(415).json({ error: 'HEIC photo — convert it to JPEG first (the Shortcut’s "Convert Image" step does this).' });
   if (!mime) return res.status(415).json({ error: 'Not a JPEG, PNG, WebP or GIF image.' });

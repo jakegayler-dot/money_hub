@@ -4,7 +4,7 @@ import { ah } from '../lib/asyncHandler.js';
 import { validateSegment, SEGMENT_COLUMNS } from '../lib/segments.js';
 import {
   insertTransaction, removeTransaction, ownerOf, ledgerForOwner, normalizeSplits,
-  linkBillToTransaction, linkLoanPaymentToTransaction, payeeId, UNCATEGORIZED_INCOME, cleanGst,
+  linkBillToTransaction, linkLoanPaymentToTransaction, linkContractToTransaction, payeeId, UNCATEGORIZED_INCOME, cleanGst,
 } from '../lib/postings.js';
 import { toISODate } from '../lib/dates.js';
 import { assertOpen } from '../lib/periods.js';
@@ -26,7 +26,12 @@ router.get('/link-options', ah(async (req, res) => {
      WHERE NOT lp.paid AND NOT COALESCE(lp.is_adjustment, false) AND lp.due_date <= CURRENT_DATE + 90
      ORDER BY lp.due_date, lp.id`
   );
+  const { rows: contracts } = await pool.query(
+    `SELECT id, commodity, counterparty, total_value AS amount, expected_payment_date AS due_date, status
+     FROM sale_contracts WHERE status IN ('open', 'delivered') ORDER BY expected_payment_date, id`
+  );
   res.json({
+    contracts: contracts.map((c) => ({ ...c, due_date: toISODate(c.due_date), amount: Number(c.amount) })),
     bills: bills.map((b) => ({ ...b, due_date: toISODate(b.due_date), amount: Number(b.amount) })),
     loan_payments: payments.map((p) => ({ ...p, due_date: toISODate(p.due_date), amount: Number(p.amount) })),
   });
@@ -163,7 +168,7 @@ router.post('/', ah(async (req, res) => {
   // link_bill_id / link_loan_payment_id: this entry IS that bill's or loan
   // payment's money — the bill is marked paid (or the loan payment
   // recorded) by this transaction instead of creating another one.
-  const { link_bill_id = null, link_loan_payment_id = null } = req.body;
+  const { link_bill_id = null, link_loan_payment_id = null, link_contract_id = null } = req.body;
   const row = await withTransaction(async (client) => {
     const t = await insertTransaction(client, {
       account_id: account_id || null, credit_card_id: credit_card_id || null,
@@ -175,6 +180,7 @@ router.post('/', ah(async (req, res) => {
     });
     if (link_bill_id) await linkBillToTransaction(client, Number(link_bill_id), t.id);
     if (link_loan_payment_id) await linkLoanPaymentToTransaction(client, Number(link_loan_payment_id), t.id);
+    if (link_contract_id) await linkContractToTransaction(client, Number(link_contract_id), t.id);
     return t;
   });
   setImmediate(() => matchPending().catch(() => {}));
@@ -270,7 +276,7 @@ router.patch('/:id', ah(async (req, res) => {
     const finalTransfer = b.is_transfer !== undefined ? !!b.is_transfer : tx.is_transfer;
     const finalSplit = splits !== null ? splits.length > 0 : tx.is_split;
     const uncategorizedIncome = newAmount > 0 && !finalTransfer && !finalSplit && !finalCategory && !tx.is_debt_service
-      && !b.transfer_account_id;
+      && !b.transfer_account_id && !b.link_contract_id; // a contract supplies its own income category
     if (uncategorizedIncome && b.needs_review === false) {
       return { status: 400, body: { error: 'This is money in — pick an income category (e.g. Grain sales › Canola sales) before clearing it.' } };
     }
@@ -309,6 +315,7 @@ router.patch('/:id', ah(async (req, res) => {
 
     if (b.link_bill_id) await linkBillToTransaction(client, Number(b.link_bill_id), tx.id);
     if (b.link_loan_payment_id) await linkLoanPaymentToTransaction(client, Number(b.link_loan_payment_id), tx.id);
+    if (b.link_contract_id) await linkContractToTransaction(client, Number(b.link_contract_id), tx.id);
 
     // Pointing a one-sided transfer at the other account records the
     // matching side there and links the two.

@@ -180,7 +180,9 @@ router.post('/:id/unsettle', ah(async (req, res) => {
       `UPDATE sale_contracts SET status = 'open', linked_transaction_id = NULL WHERE id = $1 RETURNING *`,
       [contract.id]
     );
-    if (contract.linked_transaction_id) await removeTransaction(client, contract.linked_transaction_id);
+    // Settled by a deposit that was already in the ledger: let go of it, keep it.
+    if (contract.linked_transaction_id && !contract.linked_existing) await removeTransaction(client, contract.linked_transaction_id);
+    await client.query('UPDATE sale_contracts SET linked_existing = false WHERE id = $1', [contract.id]);
     return updated[0];
   });
 

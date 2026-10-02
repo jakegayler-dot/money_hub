@@ -1009,3 +1009,7 @@ CREATE TABLE IF NOT EXISTS receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_receipts_status ON receipts (status);
 CREATE INDEX IF NOT EXISTS idx_receipts_tx ON receipts (transaction_id);
+
+-- A contract settled by a deposit that was already in the ledger: undoing
+-- the settlement unlinks that deposit instead of deleting it.
+ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS linked_existing BOOLEAN NOT NULL DEFAULT false;

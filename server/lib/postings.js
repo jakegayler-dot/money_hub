@@ -269,12 +269,13 @@ async function existingLink(client, txId) {
   return rows[0]?.what || null;
 }
 
-async function linkableTx(client, txId) {
+async function linkableTx(client, txId, direction = 'out') {
   const { rows } = await client.query('SELECT * FROM transactions WHERE id = $1 FOR UPDATE', [txId]);
   const tx = rows[0];
   if (!tx) throw new PostingError('Transaction not found.');
   await assertOpen(client, tx.date);
-  if (Number(tx.amount) >= 0) throw new PostingError('Only money going out can pay a bill or loan.');
+  if (direction === 'out' && Number(tx.amount) >= 0) throw new PostingError('Only money going out can pay a bill or loan.');
+  if (direction === 'in' && Number(tx.amount) <= 0) throw new PostingError('Only money coming in can settle a contract.');
   if (tx.is_transfer) throw new PostingError('This is marked as a transfer — untick Transfer first.');
   const already = await existingLink(client, tx.id);
   if (already) throw new PostingError(`This transaction is already the payment for ${already}.`);
@@ -306,6 +307,37 @@ export async function linkBillToTransaction(client, billId, txId) {
   }
   const nextBill = await rollBillForward(client, bill);
   return { bill, nextBill };
+}
+
+/**
+ * Settles a sale contract WITH a deposit already in the ledger — no new
+ * money movement. Fills the income category from the commodity ("Canola"
+ * → Canola sales) and the buyer as payee when the deposit has neither.
+ */
+export async function linkContractToTransaction(client, contractId, txId) {
+  const tx = await linkableTx(client, txId, 'in');
+  if (!tx.account_id) throw new PostingError('A contract payment lands in a bank account.');
+  const { rows } = await client.query('SELECT * FROM sale_contracts WHERE id = $1 FOR UPDATE', [contractId]);
+  const c = rows[0];
+  if (!c) throw new PostingError('Contract not found.');
+  if (c.status === 'settled') throw new PostingError(`That ${c.commodity} contract is already settled.`);
+  if (c.status === 'cancelled') throw new PostingError(`That ${c.commodity} contract is cancelled.`);
+  await client.query(
+    `UPDATE sale_contracts SET status = 'settled', linked_transaction_id = $1, linked_existing = true WHERE id = $2`,
+    [tx.id, c.id]
+  );
+  const cat = !tx.category_id && !tx.is_split ? await incomeCategoryFor(client, c.commodity) : null;
+  const payee = !tx.payee_id && c.counterparty ? await payeeId(client, c.counterparty) : null;
+  await client.query(
+    `UPDATE transactions SET
+       category_id = COALESCE(category_id, $1),
+       payee_id = COALESCE(payee_id, $2),
+       needs_review = CASE WHEN $1::int IS NOT NULL AND review_note = $4 THEN false ELSE needs_review END,
+       review_note = CASE WHEN $1::int IS NOT NULL AND review_note = $4 THEN NULL ELSE review_note END
+     WHERE id = $3`,
+    [cat, payee, tx.id, UNCATEGORIZED_INCOME]
+  );
+  return { contract: c };
 }
 
 /** Marks a scheduled loan payment made BY a transaction already in the ledger. */

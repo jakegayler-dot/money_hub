@@ -5,6 +5,28 @@ import SplitEditor, { cents, newPiece, piecesPayload } from '../components/Split
 import CategorySelect from '../components/CategorySelect.jsx';
 import PayeeSelect, { usePayees } from '../components/PayeeSelect.jsx';
 
+// Column sorting. Ties fall back to newest first, so equal amounts or
+// names keep a sensible order.
+const SORT_COLUMNS = [['date', 'Date'], ['account', 'Account / card'], ['description', 'Description'], ['owner', 'Owner'], ['amount', 'Amount']];
+const sortValue = {
+  date: (t) => `${t.date || ''}`,
+  account: (t) => (t.account_name || t.card_name || '').toLowerCase(),
+  description: (t) => (t.description || '').toLowerCase(),
+  owner: (t) => (t.is_split ? 'split' : ownerSummary(t) || '').toLowerCase(),
+  amount: (t) => Number(t.amount),
+};
+function sortRows(rows, { key, dir }) {
+  const get = sortValue[key] || sortValue.date;
+  const sign = dir === 'asc' ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const x = get(a);
+    const y = get(b);
+    const c = typeof x === 'number' ? x - y : String(x).localeCompare(String(y));
+    if (c) return c * sign;
+    return String(b.date).localeCompare(String(a.date)) || b.id - a.id;
+  });
+}
+
 const emptyForm = {
   source: 'account', account_id: '', credit_card_id: '', ledger: '', date: '', amount: '', description: '',
   category_id: '', is_mixed_use: false, mixed_use_business_pct: '', is_capex: false, is_transfer: false,
@@ -28,14 +50,18 @@ export default function Ledgers() {
   const [outstandingOnly, setOutstandingOnly] = useState(false);
   const [reviewOnly, setReviewOnly] = useState(false);
   const [search, setSearch] = useState('');
+  const [sort, setSort] = useState(() => {
+    try { return JSON.parse(window.localStorage.getItem('moneyhub.ledgerSort')) || { key: 'date', dir: 'desc' }; } catch { return { key: 'date', dir: 'desc' }; }
+  });
+  useEffect(() => { try { window.localStorage.setItem('moneyhub.ledgerSort', JSON.stringify(sort)); } catch { /* not saved */ } }, [sort]);
   // /ledgers?payee=ID (from the payee totals) shows only that payee's entries.
   const [payeeFilter, setPayeeFilter] = useState(() => new URLSearchParams(window.location.search).get('payee') || '');
   const [editing, setEditing] = useState(null); // the transaction being edited
   const [error, setError] = useState(null);
   const payees = usePayees();
-  const [linkOptions, setLinkOptions] = useState({ bills: [], loan_payments: [] });
+  const [linkOptions, setLinkOptions] = useState({ bills: [], loan_payments: [], contracts: [] });
   const loadLinkOptions = () => fetch('/api/transactions/link-options').then((r) => r.json())
-    .then((d) => setLinkOptions(d && d.bills ? d : { bills: [], loan_payments: [] })).catch(() => {});
+    .then((d) => setLinkOptions(d && d.bills ? { contracts: [], ...d } : { bills: [], loan_payments: [], contracts: [] })).catch(() => {});
 
   const load = () => {
     const params = new URLSearchParams();
@@ -43,7 +69,7 @@ export default function Ledgers() {
     if (reviewOnly) params.set('needs_review', 'true');
     if (search.trim()) params.set('q', search.trim());
     if (payeeFilter) params.set('payee_id', payeeFilter);
-    params.set('limit', '500');
+    params.set('limit', '2000');
     fetch(`/api/transactions?${params}`).then((r) => r.json()).then((d) => setTransactions(Array.isArray(d) ? d : []));
   };
 
@@ -80,13 +106,17 @@ export default function Ledgers() {
   // Money going out can be the payment for an unpaid bill or a scheduled
   // loan payment — linking it marks that paid instead of entering it twice.
   const canLink = amt < 0 && !form.is_transfer && (!editing || (!editing.pays && !(editing.credit_card_id && editing.account_id)));
+  // Money coming in can be the payment for an open sale contract.
+  const canSettle = amt > 0 && !onCard && !form.is_transfer && (!editing || !editing.pays);
   const near = (x) => Math.abs(Math.abs(x) - Math.abs(amt)) < 0.005;
   // Amount matches first, then the due date closest to this transaction's date.
   const dayGap = (d) => (form.date ? Math.abs(new Date(d) - new Date(form.date)) : 0);
   const byMatch = (list) => [...list].sort((a, b) => (Number(near(b.amount)) - Number(near(a.amount))) || (dayGap(a.due_date) - dayGap(b.due_date)));
   const linkPayload = () => {
-    if (!canLink || !form.pays) return {};
+    if (!form.pays) return {};
     const [kind, id] = form.pays.split(':');
+    if (kind === 'contract') return canSettle ? { link_contract_id: Number(id) } : {};
+    if (!canLink) return {};
     return kind === 'bill' ? { link_bill_id: Number(id) } : { link_loan_payment_id: Number(id) };
   };
 
@@ -203,7 +233,8 @@ export default function Ledgers() {
     load();
   };
 
-  const visible = outstandingOnly ? transactions.filter((t) => !t.cleared) : transactions;
+  const filtered = outstandingOnly ? transactions.filter((t) => !t.cleared) : transactions;
+  const visible = sortRows(filtered, sort);
   const outstandingCount = transactions.filter((t) => !t.cleared).length;
   const outstandingTotal = transactions
     .filter((t) => !t.cleared)
@@ -341,6 +372,20 @@ export default function Ledgers() {
               </select>
             </div>
           )}
+          {canSettle && linkOptions.contracts.length > 0 && (
+            <div className="field span2">
+              <label>Settles a contract? (✓ = amount matches)</label>
+              <select value={form.pays} onChange={(e) => setForm({ ...form, pays: e.target.value })}>
+                <option value="">No — not under contract</option>
+                {byMatch(linkOptions.contracts).map((c) => (
+                  <option key={`c${c.id}`} value={`contract:${c.id}`}>
+                    {near(c.amount) ? '✓ ' : ''}{c.commodity}{c.counterparty ? ` — ${c.counterparty}` : ''} · {cents(c.amount)} · expected {c.due_date}
+                  </option>
+                ))}
+              </select>
+              {form.pays.startsWith('contract:') && <span className="split-lines">Settles the contract with this deposit; income category and buyer fill in from it.</span>}
+            </div>
+          )}
           {form.is_split && !form.is_transfer ? (
             <SplitEditor pieces={pieces} setPieces={setPieces} categories={categories} total={form.amount} />
           ) : (
@@ -433,7 +478,16 @@ export default function Ledgers() {
         ) : (
           <table>
             <thead>
-              <tr><th>Date</th><th>Account / card</th><th>Description</th><th>Owner</th><th>Amount</th><th></th></tr>
+              <tr>
+                {SORT_COLUMNS.map(([key, label]) => (
+                  <th key={key} className="sortable" aria-sort={sort.key === key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+                    <button type="button" onClick={() => setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'date' || key === 'amount' ? 'desc' : 'asc' }))}>
+                      {label}<span className="sort-mark" aria-hidden="true">{sort.key === key ? (sort.dir === 'asc' ? '▲' : '▼') : ''}</span>
+                    </button>
+                  </th>
+                ))}
+                <th></th>
+              </tr>
             </thead>
             <tbody>
               {visible.map((t) => (

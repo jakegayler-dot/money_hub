@@ -21,7 +21,7 @@ const CANDIDATE_KEY = {
   card: 'credit_card_id', transaction: 'match_transaction_id',
 };
 
-const NO_LINKS = { bills: [], loan_payments: [] };
+const NO_LINKS = { bills: [], loan_payments: [], contracts: [] };
 
 /**
  * "What it is" for one review item: regular spending/income, a transfer
@@ -43,6 +43,7 @@ function WhatItIs({ amount, accountId, date, accounts, links, value, onChange })
           {accountId && <option value="transfer">Transfer with another of my accounts</option>}
           {out && <option value="bill">Pays a bill</option>}
           {out && accountId && <option value="loan">Loan payment</option>}
+          {!out && accountId && <option value="contract">Contract payment (grain / cattle sale)</option>}
         </select>
       </div>
       {value.type === 'transfer' && (
@@ -61,6 +62,17 @@ function WhatItIs({ amount, accountId, date, accounts, links, value, onChange })
             <option value="">{links.bills.length ? 'Pick a bill' : 'No unpaid bills on file'}</option>
             {sorted(links.bills).map((b) => (
               <option key={b.id} value={b.id}>{near(b.amount) ? '✓ ' : ''}{b.name} · {cents(b.amount)} · due {b.due_date}</option>
+            ))}
+          </select>
+        </div>
+      )}
+      {value.type === 'contract' && (
+        <div className="field" style={{ gridColumn: 'span 2' }}>
+          <label>Which contract (✓ = amount matches)</label>
+          <select value={value.target} onChange={(e) => set({ target: e.target.value })}>
+            <option value="">{links.contracts.length ? 'Pick a contract' : 'No open contracts'}</option>
+            {sorted(links.contracts).map((c) => (
+              <option key={c.id} value={c.id}>{near(c.amount) ? '✓ ' : ''}{c.commodity}{c.counterparty ? ` — ${c.counterparty}` : ''} · {cents(c.amount)} · expected {c.due_date}</option>
             ))}
           </select>
         </div>
@@ -100,7 +112,7 @@ export default function Review() {
       .catch((e) => setError(e.message));
     fetch('/api/receipts?status=review,failed').then((r) => r.json()).then((d) => setReceipts(d.receipts || [])).catch(() => {});
     fetch('/api/transactions/link-options').then((r) => r.json())
-      .then((d) => setLinks(d && d.bills ? d : NO_LINKS)).catch(() => {});
+      .then((d) => setLinks(d && d.bills ? { ...NO_LINKS, ...d } : NO_LINKS)).catch(() => {});
   };
   useEffect(() => {
     load();
@@ -200,7 +212,7 @@ function Reconciliation({ r }) {
   return <span className="badge fail" title={`Money Hub ${cents(r.money_hub_balance)} vs statement ${cents(r.statement_closing)}`}>Off by {cents(r.difference)}</span>;
 }
 
-const KIND_TO_TYPE = { transfer: 'transfer', owner_draw: 'transfer', bill_payment: 'bill', loan_payment: 'loan' };
+const KIND_TO_TYPE = { transfer: 'transfer', owner_draw: 'transfer', bill_payment: 'bill', loan_payment: 'loan', contract_payment: 'contract' };
 
 function ReviewItem({ line, categories, accounts, links, payees, onDone }) {
   const p = line.payload || {};
@@ -253,6 +265,9 @@ function ReviewItem({ line, categories, accounts, links, payees, onDone }) {
     } else if (usePicker && what.type === 'loan') {
       if (!what.target) { setErr('Pick which loan payment this is.'); return; }
       overrides.kind = 'loan_payment'; overrides.loan_payment_id = Number(what.target);
+    } else if (usePicker && what.type === 'contract') {
+      if (!what.target) { setErr('Pick which contract this settles.'); return; }
+      overrides.kind = 'contract_payment'; overrides.contract_id = Number(what.target);
     } else if (usePicker && !what.type && KIND_TO_TYPE[line.kind || p.kind] && !editing) {
       overrides.kind = 'standard';
     }
@@ -406,7 +421,7 @@ function FlaggedItem({ tx, categories, accounts, links, payees, onDone }) {
   const needsIncomeCategory = amount > 0 && !tx.is_split && what.type === '' && !categoryId;
 
   const resolve = async () => {
-    if (needsIncomeCategory) { setErr('This is money in — pick an income category first.'); return; }
+    if (needsIncomeCategory && what.type !== 'contract') { setErr('This is money in — pick an income category first.'); return; }
     const body = { needs_review: false, payee_id: payeeId ? Number(payeeId) : null };
     if (canAssign) {
       if (what.type === 'transfer') {
@@ -421,6 +436,10 @@ function FlaggedItem({ tx, categories, accounts, links, payees, onDone }) {
         if (what.type === 'loan') {
           if (!what.target) { setErr('Pick which loan payment this is.'); return; }
           body.link_loan_payment_id = Number(what.target);
+        }
+        if (what.type === 'contract') {
+          if (!what.target) { setErr('Pick which contract this settles.'); return; }
+          body.link_contract_id = Number(what.target);
         }
       }
     }
