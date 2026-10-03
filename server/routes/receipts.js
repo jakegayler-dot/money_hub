@@ -21,10 +21,11 @@ const uploadKeyOk = (req) => {
   return !!key && !!sent && sameText(sent, key);
 };
 
-// What kind of image the bytes are (the Content-Type a phone sends isn't
-// always right). Claude reads JPEG, PNG, WebP and GIF.
+// What kind of file the bytes are (the Content-Type a phone sends isn't
+// always right). Claude reads JPEG, PNG, WebP, GIF and PDF.
 function sniff(buf) {
   if (buf.length < 12) return null;
+  if (buf.slice(0, 5).toString() === '%PDF-') return 'application/pdf';
   if (buf[0] === 0xff && buf[1] === 0xd8) return 'image/jpeg';
   if (buf[0] === 0x89 && buf[1] === 0x50) return 'image/png';
   if (buf.slice(0, 4).toString() === 'RIFF' && buf.slice(8, 12).toString() === 'WEBP') return 'image/webp';
@@ -66,7 +67,7 @@ function imageFrom(req) {
   return buf;
 }
 
-receiptUpload.post('/', express.raw({ type: () => true, limit: '12mb' }), ah(async (req, res) => {
+receiptUpload.post('/', express.raw({ type: () => true, limit: '25mb' }), ah(async (req, res) => {
   if (!isAuthorized(req) && !uploadKeyOk(req)) return res.status(401).json({ error: 'Missing or wrong X-Receipt-Key.' });
   const buf = imageFrom(req);
   if (!buf || !buf.length) {
@@ -80,7 +81,7 @@ receiptUpload.post('/', express.raw({ type: () => true, limit: '12mb' }), ah(asy
   }
   const mime = sniff(buf);
   if (mime === 'heic') return res.status(415).json({ error: 'HEIC photo — convert it to JPEG first (the Shortcut’s "Convert Image" step does this).' });
-  if (!mime) return res.status(415).json({ error: 'Not a JPEG, PNG, WebP or GIF image.' });
+  if (!mime) return res.status(415).json({ error: 'Not a JPEG, PNG, WebP or GIF image, or a PDF.' });
   // A photo added on the Bills tab belongs to that bill: the bill already
   // says what it's for, so it isn't read — it's filed as that invoice, and
   // attaches to the bill's payment once there is one.
@@ -112,7 +113,7 @@ receiptUpload.post('/', express.raw({ type: () => true, limit: '12mb' }), ah(asy
 const router = Router();
 
 const LIST = `
-  SELECT r.id, r.uploaded_at, r.source, r.bytes, r.status, r.extracted, r.candidates, r.transaction_id, r.error, r.matched_at, r.bill_id,
+  SELECT r.id, r.uploaded_at, r.source, r.bytes, r.mime, r.status, r.extracted, r.candidates, r.transaction_id, r.error, r.matched_at, r.bill_id,
          b.name AS bill_name, b.due_date AS bill_due, b.status AS bill_status, b.amount AS bill_amount,
          t.date AS tx_date, t.amount AS tx_amount, t.description AS tx_description, a.name AS tx_account, cc.name AS tx_card
   FROM receipts r
@@ -157,7 +158,9 @@ router.get('/missing', ah(async (req, res) => {
 router.get('/:id/image', ah(async (req, res) => {
   const { rows: [r] } = await pool.query('SELECT mime, image FROM receipts WHERE id = $1', [req.params.id]);
   if (!r) return res.status(404).end();
-  res.set('Content-Type', r.mime).set('Cache-Control', 'private, max-age=86400').send(r.image);
+  res.set('Content-Type', r.mime).set('Cache-Control', 'private, max-age=86400')
+    .set('Content-Disposition', `inline; filename="document-${req.params.id}.${r.mime === 'application/pdf' ? 'pdf' : r.mime.split('/')[1]}"`)
+    .send(r.image);
 }));
 
 router.post('/:id/retry', ah(async (req, res) => {

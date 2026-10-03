@@ -8,7 +8,7 @@ import { autoLinkBillsSoon } from '../lib/billMatch.js';
 import { OWNERS } from '../lib/segments.js';
 import { toISODate, todayISO, addDays } from '../lib/dates.js';
 import { processLine, reconcileImport, KINDS } from '../lib/statementIngest.js';
-import { anchorAccount, anchorCard, upsertCardStatement, PostingError } from '../lib/postings.js';
+import { anchorAccount, anchorCard, upsertCardStatement, PostingError, pairAllCardPayments } from '../lib/postings.js';
 
 const router = Router();
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
@@ -284,6 +284,8 @@ router.post('/ingest', requireIngestKey, ah(async (req, res) => {
     if (!r.ok) summary.errors += 1;
     else summary[r.status] += 1;
   }
+  // A payment seen from both the bank and the card counts once.
+  try { await withTransaction((c) => pairAllCardPayments(c)); } catch (e) { console.error('Card payment pairing failed:', e.message); }
   const { rows: [freshImp] } = await pool.query('SELECT * FROM statement_imports WHERE id = $1', [imp.id]);
   // New transactions may be what waiting receipts belong to.
   setImmediate(() => matchPending().catch(() => {}));

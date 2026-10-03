@@ -24,6 +24,8 @@ import booksRoute from './routes/books.js';
 import taxRoute from './routes/tax.js';
 import receiptsRoute, { receiptUpload } from './routes/receipts.js';
 import { readPending, matchPending } from './lib/receipts.js';
+import { pairAllCardPayments } from './lib/postings.js';
+import { withTransaction } from './db.js';
 import { authRouter, requireSignIn, authEnabled } from './lib/appAuth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -96,4 +98,9 @@ app.listen(port, () => {
   console.log(`Money Hub listening on :${port}`);
   // Receipts that arrived before the API key was set, or while the server was down.
   setTimeout(() => readPending().then(matchPending).catch((e) => console.error('Receipt catch-up failed:', e.message)), 3000);
+  // Card payments seen on both the bank and the card statement count once
+  // (also folds in duplicates posted before this rule existed).
+  setTimeout(() => withTransaction((c) => pairAllCardPayments(c))
+    .then((n) => n && console.log(`Folded ${n} card-side payment line(s) into their bank-side payments.`))
+    .catch((e) => console.error('Card payment pairing failed:', e.message)), 2000);
 });

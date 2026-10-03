@@ -44,19 +44,18 @@ export async function assertNoClosedFrom(db, fromDate, what) {
   }
 }
 
-// A transaction is CONFIRMED once a bank or card statement line has claimed
-// it (posted it, or matched it to what was entered by hand). Anything else
-// — typed in, a bill marked paid, a contract settled, a loan payment
-// recorded — is the user's word until the statement shows it.
-export const CONFIRMED_SQL = (t = 't') =>
-  `(${t}.source IS NOT NULL OR EXISTS (SELECT 1 FROM statement_lines csl WHERE csl.transaction_id = ${t}.id))`;
+// Entries Money Hub made on your word (a bill marked paid, a payment
+// recorded by hand, an entry typed into an account that gets statements)
+// carry awaiting_statement until a statement line claims them.
+// CONFIRMED_SQL is "not waiting on a statement".
+export const CONFIRMED_SQL = (t = 't') => `(NOT ${t}.awaiting_statement)`;
 
-// Unconfirmed, and a statement for the same account (or card, for a card
+// Still waiting, and a statement for the same account (or card, for a card
 // purchase) covers its date and runs at least a week past it: that
 // statement came in without it. Coverage is the import's period, or the
 // span of its lines when the agent didn't send one. The week is the same
 // slack the matcher allows between a typed date and the bank's date.
-export const PASSED_SQL = (t = 't') => `(NOT ${CONFIRMED_SQL(t)} AND EXISTS (
+export const PASSED_SQL = (t = 't') => `(${t}.awaiting_statement AND EXISTS (
   SELECT 1 FROM statement_imports si
   JOIN LATERAL (SELECT MIN(date) AS lo, MAX(date) AS hi FROM statement_lines WHERE import_id = si.id) sp ON true
   WHERE (CASE WHEN ${t}.account_id IS NOT NULL THEN si.account_id = ${t}.account_id

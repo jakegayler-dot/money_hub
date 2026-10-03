@@ -4,7 +4,7 @@ import { ah } from '../lib/asyncHandler.js';
 import { validateSegment, SEGMENT_COLUMNS } from '../lib/segments.js';
 import {
   insertTransaction, removeTransaction, ownerOf, ledgerForOwner, normalizeSplits,
-  linkBillToTransaction, linkLoanPaymentToTransaction, linkContractToTransaction, payeeId, UNCATEGORIZED_INCOME, cleanGst,
+  linkBillToTransaction, linkLoanPaymentToTransaction, linkContractToTransaction, linkCardPaymentToTransaction, payeeId, UNCATEGORIZED_INCOME, cleanGst,
 } from '../lib/postings.js';
 import { toISODate } from '../lib/dates.js';
 import { assertOpen, CONFIRMED_SQL, PASSED_SQL } from '../lib/periods.js';
@@ -87,7 +87,10 @@ router.get('/link-options', ah(async (req, res) => {
     `SELECT id, commodity, counterparty, total_value AS amount, expected_payment_date AS due_date, status
      FROM sale_contracts WHERE status IN ('open', 'delivered') ORDER BY expected_payment_date, id`
   );
+  const { rows: cards } = await pool.query(
+    `SELECT id, name, issuer, last4 FROM credit_cards WHERE status = 'active' ORDER BY name`);
   res.json({
+    cards,
     contracts: contracts.map((c) => ({ ...c, due_date: toISODate(c.due_date), amount: Number(c.amount) })),
     bills: bills.map((b) => ({ ...b, due_date: toISODate(b.due_date), amount: Number(b.amount) })),
     loan_payments: payments.map((p) => ({ ...p, due_date: toISODate(p.due_date), amount: Number(p.amount) })),
@@ -131,7 +134,8 @@ router.get('/', ah(async (req, res) => {
               (SELECT 'Bill: ' || b.name FROM bills b WHERE b.linked_transaction_id = t.id LIMIT 1),
               (SELECT 'Loan: ' || COALESCE(l.name, l.lender) || ' (due ' || to_char(lp.due_date, 'YYYY-MM-DD') || ')'
                  FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id WHERE lp.linked_transaction_id = t.id LIMIT 1),
-              (SELECT 'Contract: ' || c.commodity FROM sale_contracts c WHERE c.linked_transaction_id = t.id LIMIT 1)
+              (SELECT 'Contract: ' || c.commodity FROM sale_contracts c WHERE c.linked_transaction_id = t.id LIMIT 1),
+              CASE WHEN t.account_id IS NOT NULL AND t.credit_card_id IS NOT NULL THEN 'Card payment: ' || cc.name END
             ) AS pays,
             EXISTS (SELECT 1 FROM closed_periods cp WHERE cp.month = date_trunc('month', t.date)::date) AS in_closed_month,
             (SELECT r.id FROM receipts r WHERE r.transaction_id = t.id ORDER BY r.id LIMIT 1) AS receipt_id,
@@ -192,6 +196,7 @@ router.post('/', ah(async (req, res) => {
         date, amount: value, description: label, category_id: null, purchase_class: null,
         is_mixed_use: false, mixed_use_business_pct: null, is_capex: false, is_transfer: true, entered_by,
         cleared: true, owner, splits: [], needs_review, review_note,
+        awaiting_statement: entered_by === 'manual' ? 'fed' : false,
       };
     };
     const row = await withTransaction(async (client) => {
@@ -232,7 +237,7 @@ router.post('/', ah(async (req, res) => {
   // link_bill_id / link_loan_payment_id: this entry IS that bill's or loan
   // payment's money — the bill is marked paid (or the loan payment
   // recorded) by this transaction instead of creating another one.
-  const { link_bill_id = null, link_loan_payment_id = null, link_contract_id = null } = req.body;
+  const { link_bill_id = null, link_loan_payment_id = null, link_contract_id = null, link_card_id = null } = req.body;
   const row = await withTransaction(async (client) => {
     const t = await insertTransaction(client, {
       account_id: account_id || null, credit_card_id: credit_card_id || null,
@@ -241,10 +246,12 @@ router.post('/', ah(async (req, res) => {
       cleared: account_id ? !!cleared : true, owner, splits, needs_review, review_note,
       payee_id: req.body.payee_id || null, payee: req.body.payee || null,
       gst_amount: req.body.gst_amount ?? null,
+      awaiting_statement: entered_by === 'manual' ? 'fed' : false,
     });
     if (link_bill_id) await linkBillToTransaction(client, Number(link_bill_id), t.id);
     if (link_loan_payment_id) await linkLoanPaymentToTransaction(client, Number(link_loan_payment_id), t.id);
     if (link_contract_id) await linkContractToTransaction(client, Number(link_contract_id), t.id);
+    if (link_card_id) await linkCardPaymentToTransaction(client, Number(link_card_id), t.id);
     return t;
   });
   setImmediate(() => matchPending().catch(() => {}));
@@ -381,6 +388,7 @@ router.patch('/:id', ah(async (req, res) => {
     if (b.link_bill_id) await linkBillToTransaction(client, Number(b.link_bill_id), tx.id);
     if (b.link_loan_payment_id) await linkLoanPaymentToTransaction(client, Number(b.link_loan_payment_id), tx.id);
     if (b.link_contract_id) await linkContractToTransaction(client, Number(b.link_contract_id), tx.id);
+    if (b.link_card_id) await linkCardPaymentToTransaction(client, Number(b.link_card_id), tx.id);
 
     // Pointing a one-sided transfer at the other account records the
     // matching side there and links the two.

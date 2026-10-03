@@ -3,7 +3,7 @@ import { money } from '../format.js';
 import { OwnerFields, ownerPayload, ownerFieldsFrom, ownerSummary, emptyOwnerFields, OWNER_LABELS, OWNER_KEYS } from '../owners.jsx';
 import CategorySelect from '../components/CategorySelect.jsx';
 import { cents } from '../components/SplitEditor.jsx';
-import { compress } from './Receipts.jsx';
+import { uploadBody } from './Receipts.jsx';
 
 // Sorting, remembered per browser. Ties fall back to soonest due.
 const COLUMNS = [['due', 'Due'], ['name', 'Name'], ['category', 'Category'], ['owner', 'Owner'], ['amount', 'Total'], ['status', 'Status']];
@@ -100,11 +100,11 @@ export default function Bills() {
     if (!file || !id) return;
     setError(null);
     try {
-      const blob = await compress(file);
-      const res = await fetch(`/api/receipts/upload?bill_id=${id}`, { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob });
+      const { body, type } = await uploadBody(file);
+      const res = await fetch(`/api/receipts/upload?bill_id=${id}`, { method: 'POST', headers: { 'Content-Type': type }, body });
       if (!res.ok) { const b = await res.json().catch(() => ({})); setError(b.error || `Upload failed (HTTP ${res.status}).`); }
     } catch {
-      setError(`Couldn't open ${file.name} as an image.`);
+      setError(`Couldn't open ${file.name} — photos and PDFs only.`);
     }
     if (photoRef.current) photoRef.current.value = '';
     load();
@@ -270,7 +270,7 @@ export default function Bills() {
           entered by hand. If more than one payment fits, it's listed under the bill to confirm. "Mark paid" is for paying it
           yourself now; that entry stays unconfirmed until the bank statement shows it.
         </p>
-        <input ref={photoRef} type="file" accept="image/*" hidden onChange={(e) => addPhoto(e.target.files?.[0])} />
+        <input ref={photoRef} type="file" accept="image/*,application/pdf,.pdf" hidden onChange={(e) => addPhoto(e.target.files?.[0])} />
         {shown.length === 0 ? (
           <div className="empty-state">{bills.length ? 'No bills match.' : 'Nothing to show.'}</div>
         ) : (
@@ -301,7 +301,7 @@ export default function Bills() {
                           {b.invoice_receipt_id ? (
                             <a className="tag" style={{ marginLeft: 0 }} href={`/api/receipts/${b.invoice_receipt_id}/image`} target="_blank" rel="noreferrer">Invoice</a>
                           ) : (
-                            <button type="button" className="small-link" onClick={() => { setPhotoFor(b.id); photoRef.current?.click(); }}>Add invoice photo</button>
+                            <button type="button" className="small-link" onClick={() => { setPhotoFor(b.id); photoRef.current?.click(); }}>Add invoice (photo or PDF)</button>
                           )}
                         </div>
                         {b.notes && <div className="split-lines">{b.notes}</div>}
@@ -334,7 +334,7 @@ export default function Bills() {
                               <div className="split-lines">
                                 {b.paid_tx_date} · {b.paid_account || (b.paid_card ? `${b.paid_card} (card)` : '')} · {cents(b.paid_tx_amount)}
                                 <div>
-                                  {b.paid_confirmed ? 'On statement' : 'Not on a statement yet'} ·{' '}
+                                  {b.paid_awaiting ? 'Awaiting statement · ' : b.paid_from_statement ? 'From statement · ' : ''}
                                   <a className="small-link" href={`/ledgers?edit=${b.linked_transaction_id}`}>Open entry</a>
                                 </div>
                               </div>

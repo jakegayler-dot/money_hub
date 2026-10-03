@@ -27,15 +27,18 @@ function sortRows(rows, { key, dir }) {
   });
 }
 
-// Confirmed = a bank or card statement line has claimed it. Until then it's
-// Money Hub's record only: typed in, a bill marked paid, a contract settled.
+// Entries Money Hub made on your word — a bill marked paid, a loan, card or
+// contract payment recorded by hand, an entry typed into an account that
+// gets statements — say so until the statement agent brings the line in.
 function ConfirmBadge({ t }) {
-  if (t.confirmed) return <span className="badge pass" title="On a bank or card statement">CONFIRMED</span>;
   if (t.statement_passed) {
     return <span className="badge fail" title="A later statement for this account came in without it. Check it was really paid, and its amount and date.">NOT ON STATEMENT</span>;
   }
-  if (t.account_id && !t.cleared) return <span className="badge warn" title="Cheque written, not through the bank yet">OUTSTANDING CHEQUE</span>;
-  return <span className="badge warn" title="Entered in Money Hub — confirms when the statement with it comes in">UNCONFIRMED</span>;
+  if (t.awaiting_statement) {
+    return <span className="badge warn" title="Recorded in Money Hub (bill marked paid, payment recorded, or typed in). Clears when the statement with it comes in.">AWAITING STATEMENT</span>;
+  }
+  if (!t.account_id) return <span className="tag" style={{ marginLeft: 0 }}>On card</span>;
+  return t.cleared ? <span className="badge pass">CLEARED</span> : <span className="badge warn">OUTSTANDING</span>;
 }
 
 const emptyForm = {
@@ -79,9 +82,9 @@ export default function Ledgers() {
   const [editing, setEditing] = useState(null); // the transaction being edited
   const [error, setError] = useState(null);
   const payees = usePayees();
-  const [linkOptions, setLinkOptions] = useState({ bills: [], loan_payments: [], contracts: [] });
+  const [linkOptions, setLinkOptions] = useState({ bills: [], loan_payments: [], contracts: [], cards: [] });
   const loadLinkOptions = () => fetch('/api/transactions/link-options').then((r) => r.json())
-    .then((d) => setLinkOptions(d && d.bills ? { contracts: [], ...d } : { bills: [], loan_payments: [], contracts: [] })).catch(() => {});
+    .then((d) => setLinkOptions(d && d.bills ? { contracts: [], cards: [], ...d } : { bills: [], loan_payments: [], contracts: [], cards: [] })).catch(() => {});
 
   const load = () => {
     const params = new URLSearchParams();
@@ -145,6 +148,7 @@ export default function Ledgers() {
     const [kind, id] = form.pays.split(':');
     if (kind === 'contract') return canSettle ? { link_contract_id: Number(id) } : {};
     if (!canLink) return {};
+    if (kind === 'card') return onCard ? {} : { link_card_id: Number(id) };
     return kind === 'bill' ? { link_bill_id: Number(id) } : { link_loan_payment_id: Number(id) };
   };
 
@@ -374,9 +378,9 @@ export default function Ledgers() {
               </label>
             </div>
           )}
-          {canLink && (linkOptions.bills.length > 0 || linkOptions.loan_payments.length > 0) && (
+          {canLink && (linkOptions.bills.length > 0 || linkOptions.loan_payments.length > 0 || (!onCard && linkOptions.cards.length > 0)) && (
             <div className="field span2">
-              <label>Pays a bill or loan? (✓ = amount matches)</label>
+              <label>Pays a bill, loan or credit card? (✓ = amount matches)</label>
               <select value={form.pays} onChange={(e) => setForm({ ...form, pays: e.target.value })}>
                 <option value="">No — regular spending</option>
                 {linkOptions.bills.length > 0 && (
@@ -397,7 +401,17 @@ export default function Ledgers() {
                     ))}
                   </optgroup>
                 )}
+                {!onCard && linkOptions.cards.length > 0 && (
+                  <optgroup label="Credit card payment">
+                    {linkOptions.cards.map((c) => (
+                      <option key={`c${c.id}`} value={`card:${c.id}`}>Pays {c.name}{c.last4 ? ` ••${c.last4}` : ''}</option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
+              {form.pays.startsWith('card:') && (
+                <span className="split-lines">Lowers what the card owes. Not counted as spending when the card's purchases are itemized — they are the spending.</span>
+              )}
             </div>
           )}
           {canSettle && linkOptions.contracts.length > 0 && (
@@ -508,7 +522,7 @@ export default function Ledgers() {
             </label>
             <label style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <input type="checkbox" checked={unconfirmedOnly} onChange={(e) => setUnconfirmedOnly(e.target.checked)} />
-              Unconfirmed only
+              Awaiting statement only
             </label>
             <label style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <input type="checkbox" checked={outstandingOnly} onChange={(e) => setOutstandingOnly(e.target.checked)} />
@@ -523,16 +537,16 @@ export default function Ledgers() {
                 <span><b>{cents(balance.balance_now)}</b> balance in Money Hub</span>
                 {balance.unconfirmed_count > 0 ? (
                   <span>
-                    <b>{cents(balance.confirmed_balance)}</b> confirmed by statements — {balance.unconfirmed_count} unconfirmed
-                    {' '}({cents(balance.unconfirmed)}) not on a statement yet
+                    <b>{cents(balance.confirmed_balance)}</b> without the {balance.unconfirmed_count} entr{balance.unconfirmed_count === 1 ? 'y' : 'ies'}
+                    {' '}awaiting a statement ({cents(balance.unconfirmed)})
                   </span>
-                ) : <span>Every entry is confirmed by a statement.</span>}
+                ) : <span>Nothing awaiting a statement.</span>}
               </>
             ) : (
               <>
                 <span><b>{cents(balance.balance_now)}</b> owed on {balance.name}</span>
                 {balance.unconfirmed_count > 0 && (
-                  <span><b>{cents(balance.confirmed_balance)}</b> confirmed by statements — {balance.unconfirmed_count} unconfirmed ({cents(balance.unconfirmed)})</span>
+                  <span><b>{cents(balance.confirmed_balance)}</b> without the {balance.unconfirmed_count} awaiting a statement ({cents(balance.unconfirmed)})</span>
                 )}
                 <span>{balance.itemized_from ? `Running balance counted from ${balance.itemized_from}.` : 'Not itemized — set a starting balance on Credit Cards to see a running balance.'}</span>
               </>

@@ -4,7 +4,6 @@ import { ah } from '../lib/asyncHandler.js';
 import { validateSegment, segmentValues, SEGMENT_COLUMNS } from '../lib/segments.js';
 import { payBill, removeTransaction, linkBillToTransaction, expenseCategoryFor } from '../lib/postings.js';
 import { autoLinkBills, autoLinkBillsSoon, billCandidates } from '../lib/billMatch.js';
-import { CONFIRMED_SQL } from '../lib/periods.js';
 import { todayISO, toISODate, addMonths } from '../lib/dates.js';
 import { matchPending } from '../lib/receipts.js';
 
@@ -48,7 +47,7 @@ router.get('/', ah(async (req, res) => {
             CASE WHEN pc.id IS NULL THEN ec.name ELSE pc.name || ' › ' || ec.name END AS category_full,
             t.date AS paid_tx_date, t.amount AS paid_tx_amount, t.description AS paid_tx_description,
             a.name AS paid_account, cc.name AS paid_card,
-            CASE WHEN t.id IS NULL THEN NULL ELSE ${CONFIRMED_SQL('t')} END AS paid_confirmed,
+            t.awaiting_statement AS paid_awaiting, (t.source IS NOT NULL) AS paid_from_statement,
             (SELECT r.id FROM receipts r
              WHERE r.bill_id = b.id OR (b.linked_transaction_id IS NOT NULL AND r.transaction_id = b.linked_transaction_id)
              ORDER BY (r.bill_id = b.id) DESC, r.id LIMIT 1) AS invoice_receipt_id

@@ -21,7 +21,7 @@ const CANDIDATE_KEY = {
   card: 'credit_card_id', transaction: 'match_transaction_id',
 };
 
-const NO_LINKS = { bills: [], loan_payments: [], contracts: [] };
+const NO_LINKS = { bills: [], loan_payments: [], contracts: [], cards: [] };
 
 /**
  * "What it is" for one review item: regular spending/income, a transfer
@@ -43,6 +43,7 @@ function WhatItIs({ amount, accountId, date, accounts, links, value, onChange })
           {accountId && <option value="transfer">Transfer with another of my accounts</option>}
           {out && <option value="bill">Pays a bill</option>}
           {out && accountId && <option value="loan">Loan payment</option>}
+          {out && accountId && links.cards.length > 0 && <option value="card">Credit card payment</option>}
           {!out && accountId && <option value="contract">Contract payment (grain / cattle sale)</option>}
         </select>
       </div>
@@ -74,6 +75,15 @@ function WhatItIs({ amount, accountId, date, accounts, links, value, onChange })
             {sorted(links.contracts).map((c) => (
               <option key={c.id} value={c.id}>{near(c.amount) ? '✓ ' : ''}{c.commodity}{c.counterparty ? ` — ${c.counterparty}` : ''} · {cents(c.amount)} · expected {c.due_date}</option>
             ))}
+          </select>
+        </div>
+      )}
+      {value.type === 'card' && (
+        <div className="field" style={{ gridColumn: 'span 2' }}>
+          <label>Which card</label>
+          <select value={value.target} onChange={(e) => set({ target: e.target.value })}>
+            <option value="">Pick a card</option>
+            {links.cards.map((c) => <option key={c.id} value={c.id}>{c.name}{c.last4 ? ` ••${c.last4}` : ''}</option>)}
           </select>
         </div>
       )}
@@ -212,7 +222,7 @@ function Reconciliation({ r }) {
   return <span className="badge fail" title={`Money Hub ${cents(r.money_hub_balance)} vs statement ${cents(r.statement_closing)}`}>Off by {cents(r.difference)}</span>;
 }
 
-const KIND_TO_TYPE = { transfer: 'transfer', owner_draw: 'transfer', bill_payment: 'bill', loan_payment: 'loan', contract_payment: 'contract' };
+const KIND_TO_TYPE = { transfer: 'transfer', owner_draw: 'transfer', bill_payment: 'bill', loan_payment: 'loan', contract_payment: 'contract', card_payment: 'card' };
 
 function ReviewItem({ line, categories, accounts, links, payees, onDone }) {
   const p = line.payload || {};
@@ -245,6 +255,7 @@ function ReviewItem({ line, categories, accounts, links, payees, onDone }) {
   const approve = async () => {
     const overrides = {};
     if (pick && pick !== 'none' && candType) overrides[CANDIDATE_KEY[candType]] = Number(pick);
+    if (pick && pick !== 'none' && candType === 'card') overrides.kind = 'card_payment'; // a held plain line that pays a card
     if (pick === 'none' && candType === 'transaction') overrides.post_as_new = true;
     if (postAsNew) overrides.post_as_new = true;
     if (categoryId) { overrides.category_id = Number(categoryId); overrides.category = null; }
@@ -268,6 +279,9 @@ function ReviewItem({ line, categories, accounts, links, payees, onDone }) {
     } else if (usePicker && what.type === 'contract') {
       if (!what.target) { setErr('Pick which contract this settles.'); return; }
       overrides.kind = 'contract_payment'; overrides.contract_id = Number(what.target);
+    } else if (usePicker && what.type === 'card') {
+      if (!what.target) { setErr('Pick which card this pays.'); return; }
+      overrides.kind = 'card_payment'; overrides.credit_card_id = Number(what.target);
     } else if (usePicker && !what.type && KIND_TO_TYPE[line.kind || p.kind] && !editing) {
       overrides.kind = 'standard';
     }
@@ -440,6 +454,10 @@ function FlaggedItem({ tx, categories, accounts, links, payees, onDone }) {
         if (what.type === 'contract') {
           if (!what.target) { setErr('Pick which contract this settles.'); return; }
           body.link_contract_id = Number(what.target);
+        }
+        if (what.type === 'card') {
+          if (!what.target) { setErr('Pick which card this pays.'); return; }
+          body.link_card_id = Number(what.target);
         }
       }
     }

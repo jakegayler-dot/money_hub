@@ -16,6 +16,14 @@ const DOC_LABEL = { receipt: 'Receipt', invoice: 'Invoice', sales_ticket: 'Sales
 
 // Phone photos are 3–6 MB. Shrink to 1600 px on the long side as JPEG —
 // ~150–250 KB and still sharp enough to read every line.
+const isPdf = (file) => file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '');
+
+/** What to send for a picked file: a PDF as it is, a photo shrunk first. */
+export async function uploadBody(file) {
+  if (isPdf(file)) return { body: file, type: 'application/pdf' };
+  return { body: await compress(file), type: 'image/jpeg' };
+}
+
 export async function compress(file) {
   const url = URL.createObjectURL(file);
   try {
@@ -57,11 +65,11 @@ export default function Receipts() {
     for (let i = 0; i < list.length; i++) {
       setUploading(`Uploading ${i + 1} of ${list.length}…`);
       try {
-        const blob = await compress(list[i]);
-        const r = await fetch('/api/receipts/upload', { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob });
+        const { body, type } = await uploadBody(list[i]);
+        const r = await fetch('/api/receipts/upload', { method: 'POST', headers: { 'Content-Type': type }, body });
         if (!r.ok) { const b = await r.json().catch(() => ({})); setMsg({ error: true, text: b.error || `Upload failed (${r.status})` }); }
       } catch {
-        setMsg({ error: true, text: `Couldn't open ${list[i].name} as an image.` });
+        setMsg({ error: true, text: `Couldn't open ${list[i].name} — photos and PDFs only.` });
       }
     }
     setUploading(null);
@@ -87,8 +95,8 @@ export default function Receipts() {
         <h1 className="page-title">Receipts & documents</h1>
         <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
           {uploading && <span className="page-meta">{uploading}</span>}
-          <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => upload(e.target.files)} />
-          <button onClick={() => fileRef.current?.click()} disabled={!!uploading}>Add photos</button>
+          <input ref={fileRef} type="file" accept="image/*,application/pdf,.pdf" multiple hidden onChange={(e) => upload(e.target.files)} />
+          <button onClick={() => fileRef.current?.click()} disabled={!!uploading}>Add photos or PDFs</button>
         </span>
       </div>
 
@@ -152,7 +160,9 @@ export function ReceiptRow({ r, act }) {
 
   return (
     <div className="receipt-row">
-      <a href={img} target="_blank" rel="noreferrer" className="receipt-thumb"><img src={img} alt={`Receipt ${r.id}`} loading="lazy" /></a>
+      <a href={img} target="_blank" rel="noreferrer" className="receipt-thumb">
+        {r.mime === 'application/pdf' ? <span className="pdf-tile">PDF</span> : <img src={img} alt={`Receipt ${r.id}`} loading="lazy" />}
+      </a>
       <div className="receipt-body">
         <div className="review-head">
           <div>
@@ -290,6 +300,14 @@ function Setup({ keySet }) {
             Headers: <code>X-Receipt-Key</code> = your key, Request Body <strong>File</strong> = the Converted Image.</li>
           <li><strong>Show Notification</strong> — "Receipt sent".</li>
         </ol>
+        <p><strong>PDFs from Mail or Files</strong> (emailed invoices, e-settlements): make a second shortcut named <strong>Money Hub</strong>.</p>
+        <ol>
+          <li>In its settings (the <strong>ⓘ</strong>), turn on <strong>Show in Share Sheet</strong>, and set it to receive <strong>PDFs</strong>.</li>
+          <li><strong>Get Contents of URL</strong> — the same URL, Method <strong>POST</strong>, Header <code>X-Receipt-Key</code> = your key,
+            Request Body <strong>File</strong> = <strong>Shortcut Input</strong>.</li>
+          <li><strong>Show Notification</strong> — "Sent to Money Hub".</li>
+        </ol>
+        <p>Then on any PDF: <strong>Share → Money Hub</strong>. On a computer, drag PDFs onto <strong>Add photos or PDFs</strong> above.</p>
         <p>
           The same button works for <strong>invoices</strong> and <strong>sales tickets</strong> (grain settlements, cash tickets,
           auction statements). An unpaid invoice goes into Bills with its due date and attaches to the payment later. A sales ticket

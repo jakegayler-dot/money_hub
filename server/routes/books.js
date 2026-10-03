@@ -82,7 +82,7 @@ async function looseEnds(db) {
     q(`SELECT COUNT(*) AS n FROM transactions t WHERE ${PASSED_SQL('t')}`),
   ]);
   return [
-    { key: 'not_on_statement', label: 'Entered by hand (or marked paid) but a later statement came in without it — really paid? right amount and date?', count: notOnStatement, level: 'block', link: '/ledgers?unconfirmed=1' },
+    { key: 'not_on_statement', label: 'Marked paid or entered by hand, but the statement for that period came in without it — really paid? right amount and date?', count: notOnStatement, level: 'block', link: '/ledgers?unconfirmed=1' },
     { key: 'held', label: 'Statement lines waiting on Review', count: held, level: 'block', link: '/review' },
     { key: 'flagged', label: 'Transactions flagged for review', count: flagged, level: 'block', link: '/review' },
     { key: 'uncat_income', label: `Income with no category (${year})`, count: uncatIncome, level: 'block', link: '/review' },

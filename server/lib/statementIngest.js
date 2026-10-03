@@ -63,6 +63,7 @@ async function claim(client, txId, { source, external_id }, { clearOn = null } =
     `UPDATE transactions SET
        source = COALESCE(source, $1),
        external_id = COALESCE(external_id, $2),
+       awaiting_statement = false,
        cleared = CASE WHEN $3::date IS NOT NULL THEN true ELSE cleared END,
        cleared_date = CASE WHEN $3::date IS NOT NULL THEN $3::date ELSE cleared_date END
      WHERE id = $4`,
@@ -109,8 +110,14 @@ async function processLineInner(client, { target, source, external_id, payload: 
   const T = target.row;
   const date = toISODate(p.date);
   const amount = round2(p.amount);
-  const kind = p.kind || 'standard';
+  let kind = p.kind || 'standard';
   const hint = p.payee || p.description || '';
+  // On a card statement, "PAYMENT — THANK YOU" (money in) is the card side
+  // of a payment from the bank, whatever kind the agent tagged it.
+  if (target.type === 'card' && Number(p.amount) > 0 && ['standard', 'transfer'].includes(kind)
+      && /(^|[^a-z])(payment|paiement|pymt|pmt)([^a-z]|$)/i.test(`${p.description || ''} ${p.payee || ''}`)) {
+    kind = 'card_payment';
+  }
   const stamp = { source, external_id, entered_by: 'agent' };
   const hold = (reason, candidates = null) => ({ status: 'held', reason, candidates });
   const posted = (tx, note) => ({ status: 'posted', transaction_id: tx.id, note });
@@ -208,6 +215,27 @@ async function processLineInner(client, { target, source, external_id, payload: 
   try {
     switch (kind) {
       case 'standard':
+        // "ONLINE BANKING PAYMENT — CAPITAL ONE" sent as plain spending:
+        // money out of a bank account naming exactly one of your cards is a
+        // payment on that card, not an expense (unless a person approving
+        // it chose plain spending).
+        if (!isCard && amount < 0 && !approved && !p.category && !p.category_id && !splits.length) {
+          const { rows: cards } = await client.query(`SELECT * FROM credit_cards WHERE status = 'active'`);
+          // Strict: the card's whole name or issuer (or its last 4) AND a
+          // payment word — "FARM STORE" must not pay a card called Farm Visa.
+          const h = ` ${norm(`${p.description || ''} ${p.payee || ''}`)} `;
+          const paying = /\b(payment|pmt|pymt|paymt|bill pay)\b/.test(h);
+          const named = !paying ? [] : cards.filter((c) => [c.name, c.issuer].some((f) => norm(f) && h.includes(` ${norm(f)} `))
+            || (c.last4 && h.includes(` ${c.last4} `)));
+          if (named.length === 1) {
+            const r = await payCard(client, named[0].id, { account_id: T.id, date, amount: -amount, ...stamp });
+            return posted(r.transaction, `Card payment to ${named[0].name} (recognized from the description)`);
+          }
+          if (named.length > 1) {
+            return hold(`Looks like a payment to a credit card, but ${named.length} cards fit "${hint}" — which one?`,
+              named.map((c) => ({ type: 'card', id: c.id, label: `${c.name}${c.last4 ? ` ••${c.last4}` : ''}` })));
+          }
+        }
         // A person approving money in must say what kind of income it is.
         if (approved && amount > 0 && !category_id && !splits.length) {
           return hold('Pick an income category for this deposit (e.g. Grain sales › Canola sales).');
@@ -361,7 +389,11 @@ async function processLineInner(client, { target, source, external_id, payload: 
           if (!r) return hold('Card not found.');
           return posted(r.transaction, 'Recorded payment from the paying account');
         }
-        return hold(`Payment of ${fmt(amount)} received on this card, but no matching payment out of a bank account is on file. Upload that account's statement, or approve with the account it came from.`);
+        // No bank side yet: record it on the card so what's owed is right
+        // now; it folds into the bank-side payment when that statement
+        // arrives (pairCardPayments).
+        return posted(await insertTransaction(client, { ...plain, splits: [], category_id: null, is_transfer: true }),
+          'Payment received on the card — pairs with the bank-side payment when that statement comes in');
       }
 
       case 'transfer':

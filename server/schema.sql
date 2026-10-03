@@ -1079,3 +1079,16 @@ CREATE TABLE IF NOT EXISTS bill_link_rejections (
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (bill_id, transaction_id)
 );
+
+-- Entries Money Hub made on your word — a bill marked paid, a loan payment
+-- or contract settlement recorded by hand, or an entry typed into an
+-- account that gets statements — wait for the statement to show them.
+-- Cleared when a statement line claims the entry. Everything else (statement
+-- lines, history, imports) never carries it.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS awaiting_statement BOOLEAN NOT NULL DEFAULT false;
+UPDATE transactions t SET awaiting_statement = true
+WHERE NOT t.awaiting_statement AND t.source IS NULL
+  AND NOT EXISTS (SELECT 1 FROM statement_lines sl WHERE sl.transaction_id = t.id)
+  AND (EXISTS (SELECT 1 FROM bills b WHERE b.linked_transaction_id = t.id AND NOT b.linked_existing)
+    OR EXISTS (SELECT 1 FROM loan_payments lp WHERE lp.linked_transaction_id = t.id AND NOT lp.linked_existing)
+    OR EXISTS (SELECT 1 FROM sale_contracts c WHERE c.linked_transaction_id = t.id AND NOT c.linked_existing));

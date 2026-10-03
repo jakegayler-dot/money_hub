@@ -24,51 +24,87 @@ const r2 = (n) => Math.round(Number(n) * 100) / 100;
 
 export const readerEnabled = () => !!process.env.ANTHROPIC_API_KEY;
 
-const PROMPT = (categories, payees) => `You are reading a photo of a document for a Saskatchewan farm (grain and cattle) and its household. It is one of:
+// The reply format uses placeholders, never sample values: a model unsure
+// of a field copies an example ("Diesel — dyed") instead of reading the
+// photo. Categories come from the printed line items first, then from what
+// this business has been filed under before.
+const PROMPT = (categories, payees, history) => `You are reading a photo or PDF of a document for a Saskatchewan farm (grain and cattle) and its household. It is one of:
 - "receipt": a purchase that's already paid (till slip, card receipt, paid-in-full invoice)
 - "invoice": a bill the farm still has to pay (shows a due date or terms, amount owing)
 - "sales_ticket": money the farm RECEIVED for something it sold — grain settlement or cash ticket (Cargill, Viterra, Richardson, Bunge, Parrish & Heimbecker, a crusher), livestock auction or order-buyer statement
 
-Return ONLY a JSON object, no other text:
+Return ONLY a JSON object, no other text, with these fields (angle brackets describe the value — never copy them):
 {
   "is_receipt": true,
-  "doc_type": "receipt",            // receipt / invoice / sales_ticket
-  "date": "YYYY-MM-DD",            // the document date (purchase date, invoice date, settlement date)
-  "due_date": null,                 // invoice only: payment due date, or null
-  "invoice_number": null,           // invoice only
-  "total": 123.45,                  // receipt/invoice: amount paid or owed, positive (negative only for a refund slip). sales_ticket: the NET amount paid to the farm
-  "gst": 5.50,                      // GST (or the GST part of HST) printed on it; null if none is printed. Never calculate it.
-  "pst": 0,                         // Saskatchewan PST printed on it, or null
-  "party": "Federated Co-op",       // the business — reuse a name from KNOWN BUSINESSES when it's the same one
-  "card_last4": "1234",             // last 4 digits of the card used, if printed; else null
-  "items": [{"description": "...", "amount": 0.00}],   // main lines, at most 15
-  "category": "Diesel — dyed",      // the single best category from CATEGORIES, exact spelling, or null
-  "farm_share_pct": 100,            // your judgement: % of the total that's farm (grain/cattle) vs household
-  "owner": "grain",                 // grain, livestock, jake or ashley — who it's mainly for; null if unclear
-  "commodity": null,                // sales_ticket: Canola, Wheat, Oats, Barley, Calves, Cull cows…
-  "quantity": null, "unit": null,   // sales_ticket: e.g. 1851.87, "bu" / "t" / "head"
-  "gross": null,                    // sales_ticket: gross value before deductions
-  "deductions": [],                 // sales_ticket: every deduction as {"description": "...", "amount": 12.34, "category": "Levies & checkoff"} with POSITIVE amounts; categories from CATEGORIES (Levies & checkoff, Trucking & freight, Grading, drying & dockage, Commission & yardage…)
-  "confidence": "high",             // high / medium / low
-  "notes": ""                       // anything a person should know (smudged total, two receipts in one photo…)
+  "doc_type": <"receipt" | "invoice" | "sales_ticket">,
+  "date": <document date as "YYYY-MM-DD">,
+  "due_date": <invoice only: due date "YYYY-MM-DD", else null>,
+  "invoice_number": <invoice only, else null>,
+  "total": <receipt/invoice: amount paid or owed, positive (negative only for a refund). sales_ticket: the NET paid to the farm>,
+  "gst": <GST (or the GST part of HST) exactly as printed, else null. Never calculate it>,
+  "pst": <Saskatchewan PST as printed, else null>,
+  "party": <the business as printed — reuse the spelling from KNOWN BUSINESSES when it's the same one>,
+  "card_last4": <last 4 digits of the card or account used, if printed, else null>,
+  "items": [<main lines as {"description": <text as printed>, "amount": <number>}, at most 15>],
+  "category": <exact name from CATEGORIES, chosen by the rules below, or null>,
+  "category_reason": <a few words: the printed words the category is based on>,
+  "farm_share_pct": <0–100: share that's farm (grain/cattle) rather than household, or null if you can't tell>,
+  "owner": <"grain" | "livestock" | "jake" | "ashley" | null>,
+  "commodity": <sales_ticket: the crop or livestock sold, else null>,
+  "quantity": <sales_ticket quantity, else null>, "unit": <"bu" | "t" | "head" | other, else null>,
+  "gross": <sales_ticket gross value before deductions, else null>,
+  "deductions": [<sales_ticket only: {"description", "amount" (positive), "category" (exact name from CATEGORIES)}>],
+  "confidence": <"high" | "medium" | "low">,
+  "notes": <anything a person should know (smudged total, two receipts in one photo…), else "">
 }
-If the photo isn't any of these, return {"is_receipt": false, "notes": "what it is"}.
-For a sales_ticket, "category" is the INCOME category (e.g. "Canola sales", "Calf sales") and gross minus deductions must equal total; "party" is the buyer. GST collected on a sale goes in "gst".
-Use the most specific category (a subcategory when one fits). Farm inputs like fuel, parts, vet supplies, seed, fertilizer and chemical are farm; groceries, clothing and household goods are household (owner jake).
+If it isn't any of these, return {"is_receipt": false, "notes": <what it is>}.
+For a sales_ticket, "category" is the INCOME category for the commodity sold, gross minus deductions must equal total, "party" is the buyer, and GST collected on the sale goes in "gst".
+
+CHOOSING THE CATEGORY
+1. Read what was bought from the printed line items and product names. That decides the category — not the store, and not what a farm usually buys.
+2. Fuel: "Regular", "Unleaded", "Premium", "Mid-grade", "Gas", "Plus" are GASOLINE. "Diesel" or "Clear diesel" with no dye wording is CLEAR (road) diesel. Only "Dyed", "Marked", "Coloured", "Farm diesel" or a bulk farm-fuel delivery is DYED diesel. Never call gasoline or pump diesel dyed.
+3. Use PAST CHOICES below: when this business has usually been filed under one category and the items fit it, use that category and owner.
+4. If no category clearly fits the items, return null. A wrong category is worse than none.
+5. Use the most specific category (a subcategory when one fits).
+
+OWNER
+Dyed diesel, seed, fertilizer, chemical, parts, vet supplies and feed are farm. Groceries, clothing and household goods are household (jake). Gasoline at a pump could be a farm truck or a family vehicle: follow PAST CHOICES for this business; with no history, set owner null and farm_share_pct null.
 
 CATEGORIES:
 ${categories.join('\n')}
 
 KNOWN BUSINESSES:
-${payees.join(', ') || '(none yet)'}`;
+${payees.join(', ') || '(none yet)'}
+
+PAST CHOICES (business → categories it has been filed under, most used first, with owner):
+${history.join('\n') || '(none yet)'}`;
 
 /** Sends the image to Claude and returns the parsed fields. */
 async function extract(receipt) {
-  const [{ rows: cats }, { rows: payees }] = await Promise.all([
+  const [{ rows: cats }, { rows: payees }, { rows: past }] = await Promise.all([
     pool.query(`SELECT CASE WHEN p.id IS NULL THEN c.name ELSE p.name || ' › ' || c.name END AS full, c.kind
                 FROM expense_categories c LEFT JOIN expense_categories p ON p.id = c.parent_id ORDER BY 1`),
     pool.query('SELECT name FROM payees ORDER BY name LIMIT 300'),
+    // How each business's spending has actually been filed (split pieces
+    // included), so the reader follows the user's own choices.
+    pool.query(`
+      SELECT py.name AS payee, CASE WHEN pc.id IS NULL THEN c.name ELSE pc.name || ' › ' || c.name END AS cat,
+             CASE WHEN l.is_segment_split THEN 'split' ELSE COALESCE(l.segment::text, 'unassigned') END AS owner, COUNT(*) AS n
+      FROM transaction_lines l
+      JOIN transactions t ON t.id = l.transaction_id
+      JOIN payees py ON py.id = t.payee_id
+      JOIN expense_categories c ON c.id = l.category_id
+      LEFT JOIN expense_categories pc ON pc.id = c.parent_id
+      WHERE l.amount < 0 AND t.date > CURRENT_DATE - 730
+      GROUP BY 1, 2, 3 ORDER BY 1, n DESC`),
   ]);
+  const byPayee = new Map();
+  for (const r of past) {
+    const list = byPayee.get(r.payee) || [];
+    if (list.length < 3) list.push(`${r.cat} [${r.owner}] ×${r.n}`);
+    byPayee.set(r.payee, list);
+  }
+  const history = [...byPayee].slice(0, 200).map(([name, list]) => `${name} → ${list.join('; ')}`);
   const res = await fetch(`${process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com'}/v1/messages`, {
     method: 'POST',
     headers: {
@@ -82,8 +118,11 @@ async function extract(receipt) {
       messages: [{
         role: 'user',
         content: [
-          { type: 'image', source: { type: 'base64', media_type: receipt.mime, data: Buffer.from(receipt.image).toString('base64') } },
-          { type: 'text', text: PROMPT(cats.map((c) => `${c.full} (${c.kind})`), payees.map((p) => p.name)) },
+          // A PDF (emailed invoice, e-statement settlement) goes as a document; Claude reads every page.
+          receipt.mime === 'application/pdf'
+            ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: Buffer.from(receipt.image).toString('base64') } }
+            : { type: 'image', source: { type: 'base64', media_type: receipt.mime, data: Buffer.from(receipt.image).toString('base64') } },
+          { type: 'text', text: PROMPT(cats.map((c) => `${c.full} (${c.kind})`), payees.map((p) => p.name), history) },
         ],
       }],
     }),

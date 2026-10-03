@@ -10,7 +10,7 @@ import { toISODate, addMonths } from './dates.js';
 const SEG_COLS = SEGMENT_COLUMNS.join(', ');
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
 
-import { assertOpen, assertNoClosedFrom } from './periods.js';
+import { assertOpen, assertNoClosedFrom, closedMonth } from './periods.js';
 
 export class PostingError extends Error {
   constructor(message, status = 409) {
@@ -111,20 +111,29 @@ export async function insertTransaction(client, t) {
   const reviewNote = t.needs_review ? (t.review_note || null) : (uncategorizedIncome ? UNCATEGORIZED_INCOME : null);
   const payee = t.payee_id || (t.payee ? await payeeId(client, t.payee) : null);
   const gst = cleanGst(t.gst_amount, t.amount);
+  // 'fed': only if this account (or, for a card purchase, the card) gets
+  // statements — otherwise nothing will ever confirm it.
+  let awaiting = !t.source && !!t.awaiting_statement;
+  if (awaiting && t.awaiting_statement === 'fed') {
+    const { rows: feed } = await client.query(
+      `SELECT 1 FROM statement_imports WHERE ${t.account_id ? 'account_id = $1' : 'credit_card_id = $1'} LIMIT 1`,
+      [t.account_id || t.credit_card_id]);
+    awaiting = feed.length > 0;
+  }
   const { rows } = await client.query(
     `INSERT INTO transactions
       (account_id, credit_card_id, credit_card_statement_id, ledger, date, amount, description, category_id,
        purchase_class, is_mixed_use, mixed_use_business_pct, is_capex, is_debt_service, is_transfer, is_split,
-       entered_by, cleared, cleared_date, source, external_id, needs_review, review_note, payee_id, gst_amount, ${SEG_COLS})
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,
-             ${SEGMENT_COLUMNS.map((_, i) => `$${25 + i}`).join(',')})
+       entered_by, cleared, cleared_date, source, external_id, needs_review, review_note, payee_id, gst_amount, awaiting_statement, ${SEG_COLS})
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
+             ${SEGMENT_COLUMNS.map((_, i) => `$${26 + i}`).join(',')})
      RETURNING *`,
     [t.account_id || null, t.credit_card_id || null, t.credit_card_statement_id || null,
      t.ledger || ledgerForOwner(owner), t.date, round2(t.amount), t.description || null, t.category_id || null,
      t.purchase_class || null, !!t.is_mixed_use, t.mixed_use_business_pct ?? null,
      !!t.is_capex, !!t.is_debt_service, !!t.is_transfer, splits.length > 0,
      t.entered_by || 'manual', cleared, cleared ? t.date : null, t.source || null, t.external_id || null,
-     needsReview, reviewNote, payee, gst,
+     needsReview, reviewNote, payee, gst, awaiting,
      ...SEGMENT_COLUMNS.map((c) => owner[c])]
   );
   const tx = rows[0];
@@ -261,7 +270,7 @@ export async function payBill(client, billId, {
       category_id: bill.category_id || await categoryIdByName(client, bill.category), payee: bill.name,
       // The bill is the invoice, so its GST is exact; scaled if a different amount was paid.
       gst_amount: bill.has_gst && Number(bill.amount) ? round2(Number(bill.gst_amount) * paid / Number(bill.amount)) : null,
-      owner: ownerOf(bill), cleared: !paid_by_check, source, external_id, entered_by,
+      owner: ownerOf(bill), cleared: !paid_by_check, source, external_id, entered_by, awaiting_statement: true,
     });
   }
   await client.query(
@@ -414,7 +423,7 @@ export async function recordLoanPayment(client, paymentId, {
     account_id, ledger: ledgerForSegment(payment.segment), date, amount: -total,
     description: `Loan payment: ${payment.loan_name || payment.lender}${paid_by_check ? ' (check)' : ''}`,
     is_debt_service: true, owner: ownerOf({ segment: payment.segment }), payee: payment.lender || payment.loan_name,
-    cleared: !paid_by_check, source, external_id, entered_by,
+    cleared: !paid_by_check, source, external_id, entered_by, awaiting_statement: true,
   });
   const { rows: updated } = await client.query(
     `UPDATE loan_payments SET paid = true, paid_date = $1, linked_transaction_id = $2 WHERE id = $3 RETURNING *`,
@@ -436,7 +445,7 @@ export async function settleContract(client, contractId, {
   const tx = await insertTransaction(client, {
     account_id, ledger: ledgerForSegment(contract.segment), date, amount: received,
     description: `Contract settled: ${contract.commodity}${contract.counterparty ? ` — ${contract.counterparty}` : ''}`,
-    owner: ownerOf({ segment: contract.segment }), source, external_id, entered_by,
+    owner: ownerOf({ segment: contract.segment }), source, external_id, entered_by, awaiting_statement: true,
     category_id: await incomeCategoryFor(client, contract.commodity), payee: contract.counterparty,
   });
   const { rows: updated } = await client.query(
@@ -496,33 +505,106 @@ export async function payCard(client, cardId, {
   const pay = Math.abs(Number(amount));
   if (!pay) throw new PostingError('Payment amount is required.', 400);
 
-  let stmtId = statement_id;
-  if (!stmtId) {
-    const { rows } = await client.query(
-      `SELECT id FROM credit_card_statements
-       WHERE credit_card_id = $1 AND COALESCE(statement_date, due_date) <= $2
-       ORDER BY COALESCE(statement_date, due_date) DESC, id DESC LIMIT 1`,
-      [cardId, date]
-    );
-    // Only attach to it if that latest cycle is still open.
-    if (rows.length) {
-      const { rows: open } = await client.query('SELECT paid FROM credit_card_statements WHERE id = $1', [rows[0].id]);
-      if (!open[0].paid) stmtId = rows[0].id;
-    }
-  }
+  const stmtId = statement_id || await openStatementFor(client, cardId, date);
 
   const tx = await insertTransaction(client, {
     account_id, credit_card_id: card.id, credit_card_statement_id: stmtId,
     ledger: ledgerForSegment(card.segment), date, amount: -pay,
     description: `Credit card payment: ${card.name}${paid_by_check ? ' (check)' : ''}`,
     owner: ownerOf({ segment: card.segment }),
-    cleared: !paid_by_check, source, external_id, entered_by,
+    cleared: !paid_by_check, source, external_id, entered_by, awaiting_statement: true,
   });
   await reclassifyCardPayments(client, card.id);
+  await pairCardPayments(client, card.id); // its card-side line may already be on file
   const statement = stmtId ? await recomputeCardStatement(client, stmtId) : null;
   return { transaction: tx, statement };
 }
 
+
+/**
+ * One payment, two statements: the bank shows it going out ("Online
+ * banking payment — Capital One") and the card shows it arriving
+ * ("PAYMENT — THANK YOU"). The bank side is THE payment; the card side
+ * only confirms it. A card-side line that got posted as its own entry
+ * (money in on the card, no bank account) is folded into the bank-side
+ * payment of the same amount within ~10 days: its statement line is
+ * re-pointed there and the duplicate is removed, so what the card owes
+ * drops once, not twice. Card-side payments with no bank side on file
+ * (paid from an account Money Hub doesn't track, or that statement isn't
+ * in yet) stay, and are folded in whenever the bank side arrives.
+ */
+export async function pairCardPayments(client, cardId) {
+  const { rows: sides } = await client.query(
+    `SELECT * FROM transactions
+     WHERE credit_card_id = $1 AND account_id IS NULL AND amount > 0 AND NOT is_split
+       AND (is_transfer OR description ~* '(^|[^a-z])(payment|paiement|pymt|pmt)([^a-z]|$)')
+     ORDER BY date, id`, [cardId]);
+  let merged = 0;
+  for (const s of sides) {
+    const { rows: [bank] } = await client.query(
+      `SELECT t.* FROM transactions t
+       WHERE t.credit_card_id = $1 AND t.account_id IS NOT NULL AND abs(t.amount + $2) < 0.005
+         AND t.date BETWEEN $3::date - 10 AND $3::date + 3
+         AND NOT EXISTS (SELECT 1 FROM statement_lines sl WHERE sl.transaction_id = t.id AND sl.credit_card_id IS NOT NULL)
+       ORDER BY abs(t.date - $3::date), t.id LIMIT 1`,
+      [cardId, s.amount, s.date]);
+    if (!bank) continue;
+    if (await closedMonth(client, s.date)) continue; // a closed month stays as it was closed
+    await client.query(
+      `UPDATE statement_lines SET transaction_id = $1, status = 'matched',
+         reason = 'Payment received on the card — the payment itself is recorded from the bank side'
+       WHERE transaction_id = $2`, [bank.id, s.id]);
+    await client.query('UPDATE receipts SET transaction_id = $1 WHERE transaction_id = $2', [bank.id, s.id]);
+    await client.query('UPDATE transactions SET awaiting_statement = false WHERE id = $1', [bank.id]);
+    await removeTransaction(client, s.id);
+    merged++;
+  }
+  if (merged) await reclassifyCardPayments(client, cardId);
+  return merged;
+}
+
+/** pairCardPayments for every card. */
+export async function pairAllCardPayments(client) {
+  const { rows } = await client.query('SELECT id FROM credit_cards');
+  let n = 0;
+  for (const c of rows) n += await pairCardPayments(client, c.id);
+  return n;
+}
+
+/** The card's latest statement on or before `date`, if that cycle is still unpaid. */
+async function openStatementFor(client, cardId, date) {
+  const { rows } = await client.query(
+    `SELECT id, paid FROM credit_card_statements
+     WHERE credit_card_id = $1 AND COALESCE(statement_date, due_date) <= $2
+     ORDER BY COALESCE(statement_date, due_date) DESC, id DESC LIMIT 1`,
+    [cardId, date]
+  );
+  return rows.length && !rows[0].paid ? rows[0].id : null;
+}
+
+/**
+ * Makes a payment already in the ledger (money out of a bank account —
+ * e.g. "Online banking payment — Capital One" posted as plain spending)
+ * the payment ON a card: it lowers what the card owes and pays its
+ * statement, and stops counting as spending wherever the card's purchases
+ * are itemized (reclassifyCardPayments decides). No new money moves.
+ */
+export async function linkCardPaymentToTransaction(client, cardId, txId) {
+  const tx = await linkableTx(client, txId);
+  if (!tx.account_id || tx.credit_card_id) throw new PostingError('A card payment comes out of a bank account.');
+  const { rows: [card] } = await client.query('SELECT * FROM credit_cards WHERE id = $1', [cardId]);
+  if (!card) throw new PostingError('Card not found.');
+  const stmtId = await openStatementFor(client, card.id, toISODate(tx.date));
+  await client.query(
+    `UPDATE transactions SET credit_card_id = $1, credit_card_statement_id = $2,
+       payee_id = COALESCE(payee_id, $3) WHERE id = $4`,
+    [card.id, stmtId, await payeeId(client, card.issuer || card.name), tx.id]
+  );
+  await reclassifyCardPayments(client, card.id);
+  await pairCardPayments(client, card.id);
+  if (stmtId) await recomputeCardStatement(client, stmtId);
+  return { card };
+}
 
 /**
  * Sets an account's balance as it stood at the START of `as_of` (what the
