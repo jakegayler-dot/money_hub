@@ -10,6 +10,7 @@ import { toISODate } from '../lib/dates.js';
 import { assertOpen, CONFIRMED_SQL, PASSED_SQL } from '../lib/periods.js';
 import { matchPending } from '../lib/receipts.js';
 import { autoLinkBillsSoon } from '../lib/billMatch.js';
+import { autoLinkContractsSoon } from '../lib/contractMatch.js';
 import { cardBalances } from '../lib/cardLedger.js';
 
 const router = Router();
@@ -74,7 +75,7 @@ router.get('/balance', ah(async (req, res) => {
 // (overdue ones included).
 router.get('/link-options', ah(async (req, res) => {
   const { rows: bills } = await pool.query(
-    `SELECT id, name, due_date, amount, category FROM bills WHERE status = 'unpaid' ORDER BY due_date, id`
+    `SELECT id, name, due_date, bill_owing(bills, CURRENT_DATE) AS amount, category FROM bills WHERE status = 'unpaid' ORDER BY due_date, id`
   );
   const { rows: payments } = await pool.query(
     `SELECT lp.id, lp.due_date, lp.principal_amount + lp.interest_amount AS amount,
@@ -84,7 +85,8 @@ router.get('/link-options', ah(async (req, res) => {
      ORDER BY lp.due_date, lp.id`
   );
   const { rows: contracts } = await pool.query(
-    `SELECT id, commodity, counterparty, total_value AS amount, expected_payment_date AS due_date, status
+    `SELECT id, commodity, counterparty, GREATEST(total_value - received_amount, 0) AS amount,
+            total_value, received_amount, expected_payment_date AS due_date, status
      FROM sale_contracts WHERE status IN ('open', 'delivered') ORDER BY expected_payment_date, id`
   );
   const { rows: cards } = await pool.query(
@@ -134,11 +136,14 @@ router.get('/', ah(async (req, res) => {
               (SELECT 'Bill: ' || b.name FROM bills b WHERE b.linked_transaction_id = t.id LIMIT 1),
               (SELECT 'Loan: ' || COALESCE(l.name, l.lender) || ' (due ' || to_char(lp.due_date, 'YYYY-MM-DD') || ')'
                  FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id WHERE lp.linked_transaction_id = t.id LIMIT 1),
-              (SELECT 'Contract: ' || c.commodity FROM sale_contracts c WHERE c.linked_transaction_id = t.id LIMIT 1),
+              (SELECT 'Contract: ' || c.commodity || COALESCE(' — ' || c.counterparty, '') FROM contract_payments cp
+                 JOIN sale_contracts c ON c.id = cp.contract_id WHERE cp.transaction_id = t.id LIMIT 1),
               CASE WHEN t.account_id IS NOT NULL AND t.credit_card_id IS NOT NULL THEN 'Card payment: ' || cc.name END
             ) AS pays,
             EXISTS (SELECT 1 FROM closed_periods cp WHERE cp.month = date_trunc('month', t.date)::date) AS in_closed_month,
             (SELECT r.id FROM receipts r WHERE r.transaction_id = t.id ORDER BY r.id LIMIT 1) AS receipt_id,
+            (SELECT json_agg(json_build_object('id', r.id, 'mime', r.mime, 'type', COALESCE(r.extracted->>'doc_type', 'receipt')) ORDER BY r.id)
+               FROM receipts r WHERE r.transaction_id = t.id) AS documents,
             ${CONFIRMED_SQL('t')} AS confirmed,
             ${PASSED_SQL('t')} AS statement_passed
      FROM transactions t
@@ -256,6 +261,7 @@ router.post('/', ah(async (req, res) => {
   });
   setImmediate(() => matchPending().catch(() => {}));
   autoLinkBillsSoon(); // a payment for a bill on file pays that bill
+  autoLinkContractsSoon(); // a deposit from a buyer counts toward its contract
   res.status(201).json(row);
 }));
 
@@ -271,7 +277,8 @@ async function moneyLock(client, tx) {
   const { rows } = await client.query(
     `SELECT 'bill "' || name || '"' AS what FROM bills WHERE linked_transaction_id = $1
      UNION ALL SELECT 'a scheduled loan payment' FROM loan_payments WHERE linked_transaction_id = $1
-     UNION ALL SELECT 'contract (' || commodity || ')' FROM sale_contracts WHERE linked_transaction_id = $1`,
+     UNION ALL SELECT 'contract (' || c.commodity || ')' FROM contract_payments cp JOIN sale_contracts c ON c.id = cp.contract_id
+               WHERE cp.transaction_id = $1`,
     [tx.id]
   );
   if (rows.length) return `It's the payment for ${rows[0].what} — reverse it from there (unpay / unrecord / unsettle) so that item reopens, then re-enter it.`;

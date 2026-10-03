@@ -24,7 +24,7 @@ import booksRoute from './routes/books.js';
 import taxRoute from './routes/tax.js';
 import receiptsRoute, { receiptUpload } from './routes/receipts.js';
 import { readPending, matchPending } from './lib/receipts.js';
-import { pairAllCardPayments } from './lib/postings.js';
+import { pairAllCardPayments, splitAllLoanPayments } from './lib/postings.js';
 import { withTransaction } from './db.js';
 import { authRouter, requireSignIn, authEnabled } from './lib/appAuth.js';
 
@@ -103,4 +103,8 @@ app.listen(port, () => {
   setTimeout(() => withTransaction((c) => pairAllCardPayments(c))
     .then((n) => n && console.log(`Folded ${n} card-side payment line(s) into their bank-side payments.`))
     .catch((e) => console.error('Card payment pairing failed:', e.message)), 2000);
+  // Loan payments recorded before interest/principal were split out.
+  setTimeout(() => withTransaction((c) => splitAllLoanPayments(c))
+    .then((n) => n && console.log(`Split ${n} loan payment(s) into interest and principal.`))
+    .catch((e) => console.error('Loan payment split failed:', e.message)), 2500);
 });

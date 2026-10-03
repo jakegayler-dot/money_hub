@@ -252,8 +252,11 @@ async function processLineInner(client, { target, source, external_id, payload: 
           return posted(r.transaction, `Paid bill: ${r.bill.name}${r.nextBill ? ` (next due ${toISODate(r.nextBill.due_date)})` : ''}`);
         }
         const { rows } = await client.query(
-          `SELECT * FROM bills WHERE status = 'unpaid' AND abs(amount - $1) < 0.005
-             AND due_date BETWEEN $2::date - 45 AND $2::date + 45 ORDER BY due_date`,
+          `SELECT * FROM bills WHERE status = 'unpaid'
+             AND (abs(amount - $1) < 0.005 OR (is_financed AND $1 BETWEEN amount - 1 AND bill_owing(bills, $2::date) * 1.02 + 5))
+             AND (due_date BETWEEN $2::date - 45 AND $2::date + 45
+                  OR (is_financed AND $2::date BETWEEN COALESCE(received_date, due_date - 365) AND due_date + 180))
+           ORDER BY due_date`,
           [-amount, date]
         );
         const { list } = narrow(rows, hint, (b) => [b.name, b.category]);
@@ -316,35 +319,36 @@ async function processLineInner(client, { target, source, external_id, payload: 
       case 'contract_payment': {
         if (isCard) return hold('Contract payments land in a bank account, not a card.');
         if (amount <= 0) return hold('A contract payment should be money coming in (a positive amount).');
-        const settle = (id) => settleContract(client, id, { account_id: T.id, date, amount, ...stamp });
+        const settle = (id) => settleContract(client, id, { account_id: T.id, date, amount, description: p.description || null, ...stamp });
         if (p.contract_id) {
           const r = await settle(p.contract_id);
           if (!r) return hold(`Contract #${p.contract_id} doesn't exist.`);
           if (r.alreadyPaid) return hold('That contract is already settled.');
-          return posted(r.transaction, `Settled contract: ${r.contract.commodity}`);
+          return posted(r.transaction, `Payment toward contract: ${r.contract.commodity}${r.contract.status === 'settled' ? ' — now settled' : ''}`);
         }
-        // Settlements rarely equal the contract value to the cent (dockage,
-        // levies, freight), so candidates span -20%/+5% — but only an exact
-        // amount, or a counterparty named in the line, settles on its own.
+        // A contract is often paid in several deposits, each net of
+        // checkoff — so any deposit up to what's left on a contract is a
+        // candidate. The buyer named in the line (or an exact match to
+        // what's left) decides on its own; otherwise a person picks.
         const { rows } = await client.query(
-          `SELECT * FROM sale_contracts WHERE status IN ('open', 'delivered')
-             AND expected_payment_date BETWEEN $1::date - 90 AND $1::date + 60
-             AND $2 BETWEEN total_value * 0.8 AND total_value * 1.05
-           ORDER BY abs(total_value - $2)`,
+          `SELECT *, GREATEST(total_value - received_amount, 0) AS remaining FROM sale_contracts WHERE status IN ('open', 'delivered')
+             AND expected_payment_date BETWEEN $1::date - 150 AND $1::date + 180
+             AND $2 <= GREATEST(total_value - received_amount, 0) * 1.03 + 1
+           ORDER BY abs(GREATEST(total_value - received_amount, 0) - $2)`,
           [date, amount]
         );
         const contractCand = (c) => ({
           type: 'contract', id: c.id, label: `${c.commodity}${c.counterparty ? ` — ${c.counterparty}` : ''}`,
-          amount: Number(c.total_value), date: toISODate(c.expected_payment_date),
+          amount: Number(c.remaining), date: toISODate(c.expected_payment_date),
         });
-        const exact = rows.filter((c) => Math.abs(Number(c.total_value) - amount) < 0.005);
+        const exact = rows.filter((c) => Math.abs(Number(c.remaining) - amount) < 0.005);
         const { list, byName } = narrow(rows, hint, (c) => [c.counterparty, c.commodity]);
         const pick = exact.length === 1 ? exact[0] : (byName && list.length === 1 ? list[0] : null);
         if (pick) {
           const r = await settle(pick.id);
-          return posted(r.transaction, `Settled contract: ${pick.commodity}${pick.counterparty ? ` — ${pick.counterparty}` : ''}`);
+          return posted(r.transaction, `Payment toward contract: ${pick.commodity}${pick.counterparty ? ` — ${pick.counterparty}` : ''}${r.contract.status === 'settled' ? ' — now settled' : ''}`);
         }
-        if (rows.length) return hold(`Deposit of ${fmt(amount)} looks like a contract settlement but doesn't match one exactly — pick the contract.`, rows.slice(0, 5).map(contractCand));
+        if (rows.length) return hold(`Deposit of ${fmt(amount)} looks like a contract payment — which contract is it toward?`, rows.slice(0, 5).map(contractCand));
         if (historical) return posted(await insertTransaction(client, plain), 'Historical settlement — no contract on file, posted as income');
         return hold(`No open contract near ${fmt(amount)} expected around ${date}. Post it as plain income if it wasn't under contract.`);
       }

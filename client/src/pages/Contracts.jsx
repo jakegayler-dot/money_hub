@@ -1,6 +1,8 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
+import { uploadBody } from './Receipts.jsx';
 import { money, unitPrice } from '../format.js';
 import { OWNER_LABELS } from '../owners.jsx';
+import { cents } from '../components/SplitEditor.jsx';
 
 const emptyForm = {
   commodity: '', quantity: '', unit: 'tonnes', price_per_unit: '', total_value: '',
@@ -12,9 +14,12 @@ const SEGMENT_LABELS = OWNER_LABELS;
 const STATUS_BADGE = {
   open: <span className="badge warn">OPEN</span>,
   delivered: <span className="badge warn">DELIVERED</span>,
+  partial: <span className="badge warn">PARTLY PAID</span>,
   settled: <span className="badge pass">SETTLED</span>,
   cancelled: <span className="badge fail">CANCELLED</span>,
 };
+const statusOf = (c) => ((c.status === 'open' || c.status === 'delivered') && Number(c.received_amount) > 0 ? 'partial' : c.status);
+const isOpen = (c) => c.status === 'open' || c.status === 'delivered';
 
 export default function Contracts() {
   const [contracts, setContracts] = useState([]);
@@ -22,9 +27,42 @@ export default function Contracts() {
   const [form, setForm] = useState(emptyForm);
   const [filter, setFilter] = useState('all');
   const [error, setError] = useState(null);
+  // File the contract itself (or an amendment) with the contract.
+  const docRef = useRef(null);
+  const [docFor, setDocFor] = useState(null);
+  const addDocument = async (file) => {
+    const id = docFor;
+    setDocFor(null);
+    if (!file || !id) return;
+    setError(null);
+    try {
+      const { body, type } = await uploadBody(file);
+      const r = await fetch(`/api/receipts/upload?contract_id=${id}`, { method: 'POST', headers: { 'Content-Type': type }, body });
+      if (!r.ok) { const b = await r.json().catch(() => ({})); setError(b.error || `Couldn't add it (HTTP ${r.status}).`); }
+    } catch {
+      setError(`Couldn't open ${file.name} — photos and PDFs only.`);
+    }
+    if (docRef.current) docRef.current.value = '';
+    load();
+  };
   const [settlingId, setSettlingId] = useState(null);
   const [settleAccountId, setSettleAccountId] = useState('');
   const [settleAmount, setSettleAmount] = useState('');
+  const [allowance, setAllowance] = useState(null);
+  const [allowanceDraft, setAllowanceDraft] = useState('');
+
+  const post = async (url, body, what) => {
+    setError(null);
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      setError(b?.error || `Could not ${what} (HTTP ${res.status}).`);
+      return false;
+    }
+    load();
+    window.dispatchEvent(new Event('review-changed'));
+    return true;
+  };
 
   const load = () => {
     const q = filter === 'all' ? '' : `?status=${filter}`;
@@ -39,6 +77,7 @@ export default function Contracts() {
   useEffect(load, [filter]);
   useEffect(() => {
     fetch('/api/accounts').then((r) => r.json()).then(setAccounts);
+    fetch('/api/contracts/settings').then((r) => r.json()).then((d) => { setAllowance(d.deduction_allowance_pct); setAllowanceDraft(String(d.deduction_allowance_pct)); });
   }, []);
 
   const submit = async (e) => {
@@ -92,7 +131,7 @@ export default function Contracts() {
 
   const unsettle = async (id) => {
     setError(null);
-    const res = await fetch(`/api/contracts/${id}/unsettle`, { method: 'POST' });
+    const res = await fetch(`/api/contracts/${id}/reopen`, { method: 'POST' });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       setError(body?.error || `Could not unsettle (HTTP ${res.status}).`);
@@ -112,9 +151,7 @@ export default function Contracts() {
     load();
   };
 
-  const outstanding = contracts
-    .filter((c) => c.status === 'open' || c.status === 'delivered')
-    .reduce((s, c) => s + Number(c.total_value), 0);
+  const outstanding = contracts.filter(isOpen).reduce((s, c) => s + Number(c.remaining ?? c.total_value), 0);
 
   const previewTotal = form.total_value
     ? Number(form.total_value)
@@ -124,7 +161,7 @@ export default function Contracts() {
     <>
       <div className="page-header">
         <h1 className="page-title">Contracts</h1>
-        <span className="page-meta">Contracted, not yet received: {money(outstanding)}</span>
+        <span className="page-meta">Still to come on open contracts: {money(outstanding)}</span>
       </div>
 
       {error && (
@@ -144,19 +181,27 @@ export default function Contracts() {
             <option value="settled">Settled</option>
           </select>
         </div>
-        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0 12px' }}>
-          Unsettled contracts count as inflows on the cash-flow forecast at their expected payment
-          month. Settling one (when the money lands) books the real transaction — with the actual
-          amount received, since final settlement often differs from the contracted value — and it
-          stops being a forecast line. Contracts pushed automatically from another system show their
-          source; re-pushes update in place.
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 16px 12px' }}>
+          Deposits count toward a contract as they land — on their own when the deposit names the buyer and only one
+          contract fits, otherwise listed under the contract to confirm. A contract settles itself once its deposits
+          reach its value less{' '}
+          {allowance == null ? '…' : (
+            <span style={{ whiteSpace: 'nowrap' }}>
+              <input aria-label="Deductions allowance %" type="number" step="0.1" min="0" max="49" value={allowanceDraft}
+                onChange={(e) => setAllowanceDraft(e.target.value)} style={{ width: 54, padding: '1px 4px' }}
+                onBlur={() => { if (Number(allowanceDraft) !== allowance) post('/api/contracts/settings', { deduction_allowance_pct: Number(allowanceDraft) }, 'save the allowance').then((ok) => ok && setAllowance(Number(allowanceDraft))); }} />%
+            </span>
+          )}{' '}
+          for checkoff and levies; the difference is booked as deductions so income shows at the contract value.
+          Only what's still to come counts on the cash-flow forecast.
         </p>
+        <input ref={docRef} type="file" accept="image/*,application/pdf,.pdf" hidden onChange={(e) => addDocument(e.target.files?.[0])} />
         {contracts.length === 0 ? (
           <div className="empty-state">No contracts on file.</div>
         ) : (
           <table>
             <thead>
-              <tr><th>Payment expected</th><th>Commodity</th><th>Qty</th><th>Value</th><th>Status</th><th></th></tr>
+              <tr><th>Payment expected</th><th>Commodity</th><th>Qty</th><th>Value</th><th>Received</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
               {contracts.map((c) => (
@@ -170,7 +215,15 @@ export default function Contracts() {
                     </td>
                     <td>{c.quantity ? `${Number(c.quantity)} ${c.unit || ''}${c.price_per_unit ? ` @ ${unitPrice(Number(c.price_per_unit))}/${c.unit || 'unit'}` : ''}` : '—'}</td>
                     <td>{money(Number(c.total_value))}</td>
-                    <td>{STATUS_BADGE[c.status] || c.status}</td>
+                    <td>
+                      <span className="nowrap">{money(Number(c.received_amount || 0))}</span>
+                      <div className="contract-bar" aria-hidden="true">
+                        <span style={{ width: `${Math.min(100, (Number(c.received_amount || 0) / Math.max(Number(c.total_value), 1)) * 100)}%` }} />
+                      </div>
+                      {isOpen(c) && Number(c.received_amount) > 0 && <div className="split-lines nowrap">{money(c.remaining)} to come</div>}
+                      {Number(c.deductions_amount) > 0 && <div className="split-lines nowrap">incl. {money(Number(c.deductions_amount))} deductions</div>}
+                    </td>
+                    <td>{STATUS_BADGE[statusOf(c)] || c.status}</td>
                     <td>
                       {settlingId === c.id ? (
                         <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -182,7 +235,7 @@ export default function Contracts() {
                           </select>
                           <input
                             type="number" step="0.01" style={{ width: 110 }}
-                            placeholder={`Actual (${money(Number(c.total_value))})`}
+                            placeholder={`Amount (${money(c.remaining ?? Number(c.total_value))})`}
                             value={settleAmount}
                             onChange={(e) => setSettleAmount(e.target.value)}
                           />
@@ -191,19 +244,84 @@ export default function Contracts() {
                         </span>
                       ) : (
                         <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
-                          {(c.status === 'open' || c.status === 'delivered') && (
-                            <button className="small" onClick={() => { setSettlingId(c.id); setSettleAccountId(''); setSettleAmount(''); }}>Settle</button>
+                          {isOpen(c) && (
+                            <button className="small secondary" title="Money arrived that isn't on a statement yet — records the deposit by hand"
+                              onClick={() => { setSettlingId(c.id); setSettleAccountId(''); setSettleAmount(''); }}>Record deposit</button>
                           )}
                           {c.status === 'settled' && (
-                            <button className="small secondary" onClick={() => unsettle(c.id)}>Unsettle</button>
+                            <button className="small secondary" onClick={() => unsettle(c.id)}>Reopen</button>
                           )}
-                          {c.status !== 'settled' && (
+                          <button className="small secondary" title="The signed contract, an amendment or confirmation — photo or PDF"
+                            onClick={() => { setDocFor(c.id); docRef.current?.click(); }}>Add document</button>
+                          {c.status !== 'settled' && !(c.deposits || []).length && (
                             <button className="small secondary" onClick={() => remove(c.id)}>Delete</button>
                           )}
                         </span>
                       )}
                     </td>
                   </tr>
+                  {((c.deposits || []).length > 0 || (c.suggestions || []).length > 0 || c.settle_note || (c.documents || []).length > 0) && (
+                    <tr className="contract-detail">
+                      <td colSpan={7}>
+                        {(c.documents || []).length > 0 && (
+                          <div className="split-lines">
+                            Contract documents:{' '}
+                            {c.documents.map((d, i) => (
+                              <a key={d.id} className="tag" href={`/api/receipts/${d.id}/image`} target="_blank" rel="noreferrer">
+                                {i === 0 ? 'Contract' : `Document ${i + 1}`}{d.mime === 'application/pdf' ? ' (PDF)' : ''}
+                              </a>
+                            ))}
+                          </div>
+                        )}
+                        {(c.deposits || []).length > 0 && (
+                          <div className="contract-deposits">
+                            {c.deposits.map((d) => (
+                              <div key={d.id} className="split-lines">
+                                {d.date} · {d.account} · <span className="nowrap">{cents(d.amount)}</span> · {d.description}
+                                {d.awaiting_statement && <span className="tag">Awaiting statement</span>}
+                                {(d.documents || []).map((x, i) => (
+                                  <a key={x.id} className="tag" href={`/api/receipts/${x.id}/image`} target="_blank" rel="noreferrer">
+                                    Ticket{d.documents.length > 1 ? ` ${i + 1}` : ''}
+                                  </a>
+                                ))}{' '}
+                                <a className="small-link" href={`/ledgers?edit=${d.id}`}>Open</a>{' '}
+                                <button type="button" className="small-link" title={d.created_here ? 'Removes this hand-recorded deposit' : 'Not this contract — the deposit stays in the ledger'}
+                                  onClick={() => post(`/api/contracts/${c.id}/unlink`, { transaction_id: d.id }, 'unlink it')}>
+                                  {d.created_here ? 'Remove' : 'Not this contract'}
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {c.settle_note && <div className="split-lines">{c.settle_note}</div>}
+                        {isOpen(c) && Number(c.received_amount) > 0 && (
+                          <div className="contract-actions">
+                            <span className="split-lines">All of it delivered and paid?</span>
+                            <button type="button" className={c.remaining <= Number(c.total_value) * 0.15 ? 'small' : 'small secondary'}
+                              onClick={() => post(`/api/contracts/${c.id}/settle-now`, { mode: 'deductions' }, 'settle it')}>
+                              Settle — the {money(c.remaining)} left was deductions
+                            </button>
+                            <button type="button" className="small secondary" onClick={() => post(`/api/contracts/${c.id}/settle-now`, { mode: 'short' }, 'settle it')}>
+                              Settle — delivered short
+                            </button>
+                          </div>
+                        )}
+                        {(c.suggestions || []).length > 0 && (
+                          <div className="contract-suggest">
+                            <div className="split-lines">Deposits that look like this contract:</div>
+                            {c.suggestions.map((t) => (
+                              <div key={t.id} className="split-lines">
+                                <button type="button" className="small" onClick={() => post(`/api/contracts/${c.id}/link`, { transaction_id: t.id }, 'link it')}>Counts toward this</button>{' '}
+                                {t.date} · {t.account} · <span className="nowrap">{cents(t.amount)}</span> · {t.description}
+                                {t.names_buyer && <span className="tag">Names {c.counterparty}</span>}
+                                {t.names_crop && <span className="tag">{c.commodity}</span>}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
                 </Fragment>
               ))}
             </tbody>

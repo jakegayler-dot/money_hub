@@ -1,4 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { uploadBody } from './Receipts.jsx';
+
+const DOC_LABEL = { receipt: 'Receipt', invoice: 'Invoice', sales_ticket: 'Ticket', contract: 'Contract' };
 import { money } from '../format.js';
 import { OwnerFields, ownerPayload, ownerSummary, emptyOwnerFields, ownerFieldsFrom, OWNER_LABELS } from '../owners.jsx';
 import SplitEditor, { cents, newPiece, piecesPayload } from '../components/SplitEditor.jsx';
@@ -81,6 +84,27 @@ export default function Ledgers() {
   const [balance, setBalance] = useState(null);
   const [editing, setEditing] = useState(null); // the transaction being edited
   const [error, setError] = useState(null);
+  // Attach a photo or PDF to one entry (an income stub, a ticket, an invoice).
+  const fileRef = useRef(null);
+  const [attachTo, setAttachTo] = useState(null);
+  const [attaching, setAttaching] = useState(null);
+  const attachFile = async (file) => {
+    const id = attachTo;
+    setAttachTo(null);
+    if (!file || !id) return;
+    setError(null);
+    setAttaching(id);
+    try {
+      const { body, type } = await uploadBody(file);
+      const r = await fetch(`/api/receipts/upload?transaction_id=${id}`, { method: 'POST', headers: { 'Content-Type': type }, body });
+      if (!r.ok) { const b = await r.json().catch(() => ({})); setError(b.error || `Couldn't attach it (HTTP ${r.status}).`); }
+    } catch {
+      setError(`Couldn't open ${file.name} — photos and PDFs only.`);
+    }
+    setAttaching(null);
+    if (fileRef.current) fileRef.current.value = '';
+    load();
+  };
   const payees = usePayees();
   const [linkOptions, setLinkOptions] = useState({ bills: [], loan_payments: [], contracts: [], cards: [] });
   const loadLinkOptions = () => fetch('/api/transactions/link-options').then((r) => r.json())
@@ -416,7 +440,7 @@ export default function Ledgers() {
           )}
           {canSettle && linkOptions.contracts.length > 0 && (
             <div className="field span2">
-              <label>Settles a contract? (✓ = amount matches)</label>
+              <label>Payment toward a contract? (✓ = covers what's left)</label>
               <select value={form.pays} onChange={(e) => setForm({ ...form, pays: e.target.value })}>
                 <option value="">No — not under contract</option>
                 {byMatch(linkOptions.contracts).map((c) => (
@@ -425,7 +449,7 @@ export default function Ledgers() {
                   </option>
                 ))}
               </select>
-              {form.pays.startsWith('contract:') && <span className="split-lines">Settles the contract with this deposit; income category and buyer fill in from it.</span>}
+              {form.pays.startsWith('contract:') && <span className="split-lines">Counts toward the contract; income category and buyer fill in from it. The contract settles once its deposits reach its value less checkoff.</span>}
             </div>
           )}
           {form.is_split && !form.is_transfer ? (
@@ -530,6 +554,7 @@ export default function Ledgers() {
             </label>
           </span>
         </div>
+        <input ref={fileRef} type="file" accept="image/*,application/pdf,.pdf" hidden onChange={(e) => attachFile(e.target.files?.[0])} />
         {balance && (
           <div className="balance-strip">
             {balance.kind === 'account' ? (
@@ -582,7 +607,11 @@ export default function Ledgers() {
                     {t.description}
                     {t.is_transfer && <span className="tag">Transfer</span>}
                     {t.pays && <span className="tag tag-link">{t.pays}</span>}
-                    {t.receipt_id && <a className="tag" href={`/api/receipts/${t.receipt_id}/image`} target="_blank" rel="noreferrer">Receipt</a>}
+                    {(t.documents || []).map((d, i) => (
+                      <a key={d.id} className="tag" href={`/api/receipts/${d.id}/image`} target="_blank" rel="noreferrer">
+                        {DOC_LABEL[d.type] || 'Document'}{t.documents.length > 1 ? ` ${i + 1}` : ''}{d.mime === 'application/pdf' ? ' (PDF)' : ''}
+                      </a>
+                    ))}
                     {t.payee_name && <div className="split-lines" style={{ color: 'var(--text)' }}>{Number(t.amount) > 0 ? 'From' : 'To'} {t.payee_name}</div>}
                     {t.source && <span className="tag" title={`From ${t.source}`}>Statement</span>}
                     {t.needs_review && <span className="badge warn" style={{ marginLeft: 6 }}>NEEDS REVIEW</span>}
@@ -620,6 +649,10 @@ export default function Ledgers() {
                     ) : (
                       <>
                         <button className="small secondary" onClick={() => startEdit(t)}>Edit</button>{' '}
+                        <button className="small secondary" title="Attach a photo or PDF (receipt, invoice, settlement ticket, cheque stub)"
+                          disabled={attaching === t.id} onClick={() => { setAttachTo(t.id); fileRef.current?.click(); }}>
+                          {attaching === t.id ? 'Attaching…' : 'Attach'}
+                        </button>{' '}
                         <button className="small secondary" onClick={() => remove(t)}>Delete</button>
                       </>
                     )}

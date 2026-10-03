@@ -61,7 +61,7 @@ export async function loadSnapshotRows() {
                     FROM credit_card_statements s JOIN credit_cards c ON c.id = s.credit_card_id`),
       client.query(`SELECT id, name, lender, covenant_date, covenant_notes FROM loans
                     WHERE covenant_date IS NOT NULL`),
-      client.query(`SELECT id, commodity, counterparty, quantity, unit, total_value, expected_payment_date,
+      client.query(`SELECT id, commodity, counterparty, quantity, unit, total_value, received_amount, expected_payment_date,
                            status, notes
                     FROM sale_contracts WHERE status != 'cancelled'`),
     ]); // one client: pg runs these one after another, same snapshot

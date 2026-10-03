@@ -5,6 +5,7 @@ import { ah } from '../lib/asyncHandler.js';
 import { requireIngestKey } from '../lib/ingestAuth.js';
 import { matchPending } from '../lib/receipts.js';
 import { autoLinkBillsSoon } from '../lib/billMatch.js';
+import { autoLinkContractsSoon } from '../lib/contractMatch.js';
 import { OWNERS } from '../lib/segments.js';
 import { toISODate, todayISO, addDays } from '../lib/dates.js';
 import { processLine, reconcileImport, KINDS } from '../lib/statementIngest.js';
@@ -99,13 +100,14 @@ router.get('/reference', requireIngestKey, ah(async (req, res) => {
                        EXISTS (SELECT 1 FROM expense_categories k WHERE k.parent_id = c.id) AS has_subcategories
                 FROM expense_categories c LEFT JOIN expense_categories p ON p.id = c.parent_id
                 ORDER BY lower(COALESCE(p.name, c.name)), c.parent_id IS NOT NULL, lower(c.name)`),
-    pool.query(`SELECT id, name, amount, due_date, frequency FROM bills WHERE status = 'unpaid' ORDER BY due_date`),
+    pool.query(`SELECT id, name, amount, bill_owing(bills, CURRENT_DATE) AS owing_today, is_financed, due_date, frequency
+                FROM bills WHERE status = 'unpaid' ORDER BY due_date`),
     pool.query(`SELECT lp.id, COALESCE(NULLIF(l.name, ''), l.lender) AS loan, l.lender,
                        lp.principal_amount + lp.interest_amount AS amount, lp.due_date
                 FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
                 WHERE lp.paid = false AND lp.is_adjustment = false AND lp.due_date <= $1
                 ORDER BY lp.due_date`, [soon]),
-    pool.query(`SELECT id, commodity, counterparty, total_value, expected_payment_date, status
+    pool.query(`SELECT id, commodity, counterparty, total_value, received_amount, GREATEST(total_value - received_amount, 0) AS remaining, expected_payment_date, status
                 FROM sale_contracts WHERE status IN ('open', 'delivered') ORDER BY expected_payment_date`),
     pool.query('SELECT id, name FROM payees ORDER BY lower(name)'),
   ]);
@@ -290,6 +292,7 @@ router.post('/ingest', requireIngestKey, ah(async (req, res) => {
   // New transactions may be what waiting receipts belong to.
   setImmediate(() => matchPending().catch(() => {}));
   autoLinkBillsSoon(); // a payment for a bill on file pays that bill
+  autoLinkContractsSoon(); // a deposit from a buyer counts toward its contract
   res.json({
     import_id: imp.id,
     target: { type: target.type, id: target.row.id, name: target.row.name },

@@ -51,7 +51,7 @@ router.get('/totals', ah(async (req, res) => {
      FROM transaction_lines l
      JOIN transactions t ON t.id = l.transaction_id
      LEFT JOIN payees p ON p.id = t.payee_id
-     WHERE l.is_transfer = false AND l.is_debt_service = false AND EXTRACT(YEAR FROM l.date) = $1
+     WHERE l.is_transfer = false AND (l.is_debt_service = false OR l.split_id IS NOT NULL) AND EXTRACT(YEAR FROM l.date) = $1
        AND ${income ? 'l.amount > 0' : 'l.amount < 0'}`,
     [year]
   );

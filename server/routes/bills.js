@@ -2,7 +2,13 @@ import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { validateSegment, segmentValues, SEGMENT_COLUMNS } from '../lib/segments.js';
-import { payBill, removeTransaction, linkBillToTransaction, expenseCategoryFor } from '../lib/postings.js';
+import {
+  payBill, removeTransaction, linkBillToTransaction, expenseCategoryFor, linkBillsToTransaction, payBills,
+  recordVendorDeposit, applyVendorCredit, unapplyVendorCredit, refundVendorCredit, keepVendorCredit, removeVendorCredit, payeeId,
+} from '../lib/postings.js';
+
+// "JS & CL Gayler — Inv. 0588652" → "JS & CL Gayler" (same rule as the schema backfill).
+const vendorFromName = (name) => String(name || '').replace(/\s+(—|–|-|#|inv\.?\s|invoice\s).*$/i, '').trim() || String(name || '').trim();
 import { autoLinkBills, autoLinkBillsSoon, billCandidates } from '../lib/billMatch.js';
 import { todayISO, toISODate, addMonths } from '../lib/dates.js';
 import { matchPending } from '../lib/receipts.js';
@@ -12,6 +18,36 @@ const segPlaceholders = (n) => SEGMENT_COLUMNS.map((_, i) => `$${n + i}`).join('
 const SEG_COLS = SEGMENT_COLUMNS.join(', ');
 
 const router = Router();
+
+// Finance terms off a request: interest-free date, annual rate, and the
+// latest statement balance (if one has been entered). Empty → null.
+const FIN_FIELDS = ['is_financed', 'finance_rate_pct', 'interest_free_until', 'balance_amount', 'balance_as_of'];
+function financeFrom(body, current = {}) {
+  const pick = (k) => (body[k] !== undefined ? body[k] : current[k]);
+  const financed = !!pick('is_financed');
+  const num = (v) => (v === '' || v == null ? null : Number(v));
+  const day = (v) => (v === '' || v == null ? null : v);
+  return {
+    is_financed: financed,
+    finance_rate_pct: financed ? num(pick('finance_rate_pct')) : null,
+    interest_free_until: financed ? day(pick('interest_free_until')) : null,
+    balance_amount: financed ? num(pick('balance_amount')) : null,
+    balance_as_of: financed ? day(pick('balance_as_of')) : null,
+  };
+}
+// Comparable form of one finance field (dates as YYYY-MM-DD, numbers as numbers, blanks as '').
+function finKey(k, v) {
+  if (v === '' || v == null) return k === 'is_financed' ? 'false' : '';
+  if (k === 'is_financed') return String(!!v);
+  if (k === 'interest_free_until' || k === 'balance_as_of') return toISODate(v);
+  return String(Number(v));
+}
+function financeError(f) {
+  if (!f.is_financed) return null;
+  if (f.finance_rate_pct == null || !(f.finance_rate_pct >= 0 && f.finance_rate_pct < 100)) return 'Enter the interest rate (% per year) for a bill on finance terms.';
+  if ((f.balance_amount == null) !== (f.balance_as_of == null)) return 'A statement balance needs both the amount and its date.';
+  return null;
+}
 
 // `amount` is treated as the GST-inclusive total. Given that total and a
 // GST rate, the tax component is amount * pct / (100 + pct) — not
@@ -47,6 +83,8 @@ router.get('/', ah(async (req, res) => {
             CASE WHEN pc.id IS NULL THEN ec.name ELSE pc.name || ' › ' || ec.name END AS category_full,
             t.date AS paid_tx_date, t.amount AS paid_tx_amount, t.description AS paid_tx_description,
             a.name AS paid_account, cc.name AS paid_card,
+            bill_owing(b, CURRENT_DATE) AS owing_now, bill_owing(b, b.due_date) AS owing_at_due, pv.name AS vendor,
+            COALESCE((SELECT SUM(amount) FROM credit_applications WHERE bill_id = b.id), 0) AS deposit_applied,
             t.awaiting_statement AS paid_awaiting, (t.source IS NOT NULL) AS paid_from_statement,
             (SELECT r.id FROM receipts r
              WHERE r.bill_id = b.id OR (b.linked_transaction_id IS NOT NULL AND r.transaction_id = b.linked_transaction_id)
@@ -57,6 +95,7 @@ router.get('/', ah(async (req, res) => {
      LEFT JOIN transactions t ON t.id = b.linked_transaction_id
      LEFT JOIN accounts a ON a.id = t.account_id
      LEFT JOIN credit_cards cc ON cc.id = t.credit_card_id
+     LEFT JOIN payees pv ON pv.id = b.payee_id
      ${where}
      ORDER BY (b.status = 'unpaid') DESC, b.due_date ASC`,
     params
@@ -67,6 +106,9 @@ router.get('/', ah(async (req, res) => {
       ...b,
       paid_tx_date: b.paid_tx_date ? toISODate(b.paid_tx_date) : null,
       paid_tx_amount: b.paid_tx_amount == null ? null : Number(b.paid_tx_amount),
+      owing_now: Number(b.owing_now), owing_at_due: Number(b.owing_at_due),
+      interest_free_until: b.interest_free_until ? toISODate(b.interest_free_until) : null,
+      balance_as_of: b.balance_as_of ? toISODate(b.balance_as_of) : null,
       suggestions: b.status === 'unpaid' ? await billCandidates(pool, b, 4) : [],
     });
   }
@@ -91,6 +133,9 @@ router.post('/', ah(async (req, res) => {
 
   const segmentError = validateSegment(req.body);
   if (segmentError) return res.status(400).json({ error: segmentError });
+  const fin = financeFrom(req.body);
+  const finErr = financeError(fin);
+  if (finErr) return res.status(400).json({ error: finErr });
 
   // Empty strings from an optional form field are not valid DATE input —
   // coerce them (and empty text) to NULL rather than letting the insert fail.
@@ -107,8 +152,14 @@ router.post('/', ah(async (req, res) => {
      !!has_gst, gst_pct, gst_amount, subtotal_amount,
      ...segmentValues(req.body), catId]
   );
+  await pool.query(
+    `UPDATE bills SET is_financed = $2, finance_rate_pct = $3, interest_free_until = $4, balance_amount = $5, balance_as_of = $6 WHERE id = $1`,
+    [rows[0].id, fin.is_financed, fin.finance_rate_pct, fin.interest_free_until, fin.balance_amount, fin.balance_as_of]);
+  // The vendor: picked, or taken from the name ("Nutrien — Inv 4471" → Nutrien).
+  const vendor = req.body.payee_id ? Number(req.body.payee_id) : await payeeId(pool, vendorFromName(name));
+  await pool.query('UPDATE bills SET payee_id = $2 WHERE id = $1', [rows[0].id, vendor]);
   autoLinkBillsSoon(); // already paid? find the payment
-  res.status(201).json(rows[0]);
+  res.status(201).json({ ...rows[0], ...fin });
 }));
 
 // Marking a bill paid moves real money: when account_id is given, this
@@ -156,36 +207,164 @@ router.post('/:id/unpay', ah(async (req, res) => {
     if (!rows.length) return null;
     const bill = rows[0];
     if (bill.status !== 'paid') return bill;
-    // Null the FK reference before deleting the transaction it points to.
-    const { rows: updated } = await client.query(
-      `UPDATE bills SET status = 'unpaid', paid_date = NULL, linked_transaction_id = NULL WHERE id = $1 RETURNING *`,
-      [bill.id]
-    );
-    // A bill matched to a transaction that was already in the ledger just
-    // lets go of it; a payment made from the Bills tab is deleted.
-    if (bill.linked_transaction_id && !bill.linked_existing) await removeTransaction(client, bill.linked_transaction_id);
-    if (bill.linked_transaction_id && bill.linked_existing) {
-      await client.query('INSERT INTO bill_link_rejections (bill_id, transaction_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-        [bill.id, bill.linked_transaction_id]);
-    }
-    await client.query('UPDATE bills SET linked_existing = false WHERE id = $1', [bill.id]);
-    // Paying a recurring bill created next cycle's bill. Reopening this one
-    // makes that copy a duplicate (the forecast would count the cycle
-    // twice), so remove it — only if it's still unpaid and untouched.
-    if (bill.frequency === 'monthly' || bill.frequency === 'quarterly') {
-      const nextDue = addMonths(toISODate(bill.due_date), bill.frequency === 'monthly' ? 1 : 3);
+    // Paid by a deposit: take the deposit back off it (it reopens).
+    const { rows: apps } = await client.query('SELECT id FROM credit_applications WHERE bill_id = $1', [bill.id]);
+    for (const a of apps) await unapplyVendorCredit(client, a.id);
+    const txId = bill.linked_transaction_id;
+    // One payment may have paid several bills: undoing it reopens them all.
+    const { rows: group } = txId
+      ? await client.query('SELECT * FROM bills WHERE linked_transaction_id = $1 FOR UPDATE', [txId])
+      : { rows: [bill] };
+    for (const b of group) {
       await client.query(
-        `DELETE FROM bills WHERE id = (
-           SELECT id FROM bills WHERE status = 'unpaid' AND name = $1 AND frequency = $2
-             AND amount = $3 AND due_date = $4 AND id > $5 ORDER BY id LIMIT 1)`,
-        [bill.name, bill.frequency, bill.amount, nextDue, bill.id]
-      );
+        `UPDATE bills SET status = 'unpaid', paid_date = NULL, linked_transaction_id = NULL, linked_existing = false WHERE id = $1`, [b.id]);
+      // Paying a recurring bill created next cycle's bill — a duplicate now.
+      if (b.frequency === 'monthly' || b.frequency === 'quarterly') {
+        const nextDue = addMonths(toISODate(b.due_date), b.frequency === 'monthly' ? 1 : 3);
+        await client.query(
+          `DELETE FROM bills WHERE id = (
+             SELECT id FROM bills WHERE status = 'unpaid' AND name = $1 AND frequency = $2
+               AND amount = $3 AND due_date = $4 AND id > $5 ORDER BY id LIMIT 1)`,
+          [b.name, b.frequency, b.amount, nextDue, b.id]);
+      }
     }
-    return updated[0];
+    if (txId) {
+      if (!bill.linked_existing) {
+        await removeTransaction(client, txId); // paid from this tab: the payment goes too
+      } else {
+        // A payment already in the ledger: it stays, its bill pieces come off,
+        // and it's remembered as not these bills.
+        const names = group.flatMap((b) => [`Bill: ${b.name}`, `Invoice: ${b.name}`, `Finance interest on ${b.name}`]);
+        const { rowCount } = await client.query(
+          'DELETE FROM transaction_splits WHERE transaction_id = $1 AND memo = ANY($2)', [txId, names]);
+        if (rowCount) {
+          await client.query(
+            `UPDATE transactions SET is_split = EXISTS (SELECT 1 FROM transaction_splits WHERE transaction_id = $1),
+               category_id = CASE WHEN EXISTS (SELECT 1 FROM transaction_splits WHERE transaction_id = $1) THEN NULL ELSE $2::int END
+             WHERE id = $1`, [txId, group.length === 1 ? bill.category_id : null]);
+        }
+        for (const b of group) {
+          await client.query('INSERT INTO bill_link_rejections (bill_id, transaction_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [b.id, txId]);
+        }
+      }
+    }
+    const { rows: [after] } = await client.query('SELECT * FROM bills WHERE id = $1', [bill.id]);
+    return after;
   });
 
   if (!bill) return res.status(404).json({ error: 'not found' });
   res.json(bill);
+}));
+
+// ---- By vendor ------------------------------------------------------------
+// One line per vendor: what's owed across its unpaid bills, deposits it's
+// holding, and the net — plus the bills and deposits behind it.
+router.get('/vendors', ah(async (req, res) => {
+  try { await autoLinkBills(); } catch (e) { console.error('Bill auto-link failed:', e.message); }
+  const { rows: bills } = await pool.query(
+    `SELECT b.id, b.payee_id, b.name, b.due_date, b.amount, b.status, bill_owing(b, CURRENT_DATE) AS owing,
+            COALESCE((SELECT SUM(amount) FROM credit_applications WHERE bill_id = b.id), 0) AS applied
+     FROM bills b WHERE b.status = 'unpaid' ORDER BY b.due_date, b.id`);
+  const { rows: credits } = await pool.query(
+    `SELECT vc.*, vc.amount - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE credit_id = vc.id), 0) AS remaining,
+            t.description AS tx_description, a.name AS account,
+            COALESCE((SELECT json_agg(json_build_object('id', ca.id, 'bill_id', ca.bill_id, 'bill', b.name, 'amount', ca.amount) ORDER BY ca.id)
+                      FROM credit_applications ca JOIN bills b ON b.id = ca.bill_id WHERE ca.credit_id = vc.id), '[]'::json) AS applications
+     FROM vendor_credits vc LEFT JOIN transactions t ON t.id = vc.transaction_id LEFT JOIN accounts a ON a.id = t.account_id
+     ORDER BY vc.date, vc.id`);
+  const { rows: payees } = await pool.query('SELECT id, name FROM payees');
+  const nameOf = new Map(payees.map((p) => [p.id, p.name]));
+  const by = new Map();
+  const get = (id) => {
+    const k = id ?? 0;
+    if (!by.has(k)) by.set(k, { payee_id: id, name: id ? nameOf.get(id) : 'No vendor set', owing: 0, held: 0, bills: [], credits: [] });
+    return by.get(k);
+  };
+  for (const b of bills) {
+    const v = get(b.payee_id);
+    v.owing += Number(b.owing);
+    v.bills.push({ ...b, due_date: toISODate(b.due_date), amount: Number(b.amount), owing: Number(b.owing), applied: Number(b.applied) });
+  }
+  for (const c of credits) {
+    const v = get(c.payee_id);
+    const open = c.status === 'open';
+    if (open) v.held += Number(c.remaining);
+    if (open || c.date >= new Date(Date.now() - 365 * 86400000)) {
+      v.credits.push({ ...c, date: toISODate(c.date), amount: Number(c.amount), remaining: Number(c.remaining) });
+    }
+  }
+  const out = [...by.values()]
+    .map((v) => ({ ...v, owing: Math.round(v.owing * 100) / 100, held: Math.round(v.held * 100) / 100,
+      net: Math.round((v.owing - v.held) * 100) / 100, oldest_due: v.bills[0]?.due_date || null }))
+    .filter((v) => v.bills.length || v.credits.length)
+    .sort((a, b) => (b.owing - a.owing));
+  res.json(out);
+}));
+
+// Pay several bills (a vendor's whole balance, or the ones picked) in one payment.
+router.post('/pay-many', ah(async (req, res) => {
+  const { bill_ids = [], account_id, paid_date = todayISO(), paid_by_check = false } = req.body || {};
+  if (!account_id) return res.status(400).json({ error: 'Which account did it come out of?' });
+  const r = await withTransaction((client) => payBills(client, bill_ids.map(Number), { account_id, date: paid_date, paid_by_check }));
+  autoLinkBillsSoon();
+  res.json({ transaction_id: r.transaction.id, paid: r.bills.length });
+}));
+
+// One payment already in the ledger paid these bills.
+router.post('/link-many', ah(async (req, res) => {
+  const { bill_ids = [], transaction_id } = req.body || {};
+  await withTransaction((client) => linkBillsToTransaction(client, bill_ids.map(Number), Number(transaction_id)));
+  setImmediate(() => matchPending().catch(() => {}));
+  res.json({ ok: true });
+}));
+
+// Deposits held by a vendor.
+router.post('/credits', ah(async (req, res) => {
+  const b = req.body || {};
+  if (!b.payee_id) return res.status(400).json({ error: 'Which vendor is holding it?' });
+  const c = await withTransaction((client) => recordVendorDeposit(client, {
+    payee_id: Number(b.payee_id), kind: b.kind, transaction_id: b.transaction_id || null,
+    account_id: b.account_id || null, amount: b.amount, date: b.date, note: b.note || null,
+  }));
+  autoLinkBillsSoon();
+  res.status(201).json(c);
+}));
+router.post('/credits/:id/apply', ah(async (req, res) => {
+  const r = await withTransaction((client) => applyVendorCredit(client, Number(req.params.id), Number(req.body?.bill_id)));
+  res.json(r);
+}));
+router.post('/credits/applications/:id/remove', ah(async (req, res) => {
+  await withTransaction((client) => unapplyVendorCredit(client, Number(req.params.id)));
+  res.json({ ok: true });
+}));
+router.post('/credits/:id/refund', ah(async (req, res) => {
+  await withTransaction((client) => refundVendorCredit(client, Number(req.params.id), Number(req.body?.transaction_id)));
+  res.json({ ok: true });
+}));
+router.post('/credits/:id/keep', ah(async (req, res) => {
+  await withTransaction((client) => keepVendorCredit(client, Number(req.params.id), req.body?.category_id ? Number(req.body.category_id) : null));
+  res.json({ ok: true });
+}));
+router.delete('/credits/:id', ah(async (req, res) => {
+  await withTransaction((client) => removeVendorCredit(client, Number(req.params.id)));
+  res.status(204).end();
+}));
+// Payments to (or refunds from) this vendor not tied to anything yet — to pick from.
+router.get('/vendors/:payeeId/payments', ah(async (req, res) => {
+  const incoming = req.query.direction === 'in';
+  const { rows: [p] } = await pool.query('SELECT name FROM payees WHERE id = $1', [req.params.payeeId]);
+  const words = String(p?.name || '').toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2);
+  const { rows } = await pool.query(
+    `SELECT t.id, t.date, t.amount, t.description, a.name AS account FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
+     WHERE ${incoming ? 't.amount > 0' : 't.amount < 0'} AND NOT t.is_transfer AND t.date > CURRENT_DATE - 400
+       AND (t.payee_id = $1 OR lower(t.description) ~ $2)
+       AND NOT EXISTS (SELECT 1 FROM bills x WHERE x.linked_transaction_id = t.id)
+       AND NOT EXISTS (SELECT 1 FROM loan_payments x WHERE x.linked_transaction_id = t.id)
+       AND NOT EXISTS (SELECT 1 FROM vendor_credits x WHERE x.transaction_id = t.id OR x.refund_transaction_id = t.id)
+       AND NOT EXISTS (SELECT 1 FROM contract_payments x WHERE x.transaction_id = t.id)
+     ORDER BY t.date DESC LIMIT 20`,
+    [req.params.payeeId, words.length ? `(${words.map((w) => w.replace(/[^a-z0-9]/g, '')).join('|')})` : '^$']);
+  res.json(rows.map((t) => ({ ...t, date: toISODate(t.date), amount: Number(t.amount) })));
 }));
 
 router.patch('/:id', ah(async (req, res) => {
@@ -199,7 +378,11 @@ router.patch('/:id', ah(async (req, res) => {
   const current = currentRows[0];
 
   const touchesFinancials =
-    amount !== undefined || due_date !== undefined || has_gst !== undefined || gst_pct !== undefined;
+    amount !== undefined || due_date !== undefined || has_gst !== undefined || gst_pct !== undefined
+    || FIN_FIELDS.some((k) => req.body[k] !== undefined && finKey(k, req.body[k]) !== finKey(k, current[k]));
+  const fin = financeFrom(req.body, current);
+  const finErr = financeError(fin);
+  if (finErr && current.status !== 'paid') return res.status(400).json({ error: finErr });
   if (current.status === 'paid' && touchesFinancials) {
     return res.status(409).json({
       error: 'This bill is already paid — its amount, due date, and GST are locked because a transaction already moved money based on them. Only name, category, notes, and owner can still be edited. To fix an amount, reverse the payment first.',
@@ -244,6 +427,16 @@ router.patch('/:id', ah(async (req, res) => {
        ...segVals, req.params.id, setsCategory, req.body.category_id || null]
     );
     const updated = rows[0];
+    if (req.body.payee_id !== undefined) {
+      await client.query('UPDATE bills SET payee_id = $2 WHERE id = $1', [updated.id, req.body.payee_id ? Number(req.body.payee_id) : null]);
+      updated.payee_id = req.body.payee_id ? Number(req.body.payee_id) : null;
+    }
+    if (current.status !== 'paid' && FIN_FIELDS.some((k) => req.body[k] !== undefined)) {
+      await client.query(
+        `UPDATE bills SET is_financed = $2, finance_rate_pct = $3, interest_free_until = $4, balance_amount = $5, balance_as_of = $6 WHERE id = $1`,
+        [updated.id, fin.is_financed, fin.finance_rate_pct, fin.interest_free_until, fin.balance_amount, fin.balance_as_of]);
+      Object.assign(updated, fin);
+    }
     // The payment carries the bill's category when it had none of its own.
     if (setsCategory && updated.linked_transaction_id && req.body.category_id) {
       await client.query('UPDATE transactions SET category_id = $1 WHERE id = $2 AND category_id IS NULL AND NOT is_split',

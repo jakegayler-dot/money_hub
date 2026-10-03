@@ -65,7 +65,7 @@ router.get('/', ah(async (req, res) => {
     // Earnings: every split piece under its own owner, card purchases
     // included, transfers excluded.
     pool.query(
-      `SELECT t.amount, t.is_capex, t.is_debt_service, t.segment, t.is_segment_split,
+      `SELECT t.amount, t.split_id, t.is_capex, t.is_debt_service, t.segment, t.is_segment_split,
               t.segment_grain_pct, t.segment_livestock_pct, t.segment_jake_pct, t.segment_ashley_pct,
               lp.interest_amount
        FROM transaction_lines t
@@ -74,7 +74,7 @@ router.get('/', ah(async (req, res) => {
       [ytdStart]
     ),
     pool.query(
-      `SELECT due_date, amount, frequency, segment, is_segment_split, segment_grain_pct, segment_livestock_pct,
+      `SELECT due_date, bill_owing(bills, due_date) AS amount, frequency, segment, is_segment_split, segment_grain_pct, segment_livestock_pct,
               segment_jake_pct, segment_ashley_pct
        FROM bills WHERE status = 'unpaid' AND due_date < $1`,
       [endStr]
@@ -87,7 +87,7 @@ router.get('/', ah(async (req, res) => {
     ),
     cardAmountsDue(pool, { dueBefore: endStr }),
     pool.query(
-      `SELECT expected_payment_date AS due_date, total_value AS amount, segment
+      `SELECT expected_payment_date AS due_date, GREATEST(total_value - received_amount, 0) AS amount, segment
        FROM sale_contracts WHERE status IN ('open', 'delivered') AND expected_payment_date < $1`,
       [endStr]
     ),
@@ -166,8 +166,10 @@ router.get('/', ah(async (req, res) => {
     if (t.is_capex) continue;
     const weight = w(t);
     if (!weight) continue;
+    // Loan payments: interest is a cost, principal isn't (its piece is a
+    // transfer, filtered out above). Unsplit older payments: the schedule's interest.
     const amount = t.is_debt_service
-      ? (t.interest_amount != null ? -Number(t.interest_amount) : 0)
+      ? (t.split_id != null ? Number(t.amount) : (t.interest_amount != null ? -Number(t.interest_amount) : 0))
       : Number(t.amount);
     if (amount >= 0) revenue += amount * weight;
     else costs += -amount * weight;

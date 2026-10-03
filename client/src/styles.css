@@ -682,3 +682,148 @@ button.small-link { background: none; border: 0; padding: 0; cursor: pointer; fo
 .pdf-tile { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; min-height: 72px;
   font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em; color: var(--gold-bright);
   background: var(--gold-soft); border-radius: var(--radius-sm); }
+
+/* Contracts: how much of the value has arrived, and the deposits behind it */
+.contract-bar { height: 4px; width: 90px; background: var(--border-strong); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+.contract-bar span { display: block; height: 100%; background: var(--positive); }
+tr.contract-detail td { padding-top: 0; border-top: 0; }
+.contract-deposits, .contract-suggest, .contract-actions { display: grid; gap: 4px; margin: 2px 0 6px; }
+.contract-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* Bills by vendor */
+.vendor-detail { display: grid; gap: 10px; padding: 4px 0 8px; }
+.vendor-block { display: grid; gap: 4px; }
+.vendor-bill { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.vendor-row:hover td { background: var(--panel-hover); }
+
+/* ---- Cash flow terminal -------------------------------------------------- */
+.cft {
+  --cft-est: #c98500;   /* with estimates — amber (validated, dark) */
+  --cft-com: #3987e5;   /* committed only — blue */
+  --cft-what: #199e70;  /* what-if — aqua */
+  --cft-in: var(--positive);
+  --cft-out: var(--negative);
+  margin-bottom: 20px;
+}
+.cft-ticker {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  border: 1px solid var(--border-strong); border-radius: var(--radius); overflow: hidden;
+  background: linear-gradient(180deg, var(--panel-raised), var(--panel));
+}
+.cft-tick { padding: 12px 16px 13px; border-right: 1px solid var(--border); display: grid; gap: 3px; min-width: 0; }
+.cft-tick:last-child { border-right: 0; }
+.cft-tick-label { font-size: 11.5px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cft-tick-value { font-family: var(--font-mono); font-size: 21px; font-weight: 500; letter-spacing: -0.02em; color: var(--text); font-variant-numeric: tabular-nums; }
+.cft-tick-value.neg { color: var(--negative); }
+.cft-tick-delta { font-family: var(--font-mono); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.cft-tick-delta.up { color: var(--cft-what); }
+.cft-tick-delta.down { color: var(--negative); }
+
+.cft-body { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 14px; margin-top: 14px; }
+@media (max-width: 980px) { .cft-body { grid-template-columns: 1fr; } }
+.cft-charts { position: relative; background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 12px 10px 6px; }
+.cft-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 0 8px 4px; font-size: 12px; color: var(--text-muted); }
+.cft-legend span { display: inline-flex; align-items: center; gap: 7px; }
+.cft-legend .sw { width: 18px; height: 0; border-top: 2px solid; display: inline-block; }
+.cft-legend .sw.est { border-color: var(--cft-est); }
+.cft-legend .sw.com { border-color: var(--cft-com); border-top-style: dashed; }
+.cft-legend .sw.what { border-color: var(--cft-what); }
+.cft-legend .sw.floor { border-color: var(--negative); border-top-style: dotted; }
+
+.cft-svg { width: 100%; height: auto; display: block; cursor: crosshair; outline: none; }
+.cft-svg:focus-visible { box-shadow: 0 0 0 2px var(--gold); border-radius: 6px; }
+.cft-grid { stroke: var(--border); stroke-width: 1; }
+.cft-zero { stroke: var(--border-strong); stroke-width: 1; }
+.cft-axis { font-family: var(--font-mono); font-size: 10.5px; fill: var(--text-faint); font-variant-numeric: tabular-nums; }
+.cft-axis.on { fill: var(--text); }
+.cft-danger { fill: var(--negative); opacity: 0.05; }
+.cft-floor { stroke: var(--negative); stroke-width: 1.25; stroke-dasharray: 1 4; stroke-linecap: round; }
+.cft-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.cft-line.est { stroke: var(--cft-est); }
+.cft-line.com { stroke: var(--cft-com); stroke-dasharray: 6 5; opacity: 0.9; }
+.cft-line.what { stroke: var(--cft-what); stroke-width: 2.25; }
+.cft-draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: cft-draw 1.3s cubic-bezier(0.65, 0, 0.35, 1) 0.1s forwards; }
+.cft-fade { opacity: 0; animation: cft-fade 0.6s ease 0.9s forwards; }
+.cft-line.com.cft-fade { animation-name: cft-fade-com; }
+@keyframes cft-draw { to { stroke-dashoffset: 0; } }
+@keyframes cft-fade { to { opacity: 1; } }
+@keyframes cft-fade-com { to { opacity: 0.9; } }
+.cft-low-dot { fill: var(--cft-est); stroke: var(--panel); stroke-width: 2; }
+.cft-low-ring { fill: none; stroke: var(--cft-est); stroke-width: 1.5; opacity: 0; animation: cft-ring 1.6s ease-out 1.3s 2; }
+@keyframes cft-ring { 0% { r: 5; opacity: 0.9; } 100% { r: 22; opacity: 0; } }
+.cft-low-label { font-family: var(--font-mono); font-size: 10.5px; fill: var(--text-muted); }
+.cft-cross line { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 2 3; }
+.cft-cross circle { stroke: var(--panel); stroke-width: 2; }
+.cft-cross circle.est { fill: var(--cft-est); }
+.cft-cross circle.com { fill: var(--cft-com); }
+.cft-cross circle.what { fill: var(--cft-what); }
+.cft-tag path { stroke-width: 1; }
+.cft-tag text { font-family: var(--font-mono); font-size: 10.5px; font-variant-numeric: tabular-nums; fill: #0b0d10; font-weight: 600; }
+.cft-tag.tag-est path { fill: var(--cft-est); }
+.cft-tag.tag-com path { fill: var(--cft-com); }
+.cft-tag.tag-what path { fill: var(--cft-what); }
+.cft-bar rect.in { fill: var(--cft-in); opacity: 0.55; }
+.cft-bar rect.out { fill: var(--cft-out); opacity: 0.5; }
+.cft-bar.sel rect.in, .cft-bar.sel rect.out { opacity: 0.95; }
+.cft-readout {
+  display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; padding: 8px 10px 4px;
+  border-top: 1px solid var(--border); font-size: 12px; color: var(--text-muted);
+}
+.cft-readout strong { color: var(--text); font-size: 13px; }
+.cft-readout b { font-family: var(--font-mono); color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
+.cft-readout b.pos, .cft-ledger-sum b.pos { color: var(--positive); }
+.cft-readout b.neg, .cft-ledger-sum b.neg { color: var(--negative); }
+.cft-readout em { font-style: normal; color: var(--text-faint); margin-left: auto; }
+
+.cft-desk { background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius); padding: 14px 16px; display: grid; gap: 14px; align-content: start; }
+.cft-desk-head { display: flex; justify-content: space-between; align-items: baseline; font-family: var(--font-display); font-size: 22px; color: var(--text); }
+.cft-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.cft-chip { font-size: 11.5px; padding: 4px 9px; border-radius: 999px; background: transparent; color: var(--text-muted); border: 1px solid var(--border-strong); cursor: pointer; }
+.cft-chip:hover { color: var(--text); border-color: var(--cft-what); }
+.cft-field { display: grid; gap: 6px; }
+.cft-field label { font-size: 12.5px; color: var(--text-muted); display: flex; justify-content: space-between; gap: 8px; }
+.cft-field label b { font-family: var(--font-mono); font-weight: 500; color: var(--text); }
+.cft-field label b.up { color: var(--cft-what); }
+.cft-field label b.down { color: var(--negative); }
+.cft-field input[type=range] { width: 100%; accent-color: var(--cft-what); }
+.cft-hint { font-size: 11px; color: var(--text-faint); }
+.cft-buy { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.cft-buy input, .cft-buy select { min-width: 0; }
+.cft-desk-note { font-size: 12px; color: var(--text-muted); margin: 0; border-top: 1px solid var(--border); padding-top: 10px; }
+
+.cft-ledger { margin-top: 14px; }
+.cft-ledger-head { display: flex; justify-content: space-between; align-items: center; }
+.cft-ledger-sum { display: flex; flex-wrap: wrap; gap: 6px 22px; padding: 10px 16px; font-size: 12.5px; color: var(--text-muted); border-bottom: 1px solid var(--border); }
+.cft-ledger-sum b { font-family: var(--font-mono); color: var(--text); font-weight: 500; }
+.cft-ledger-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; padding: 4px 6px 10px; }
+@media (max-width: 760px) { .cft-ledger-cols { grid-template-columns: 1fr; } }
+.cft-ledger-cols h3 { font-size: 13px; font-weight: 600; margin: 10px 10px 2px; color: var(--text); }
+.cft-ledger-cols td.num { text-align: right; font-family: var(--font-mono); }
+@media (prefers-reduced-motion: reduce) {
+  .cft-draw { animation: none; stroke-dashoffset: 0; }
+  .cft-fade { animation: none; opacity: 1; }
+  .cft-low-ring { animation: none; }
+}
+.cft-now { fill: var(--text); stroke: var(--panel); stroke-width: 2; }
+.cft-band { fill: var(--text); opacity: 0.035; }
+.cft-chip { font-weight: 400; box-shadow: none; line-height: 1.4; }
+.cft-buy input, .cft-buy select { background: var(--panel-raised); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 6px 8px; font: inherit; font-size: 13px; }
+.cft-ledger a { color: var(--text); text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
+.cft-ledger a:hover { text-decoration-color: var(--gold); }
+.cft-ledger-cols p { padding: 0 10px; }
+
+/* Income & Expenses: month bars and picked rows */
+.mbars { --cft-in: var(--positive); --cft-out: var(--negative); }
+.mbars .sw.mb-in { border-color: var(--positive); }
+.mbars .sw.mb-out { border-color: var(--negative); }
+.mbars .sw.mb-net { border-color: var(--text); }
+.mbars-total { margin-left: auto; font-family: var(--font-mono); font-size: 11.5px; }
+.cft-bar.mb { cursor: pointer; outline: none; }
+.cft-bar.mb .hit { fill: transparent; }
+.cft-bar.mb:focus-visible .hit { stroke: var(--gold); stroke-width: 1.5; }
+.mb-net { stroke: var(--text); stroke-width: 2; stroke-linecap: round; }
+.spend-row.picked { background: var(--gold-soft); border-radius: 6px; }
+.spend-row.picked .spend-label { color: var(--text); }
+.entries-group td { font-weight: 600; color: var(--text); background: var(--panel-alt); }
+.cft-ledger td.num { text-align: right; font-family: var(--font-mono); }
+.cft-ledger td.num.pos { color: var(--positive); }

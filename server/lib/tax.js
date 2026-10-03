@@ -114,7 +114,7 @@ export async function farmIncomeTax(year, whatIf = {}) {
     ccaOverride, priorYear, paid] = await Promise.all([
     // Each line with its transaction's GST spread across split pieces by size.
     pool.query(
-      `SELECT l.amount, l.is_capex, l.is_debt_service, l.ledger, l.segment, l.is_segment_split,
+      `SELECT l.amount, l.split_id, l.is_capex, l.is_debt_service, l.ledger, l.segment, l.is_segment_split,
               l.segment_grain_pct, l.segment_livestock_pct, l.segment_jake_pct, l.segment_ashley_pct,
               t.amount AS tx_amount, t.gst_amount, lp.interest_amount, t.amount AS paid_amount
        FROM transaction_lines l
@@ -124,12 +124,12 @@ export async function farmIncomeTax(year, whatIf = {}) {
       [yStart, asOf]
     ),
     pool.query(
-      `SELECT total_value AS amount, expected_payment_date AS d, segment FROM sale_contracts
+      `SELECT GREATEST(total_value - received_amount, 0) AS amount, expected_payment_date AS d, segment FROM sale_contracts
        WHERE status IN ('open', 'delivered') AND expected_payment_date >= $1 AND expected_payment_date < $2`,
       [today, yEndExcl]
     ),
     pool.query(
-      `SELECT due_date, amount, frequency, gst_amount, has_gst, ledger, segment, is_segment_split,
+      `SELECT due_date, bill_owing(bills, due_date) AS amount, frequency, gst_amount, has_gst, ledger, segment, is_segment_split,
               segment_grain_pct, segment_livestock_pct, segment_jake_pct, segment_ashley_pct
        FROM bills WHERE status = 'unpaid' AND due_date < $1`,
       [yEndExcl]
@@ -155,7 +155,9 @@ export async function farmIncomeTax(year, whatIf = {}) {
     if (!share) continue;
     const amt = Number(l.amount);
     if (l.is_capex) { actual.capex += -amt * share; continue; }
-    if (l.is_debt_service) { actual.interest += Number(l.interest_amount || 0) * share; continue; }
+    // A loan payment: its interest piece (principal pieces are transfers,
+    // filtered out above); one recorded before the split, the schedule's interest.
+    if (l.is_debt_service) { actual.interest += (l.split_id != null ? -amt : Number(l.interest_amount || 0)) * share; continue; }
     // GST on this line: the transaction's GST in proportion to this piece.
     const gst = l.gst_amount == null || !Number(l.tx_amount) ? 0 : Number(l.gst_amount) * (amt / Number(l.tx_amount));
     const net = amt - Math.sign(amt) * Math.abs(gst);

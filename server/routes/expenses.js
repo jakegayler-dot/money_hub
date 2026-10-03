@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { allocateBySegment, ownerWeights, OWNERS } from '../lib/segments.js';
+import { toISODate } from '../lib/dates.js';
 
 const router = Router();
 
@@ -39,7 +40,8 @@ router.get('/by-category', ah(async (req, res) => {
       `SELECT amount, category_id, is_capex, segment, is_segment_split,
               segment_grain_pct, segment_livestock_pct, segment_jake_pct, segment_ashley_pct
        FROM transaction_lines
-       WHERE is_transfer = false AND is_debt_service = false AND EXTRACT(YEAR FROM date) = $1`,
+       WHERE is_transfer = false AND (is_debt_service = false OR split_id IS NOT NULL) -- a loan payment's interest piece counts
+         AND EXTRACT(YEAR FROM date) = $1`,
       [year]
     ),
   ]);
@@ -95,6 +97,74 @@ router.get('/by-category', ah(async (req, res) => {
 // land in `transactions`) and allocates it by segment, splitting a
 // percentage-split transaction proportionally rather than double-counting
 // it in every bucket.
+// The lines behind the category view, for drilling in: one row per
+// transaction piece counted there (same rules as /by-category), weighted to
+// the owner picked. category_id: a category (its subcategories included),
+// 'none' for uncategorized; month 1–12 narrows to that month.
+async function countedLines(year, owner, kind) {
+  const [{ rows: cats }, { rows: lines }] = await Promise.all([
+    pool.query('SELECT id, name, parent_id, kind FROM expense_categories'),
+    pool.query(
+      `SELECT l.transaction_id, l.split_id, l.date, l.amount, l.category_id, l.is_capex, l.description, l.segment, l.is_segment_split,
+              l.segment_grain_pct, l.segment_livestock_pct, l.segment_jake_pct, l.segment_ashley_pct,
+              a.name AS account, cc.name AS card, p.name AS payee
+       FROM transaction_lines l
+       JOIN transactions t ON t.id = l.transaction_id
+       LEFT JOIN accounts a ON a.id = l.account_id
+       LEFT JOIN credit_cards cc ON cc.id = l.credit_card_id
+       LEFT JOIN payees p ON p.id = t.payee_id
+       WHERE l.is_transfer = false AND (l.is_debt_service = false OR l.split_id IS NOT NULL)
+         AND EXTRACT(YEAR FROM l.date) = $1
+       ORDER BY l.date, l.transaction_id`, [year]),
+  ]);
+  const byId = new Map(cats.map((c) => [c.id, c]));
+  const out = [];
+  for (const l of lines) {
+    const c = l.category_id ? byId.get(l.category_id) : null;
+    const isIncome = c ? c.kind === 'income' : Number(l.amount) > 0;
+    if ((kind === 'income') !== isIncome || l.is_capex) continue;
+    const w = owner === 'all' ? 1 : ownerWeights(l)[owner];
+    if (!w) continue;
+    const parent = c ? (c.parent_id && byId.has(c.parent_id) ? byId.get(c.parent_id) : c) : null;
+    out.push({
+      transaction_id: l.transaction_id, date: toISODate(l.date), month: Number(toISODate(l.date).slice(5, 7)),
+      description: l.description, payee: l.payee, account: l.account || (l.card ? `${l.card} (card)` : null),
+      amount: Math.round((kind === 'income' ? 1 : -1) * Number(l.amount) * w * 100) / 100,
+      category_id: c ? c.id : null, category: c ? (parent && parent.id !== c.id ? `${parent.name} › ${c.name}` : c.name) : null,
+      parent_id: parent ? parent.id : null,
+    });
+  }
+  return out;
+}
+
+router.get('/lines', ah(async (req, res) => {
+  const year = Number(req.query.year) || new Date().getFullYear();
+  const owner = String(req.query.owner || 'all');
+  if (owner !== 'all' && !OWNERS.includes(owner)) return res.status(400).json({ error: 'bad owner' });
+  const kind = req.query.kind === 'income' ? 'income' : 'expense';
+  let lines = await countedLines(year, owner, kind);
+  const cat = req.query.category_id;
+  if (cat === 'none') lines = lines.filter((l) => !l.category_id);
+  else if (cat && req.query.exact) lines = lines.filter((l) => l.category_id === Number(cat));
+  else if (cat) lines = lines.filter((l) => l.category_id === Number(cat) || l.parent_id === Number(cat));
+  if (req.query.month) lines = lines.filter((l) => l.month === Number(req.query.month));
+  const total = Math.round(lines.reduce((s, l) => s + l.amount, 0) * 100) / 100;
+  res.json({ year, owner, kind, total, lines: lines.sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount) });
+}));
+
+// Income and spending per month for the year (same rules as the category view).
+router.get('/monthly', ah(async (req, res) => {
+  const year = Number(req.query.year) || new Date().getFullYear();
+  const owner = String(req.query.owner || 'all');
+  if (owner !== 'all' && !OWNERS.includes(owner)) return res.status(400).json({ error: 'bad owner' });
+  const [inc, exp] = await Promise.all([countedLines(year, owner, 'income'), countedLines(year, owner, 'expense')]);
+  const months = Array.from({ length: 12 }, (_, i) => ({ month: i + 1, income: 0, spending: 0 }));
+  for (const l of inc) months[l.month - 1].income += l.amount;
+  for (const l of exp) months[l.month - 1].spending += l.amount;
+  for (const m of months) { m.income = Math.round(m.income * 100) / 100; m.spending = Math.round(m.spending * 100) / 100; m.net = Math.round((m.income - m.spending) * 100) / 100; }
+  res.json({ year, owner, months });
+}));
+
 router.get('/segment-totals', ah(async (req, res) => {
   const year = Number(req.query.year) || new Date().getFullYear();
   const { rows } = await pool.query(

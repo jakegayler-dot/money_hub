@@ -6,6 +6,7 @@
 
 import { SEGMENT_COLUMNS, segmentValues, validateSegment, ledgerForSegment } from './segments.js';
 import { toISODate, addMonths } from './dates.js';
+import { getSetting } from '../db.js';
 
 const SEG_COLS = SEGMENT_COLUMNS.join(', ');
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
@@ -166,11 +167,20 @@ export async function removeTransaction(client, txId) {
   const { rows: blockers } = await client.query(
     `SELECT 'bill' AS kind, name AS label FROM bills WHERE linked_transaction_id = $1
      UNION ALL SELECT 'loan payment', due_date::text FROM loan_payments WHERE linked_transaction_id = $1
-     UNION ALL SELECT 'contract', commodity FROM sale_contracts WHERE linked_transaction_id = $1`,
+     UNION ALL SELECT 'contract deposit', c.commodity FROM contract_payments cp JOIN sale_contracts c ON c.id = cp.contract_id
+               WHERE cp.transaction_id = $1
+     UNION ALL SELECT 'vendor deposit', p.name FROM vendor_credits vc JOIN payees p ON p.id = vc.payee_id
+               WHERE vc.transaction_id = $1 OR vc.refund_transaction_id = $1`,
     [txId]
   );
   if (blockers.length) {
     const b = blockers[0];
+    if (b.kind === 'vendor deposit') {
+      throw new PostingError(`This is a deposit with ${b.label} — remove it on the Bills tab (by vendor) first.`);
+    }
+    if (b.kind === 'contract deposit') {
+      throw new PostingError(`This deposit counts toward the ${b.label} contract — unlink it on the Contracts tab first.`);
+    }
     throw new PostingError(`This transaction is the payment for a ${b.kind} (${b.label}). Reverse it from there (unpay / unrecord / unsettle) so the ${b.kind} reopens too.`);
   }
 
@@ -261,17 +271,18 @@ export async function payBill(client, billId, {
   const bill = rows[0];
   if (bill.status === 'paid') return { bill, alreadyPaid: true, transaction: null, nextBill: null };
 
-  const paid = Math.abs(Number(amount ?? bill.amount));
+  // A financed bill is paid at what's owing that day (invoice + interest).
+  const paid = Math.abs(Number(amount ?? await billOwing(client, bill.id, date)));
   let tx = null;
   if (account_id || credit_card_id) {
     tx = await insertTransaction(client, {
       account_id, credit_card_id, ledger: bill.ledger, date, amount: -paid,
       description: `Bill paid: ${bill.name}${paid_by_check ? ' (check)' : ''}`,
       category_id: bill.category_id || await categoryIdByName(client, bill.category), payee: bill.name,
-      // The bill is the invoice, so its GST is exact; scaled if a different amount was paid.
-      gst_amount: bill.has_gst && Number(bill.amount) ? round2(Number(bill.gst_amount) * paid / Number(bill.amount)) : null,
+      gst_amount: billGst(bill, paid),
       owner: ownerOf(bill), cleared: !paid_by_check, source, external_id, entered_by, awaiting_statement: true,
     });
+    await splitFinanceInterest(client, bill, tx);
   }
   await client.query(
     `UPDATE bills SET status = 'paid', paid_date = $1, linked_transaction_id = $2 WHERE id = $3`,
@@ -279,6 +290,253 @@ export async function payBill(client, billId, {
   );
   const nextBill = await rollBillForward(client, bill);
   return { bill: { ...bill, status: 'paid', paid_date: date, linked_transaction_id: tx?.id ?? null }, transaction: tx, nextBill };
+}
+
+/** What a bill owes on `date` (a financed bill: plus interest so far) — bill_owing() in schema.sql. */
+export async function billOwing(client, billId, date) {
+  const { rows: [r] } = await client.query('SELECT bill_owing(b, $2::date) AS owing FROM bills b WHERE b.id = $1', [billId, date]);
+  return r ? Number(r.owing) : null;
+}
+
+/** The bill is the invoice, so its GST is exact. A financed bill's extra is interest (no GST); anything else scales. */
+function billGst(bill, paid) {
+  if (!bill.has_gst || !Number(bill.amount)) return null;
+  if (bill.is_financed && paid >= Number(bill.amount)) return round2(Number(bill.gst_amount));
+  return round2(Number(bill.gst_amount) * paid / Number(bill.amount));
+}
+
+/**
+ * A financed bill paid for more than the invoice: the payment is split into
+ * the invoice (the bill's category) and the finance interest (Interest ›
+ * Input financing interest), so the input cost stays the invoice amount.
+ */
+async function splitFinanceInterest(client, bill, tx) {
+  const paid = -Number(tx.amount);
+  const cashDue = round2(Number(bill.amount) - await billApplied(client, bill.id));
+  const interest = round2(paid - cashDue);
+  if (!bill.is_financed || interest < 0.005 || tx.is_split) return;
+  const owner = ownerOf(tx);
+  const interestCat = await expenseCategoryFor(client, 'Interest › Input financing interest');
+  const { splits, error } = normalizeSplits([
+    { amount: -cashDue, category_id: tx.category_id || bill.category_id, memo: `Invoice: ${bill.name}` },
+    { amount: -interest, category_id: interestCat, memo: `Finance interest on ${bill.name}` },
+  ], Number(tx.amount), owner, tx.ledger);
+  if (error) return;
+  for (const sp of splits) {
+    await client.query(
+      `INSERT INTO transaction_splits (transaction_id, amount, category_id, memo, ledger, is_capex, ${SEG_COLS})
+       VALUES ($1,$2,$3,$4,$5,$6,${SEGMENT_COLUMNS.map((_, i) => `$${7 + i}`).join(',')})`,
+      [tx.id, sp.amount, sp.category_id, sp.memo, sp.ledger, sp.is_capex, ...SEGMENT_COLUMNS.map((k) => sp.owner[k])]);
+  }
+  await client.query('UPDATE transactions SET is_split = true, category_id = NULL WHERE id = $1', [tx.id]);
+}
+
+/** Deposits applied to a bill so far. */
+export async function billApplied(client, billId) {
+  const { rows: [r] } = await client.query('SELECT COALESCE(SUM(amount), 0) AS s FROM credit_applications WHERE bill_id = $1', [billId]);
+  return round2(r.s);
+}
+
+// ---- Vendors: several bills, one payment; deposits held by a vendor ---------
+
+/**
+ * One payment for several of a vendor's bills (what the account says is
+ * owing, or the oldest few). Each bill is marked paid by it, and the
+ * payment is split into one piece per bill — that bill's category and
+ * owner — so the costs still land where they belong. `createdHere`: the
+ * payment was made from the Bills tab (undoing it removes it).
+ */
+export async function linkBillsToTransaction(client, billIds, txId, { createdHere = false } = {}) {
+  const ids = [...new Set(billIds.map(Number))];
+  if (!ids.length) throw new PostingError('Pick the bills it paid.');
+  const tx = await linkableTx(client, txId);
+  const { rows: bills } = await client.query('SELECT * FROM bills WHERE id = ANY($1) ORDER BY due_date, id FOR UPDATE', [ids]);
+  if (bills.length !== ids.length) throw new PostingError('Bill not found.');
+  const paidOne = bills.find((b) => b.status === 'paid');
+  if (paidOne) throw new PostingError(`"${paidOne.name}" is already marked paid.`);
+  const dues = [];
+  for (const b of bills) dues.push(await billOwing(client, b.id, toISODate(tx.date)));
+  const total = round2(dues.reduce((a, x) => a + x, 0));
+  const paid = round2(-Number(tx.amount));
+  if (Math.abs(total - paid) > 0.05) {
+    throw new PostingError(`Those bills come to ${total.toFixed(2)}, but the payment is ${paid.toFixed(2)}.`);
+  }
+  if (bills.length > 1 && !tx.is_split) {
+    const pieces = bills.map((b, i) => ({
+      amount: -dues[i], category_id: b.category_id || null, memo: `Bill: ${b.name}`, owner: ownerOf(b), ledger: b.ledger,
+    }));
+    pieces[pieces.length - 1].amount = round2(pieces[pieces.length - 1].amount + (total - paid)); // cents of rounding
+    for (const pc of pieces) {
+      await client.query(
+        `INSERT INTO transaction_splits (transaction_id, amount, category_id, memo, ledger, is_capex, ${SEG_COLS})
+         VALUES ($1,$2,$3,$4,$5,false,${SEGMENT_COLUMNS.map((_, i) => `$${6 + i}`).join(',')})`,
+        [tx.id, round2(pc.amount), pc.category_id, pc.memo, pc.ledger, ...SEGMENT_COLUMNS.map((k) => pc.owner[k])]);
+    }
+    await client.query('UPDATE transactions SET is_split = true, category_id = NULL WHERE id = $1', [tx.id]);
+  } else if (bills.length === 1 && !tx.category_id && !tx.is_split && bills[0].category_id) {
+    await client.query('UPDATE transactions SET category_id = $1 WHERE id = $2', [bills[0].category_id, tx.id]);
+  }
+  const gst = round2(bills.reduce((a, b) => a + (b.has_gst ? Number(b.gst_amount) : 0), 0));
+  const vendor = bills[0].payee_id;
+  await client.query(
+    `UPDATE transactions SET gst_amount = COALESCE(gst_amount, $2), payee_id = COALESCE(payee_id, $3) WHERE id = $1`,
+    [tx.id, gst > 0 ? gst : null, vendor || await payeeId(client, bills[0].name)]);
+  for (const b of bills) {
+    await client.query(
+      `UPDATE bills SET status = 'paid', paid_date = $1, linked_transaction_id = $2, linked_existing = $3 WHERE id = $4`,
+      [tx.date, tx.id, !createdHere, b.id]);
+    await rollBillForward(client, b);
+  }
+  return { bills };
+}
+
+/** Pays several bills from an account in one payment (the Bills tab's "Pay all"). */
+export async function payBills(client, billIds, { account_id, date, paid_by_check = false }) {
+  const { rows: bills } = await client.query('SELECT * FROM bills WHERE id = ANY($1) AND status = $2 ORDER BY due_date', [billIds, 'unpaid']);
+  if (!bills.length) throw new PostingError('Nothing unpaid to pay.');
+  let total = 0;
+  for (const b of bills) total += await billOwing(client, b.id, date);
+  total = round2(total);
+  const { rows: [vendor] } = bills[0].payee_id ? await client.query('SELECT name FROM payees WHERE id = $1', [bills[0].payee_id]) : { rows: [] };
+  const tx = await insertTransaction(client, {
+    account_id, ledger: bills[0].ledger, date, amount: -total,
+    description: `Bills paid: ${vendor?.name || bills[0].name} (${bills.length})${paid_by_check ? ' (check)' : ''}`,
+    payee_id: bills[0].payee_id || null, owner: ownerOf(bills[0]), cleared: !paid_by_check, awaiting_statement: true,
+  });
+  await linkBillsToTransaction(client, bills.map((b) => b.id), tx.id, { createdHere: true });
+  return { transaction: tx, bills };
+}
+
+/** What a vendor deposit still holds. */
+async function creditRemaining(client, creditId) {
+  const { rows: [r] } = await client.query(
+    `SELECT vc.amount - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE credit_id = vc.id), 0) AS left
+     FROM vendor_credits vc WHERE vc.id = $1`, [creditId]);
+  return r ? round2(r.left) : 0;
+}
+
+/**
+ * The deposit payment, re-split from scratch: each part applied to a bill
+ * is that bill's expense (its category and owner); the rest is still the
+ * vendor holding your money (a transfer) — or an expense if they kept it.
+ */
+async function rebuildCreditSplits(client, creditId) {
+  const { rows: [c] } = await client.query(
+    'SELECT vc.*, p.name AS vendor FROM vendor_credits vc JOIN payees p ON p.id = vc.payee_id WHERE vc.id = $1', [creditId]);
+  if (!c || !c.transaction_id) return;
+  const { rows: [tx] } = await client.query('SELECT * FROM transactions WHERE id = $1', [c.transaction_id]);
+  if (!tx || await closedMonth(client, tx.date)) return;
+  const { rows: apps } = await client.query(
+    `SELECT b.*, ca.amount AS applied FROM credit_applications ca JOIN bills b ON b.id = ca.bill_id WHERE ca.credit_id = $1 ORDER BY ca.id`, [c.id]);
+  const pieces = apps.map((a) => ({
+    amount: -Number(a.applied), category_id: a.category_id || null, memo: `Deposit applied: ${a.name}`,
+    owner: ownerOf(a), ledger: a.ledger, is_transfer: false,
+  }));
+  const left = round2(-Number(tx.amount) - apps.reduce((s, a) => s + Number(a.applied), 0));
+  if (left > 0.005) {
+    const kept = c.status === 'kept';
+    pieces.push({
+      amount: -left, category_id: kept ? c.kept_category_id : null,
+      memo: kept ? `Deposit kept by ${c.vendor}` : `Deposit held by ${c.vendor}`,
+      owner: ownerOf(tx), ledger: tx.ledger, is_transfer: !kept,
+    });
+  }
+  await client.query('DELETE FROM transaction_splits WHERE transaction_id = $1', [tx.id]);
+  for (const pc of pieces) {
+    await client.query(
+      `INSERT INTO transaction_splits (transaction_id, amount, category_id, memo, ledger, is_capex, is_transfer, ${SEG_COLS})
+       VALUES ($1,$2,$3,$4,$5,false,$6,${SEGMENT_COLUMNS.map((_, i) => `$${7 + i}`).join(',')})`,
+      [tx.id, round2(pc.amount), pc.category_id, pc.memo, pc.ledger, pc.is_transfer, ...SEGMENT_COLUMNS.map((k) => pc.owner[k])]);
+  }
+  await client.query('UPDATE transactions SET is_split = $2, category_id = NULL, payee_id = COALESCE(payee_id, $3) WHERE id = $1',
+    [tx.id, pieces.length > 0, c.payee_id]);
+}
+
+/**
+ * A deposit paid to a vendor: an existing ledger payment (`transaction_id`)
+ * or one recorded now from an account. Held as yours until it's applied to
+ * bills (prepayment) or given back (refundable).
+ */
+export async function recordVendorDeposit(client, { payee_id, kind, transaction_id = null, account_id = null, amount = null, date = null, note = null }) {
+  if (!['prepayment', 'refundable'].includes(kind)) throw new PostingError('Kind must be prepayment or refundable.');
+  let tx;
+  if (transaction_id) {
+    tx = await linkableTx(client, Number(transaction_id));
+    if (!tx.account_id && !tx.credit_card_id) throw new PostingError('That entry isn\'t a payment.');
+  } else {
+    if (!account_id || !(Number(amount) > 0) || !date) throw new PostingError('Account, amount and date are needed to record a deposit.');
+    tx = await insertTransaction(client, {
+      account_id, date, amount: -Math.abs(Number(amount)), description: 'Deposit paid', payee_id, awaiting_statement: 'fed',
+    });
+  }
+  const { rows: [c] } = await client.query(
+    `INSERT INTO vendor_credits (payee_id, kind, amount, date, transaction_id, note) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+    [payee_id, kind, round2(-Number(tx.amount)), tx.date, tx.id, note]);
+  await rebuildCreditSplits(client, c.id);
+  return c;
+}
+
+/**
+ * Uses a deposit against a bill: up to what the bill still owes. A bill
+ * fully covered is marked paid; the applied part becomes its expense.
+ */
+export async function applyVendorCredit(client, creditId, billId) {
+  const { rows: [c] } = await client.query('SELECT * FROM vendor_credits WHERE id = $1 FOR UPDATE', [creditId]);
+  if (!c || c.status !== 'open') throw new PostingError('That deposit isn\'t available to apply.');
+  const { rows: [bill] } = await client.query('SELECT * FROM bills WHERE id = $1 FOR UPDATE', [billId]);
+  if (!bill || bill.status !== 'unpaid') throw new PostingError('That bill isn\'t unpaid.');
+  const use = Math.min(await creditRemaining(client, c.id), await billOwing(client, bill.id, toISODate(new Date())));
+  if (use <= 0.005) throw new PostingError('Nothing to apply.');
+  await client.query('INSERT INTO credit_applications (credit_id, bill_id, amount) VALUES ($1, $2, $3)', [c.id, bill.id, round2(use)]);
+  if (await creditRemaining(client, c.id) <= 0.005) await client.query(`UPDATE vendor_credits SET status = 'used' WHERE id = $1`, [c.id]);
+  if (await billOwing(client, bill.id, toISODate(new Date())) <= 0.005) {
+    await client.query(`UPDATE bills SET status = 'paid', paid_date = CURRENT_DATE, linked_transaction_id = NULL, linked_existing = false WHERE id = $1`, [bill.id]);
+    await rollBillForward(client, bill);
+  }
+  await rebuildCreditSplits(client, c.id);
+  return { applied: round2(use) };
+}
+
+/** Takes a deposit back off a bill (the bill reopens if the deposit had paid it). */
+export async function unapplyVendorCredit(client, applicationId) {
+  const { rows: [a] } = await client.query('SELECT * FROM credit_applications WHERE id = $1', [applicationId]);
+  if (!a) throw new PostingError('Not found.');
+  await client.query('DELETE FROM credit_applications WHERE id = $1', [a.id]);
+  await client.query(`UPDATE vendor_credits SET status = 'open' WHERE id = $1 AND status = 'used'`, [a.credit_id]);
+  await client.query(
+    `UPDATE bills SET status = 'unpaid', paid_date = NULL WHERE id = $1 AND status = 'paid' AND linked_transaction_id IS NULL`, [a.bill_id]);
+  await rebuildCreditSplits(client, a.credit_id);
+}
+
+/** A refundable deposit came back: the refund is your money returning (a transfer), not income. */
+export async function refundVendorCredit(client, creditId, refundTxId) {
+  const { rows: [c] } = await client.query('SELECT * FROM vendor_credits WHERE id = $1 FOR UPDATE', [creditId]);
+  if (!c || c.status !== 'open') throw new PostingError('That deposit isn\'t open.');
+  const tx = await linkableTx(client, Number(refundTxId), 'in');
+  await client.query(
+    `UPDATE transactions SET is_transfer = true, category_id = NULL, needs_review = false, review_note = NULL,
+       payee_id = COALESCE(payee_id, $2) WHERE id = $1`, [tx.id, c.payee_id]);
+  await client.query(`UPDATE vendor_credits SET status = 'refunded', refund_transaction_id = $2 WHERE id = $1`, [c.id, tx.id]);
+}
+
+/** The vendor kept the deposit: what's left becomes an expense. */
+export async function keepVendorCredit(client, creditId, categoryId) {
+  await client.query(`UPDATE vendor_credits SET status = 'kept', kept_category_id = $2 WHERE id = $1 AND status = 'open'`, [creditId, categoryId || null]);
+  await rebuildCreditSplits(client, creditId);
+}
+
+/** Removes a deposit record (its payment goes back to an ordinary entry; one recorded here is deleted). */
+export async function removeVendorCredit(client, creditId) {
+  const { rows: [c] } = await client.query('SELECT * FROM vendor_credits WHERE id = $1 FOR UPDATE', [creditId]);
+  if (!c) return;
+  const { rows: apps } = await client.query('SELECT id FROM credit_applications WHERE credit_id = $1', [c.id]);
+  for (const a of apps) await unapplyVendorCredit(client, a.id);
+  if (c.refund_transaction_id) await client.query('UPDATE transactions SET is_transfer = false WHERE id = $1', [c.refund_transaction_id]);
+  await client.query('DELETE FROM vendor_credits WHERE id = $1', [c.id]);
+  if (c.transaction_id) {
+    await client.query('DELETE FROM transaction_splits WHERE transaction_id = $1', [c.transaction_id]);
+    await client.query('UPDATE transactions SET is_split = false WHERE id = $1', [c.transaction_id]);
+  }
 }
 
 /** Recurring bills: paying one cycle creates the next. */
@@ -303,7 +561,10 @@ async function existingLink(client, txId) {
   const { rows } = await client.query(
     `SELECT 'bill "' || name || '"' AS what FROM bills WHERE linked_transaction_id = $1
      UNION ALL SELECT 'a loan payment' FROM loan_payments WHERE linked_transaction_id = $1
-     UNION ALL SELECT 'contract (' || commodity || ')' FROM sale_contracts WHERE linked_transaction_id = $1
+     UNION ALL SELECT 'contract (' || c.commodity || ')' FROM contract_payments cp JOIN sale_contracts c ON c.id = cp.contract_id
+               WHERE cp.transaction_id = $1
+     UNION ALL SELECT 'a deposit with ' || p.name FROM vendor_credits vc JOIN payees p ON p.id = vc.payee_id
+               WHERE vc.transaction_id = $1 OR vc.refund_transaction_id = $1
      UNION ALL SELECT 'a card payment' FROM transactions WHERE id = $1 AND credit_card_id IS NOT NULL AND account_id IS NOT NULL`,
     [txId]
   );
@@ -343,30 +604,133 @@ export async function linkBillToTransaction(client, billId, txId) {
   }
   if (!tx.payee_id) await client.query('UPDATE transactions SET payee_id = $1 WHERE id = $2', [await payeeId(client, bill.name), tx.id]);
   if (bill.has_gst && tx.gst_amount == null && Number(bill.amount)) {
-    const g = round2(Number(bill.gst_amount) * Math.abs(Number(tx.amount)) / Number(bill.amount));
-    await client.query('UPDATE transactions SET gst_amount = $1 WHERE id = $2', [g, tx.id]);
+    await client.query('UPDATE transactions SET gst_amount = $1 WHERE id = $2', [billGst(bill, Math.abs(Number(tx.amount))), tx.id]);
   }
+  const { rows: [fresh] } = await client.query('SELECT * FROM transactions WHERE id = $1', [tx.id]);
+  await splitFinanceInterest(client, bill, fresh);
   const nextBill = await rollBillForward(client, bill);
   return { bill, nextBill };
 }
 
+// ---- Sale contracts: paid by one or more deposits --------------------------
+//
+// Grain and cattle get paid per load or per settlement, each deposit net of
+// checkoff, levies, freight or dockage. So a contract collects deposits
+// (contract_payments) and settles itself once they reach the contract value
+// less a deductions allowance (setting contract_deduction_allowance_pct,
+// default 3% — covers checkoff and levies). The gap between what arrived and
+// the contract value is then booked on the last deposit as gross sale plus a
+// deductions piece, so income shows at the contract value (CRA wants farm
+// sales gross) and the deductions show as an expense. Below the allowance
+// the contract stays partly paid until a person settles it: "the rest was
+// deductions" (same booking) or "delivered short" (income stays at what
+// arrived). A deposit split by a settlement ticket already carries its gross
+// and deductions, and counts at its gross.
+
+export const CONTRACT_DEDUCTIONS_MEMO = 'Deductions — checkoff, levies, freight (difference to contract value)';
+const CONTRACT_GROSS_MEMO = 'Gross sale — contract value';
+const GROSS_OF = (t) => `CASE WHEN ${t}.is_split
+  THEN COALESCE((SELECT SUM(s.amount) FROM transaction_splits s WHERE s.transaction_id = ${t}.id AND s.amount > 0), 0)
+  ELSE ${t}.amount END`;
+
+export async function contractAllowancePct() {
+  const v = Number(await getSetting('contract_deduction_allowance_pct', 3));
+  return Number.isFinite(v) && v >= 0 && v < 50 ? v : 3;
+}
+
+async function contractReceived(client, contractId) {
+  const { rows: [r] } = await client.query(
+    `SELECT COUNT(*)::int AS n, COALESCE(SUM(${GROSS_OF('t')}), 0) AS gross, COALESCE(SUM(t.amount), 0) AS net
+     FROM contract_payments cp JOIN transactions t ON t.id = cp.transaction_id WHERE cp.contract_id = $1`, [contractId]);
+  return { n: r.n, gross: round2(r.gross), net: round2(r.net) };
+}
+
+/** Books (gross − received) as deductions on the contract's latest plain deposit. Returns the amount booked. */
+async function bookContractDeductions(client, c) {
+  const got = await contractReceived(client, c.id);
+  const gap = round2(Number(c.total_value) - got.gross);
+  if (gap <= 0.005) return 0;
+  const { rows: [tx] } = await client.query(
+    `SELECT t.* FROM contract_payments cp JOIN transactions t ON t.id = cp.transaction_id
+     WHERE cp.contract_id = $1 AND NOT t.is_split ORDER BY t.date DESC, t.id DESC LIMIT 1`, [c.id]);
+  if (!tx || await closedMonth(client, tx.date)) return 0;
+  const incomeCat = tx.category_id || await incomeCategoryFor(client, c.commodity);
+  const dedCat = await expenseCategoryFor(client, 'Marketing & sales costs › Levies & checkoff');
+  const owner = ownerOf(tx);
+  const { splits, error } = normalizeSplits([
+    { amount: round2(Number(tx.amount) + gap), category_id: incomeCat, memo: CONTRACT_GROSS_MEMO },
+    { amount: -gap, category_id: dedCat, memo: CONTRACT_DEDUCTIONS_MEMO },
+  ], Number(tx.amount), owner, tx.ledger);
+  if (error) return 0;
+  await client.query('DELETE FROM transaction_splits WHERE transaction_id = $1', [tx.id]);
+  for (const sp of splits) {
+    await client.query(
+      `INSERT INTO transaction_splits (transaction_id, amount, category_id, memo, ledger, is_capex, ${SEG_COLS})
+       VALUES ($1,$2,$3,$4,$5,$6,${SEGMENT_COLUMNS.map((_, i) => `$${7 + i}`).join(',')})`,
+      [tx.id, sp.amount, sp.category_id, sp.memo, sp.ledger, sp.is_capex, ...SEGMENT_COLUMNS.map((k) => sp.owner[k])]);
+  }
+  await client.query('UPDATE transactions SET is_split = true, category_id = NULL WHERE id = $1', [tx.id]);
+  return gap;
+}
+
+/** Takes the deductions booking back off the contract's deposits (back to one income line each). */
+async function undoContractDeductions(client, contractId) {
+  const { rows } = await client.query(
+    `SELECT DISTINCT s.transaction_id FROM transaction_splits s JOIN contract_payments cp ON cp.transaction_id = s.transaction_id
+     WHERE cp.contract_id = $1 AND s.memo = $2`, [contractId, CONTRACT_DEDUCTIONS_MEMO]);
+  for (const { transaction_id: txId } of rows) {
+    const { rows: [gross] } = await client.query(
+      'SELECT category_id FROM transaction_splits WHERE transaction_id = $1 AND memo = $2 LIMIT 1', [txId, CONTRACT_GROSS_MEMO]);
+    await client.query('DELETE FROM transaction_splits WHERE transaction_id = $1', [txId]);
+    await client.query('UPDATE transactions SET is_split = false, category_id = $2 WHERE id = $1', [txId, gross?.category_id || null]);
+  }
+}
+
 /**
- * Settles a sale contract WITH a deposit already in the ledger — no new
- * money movement. Fills the income category from the commodity ("Canola"
- * → Canola sales) and the buyer as payee when the deposit has neither.
+ * Brings a contract up to date with its deposits: received_amount, and
+ * settles it when they reach the value less the allowance. Settled
+ * contracts stay settled (unlinking a deposit reopens them first).
  */
-export async function linkContractToTransaction(client, contractId, txId) {
+export async function refreshContract(client, contractId) {
+  const { rows: [c] } = await client.query('SELECT * FROM sale_contracts WHERE id = $1 FOR UPDATE', [contractId]);
+  if (!c) return null;
+  let got = await contractReceived(client, c.id);
+  const sets = { status: c.status, deductions_amount: Number(c.deductions_amount), settle_note: c.settle_note };
+  if (!['settled', 'cancelled'].includes(c.status) && got.n > 0) {
+    const allow = await contractAllowancePct();
+    const value = Number(c.total_value);
+    if (got.gross >= round2(value * (1 - allow / 100)) - 0.005) {
+      const booked = await bookContractDeductions(client, c);
+      sets.status = 'settled';
+      sets.deductions_amount = booked;
+      sets.settle_note = booked > 0
+        ? `Settled: deposits came to ${got.net.toFixed(2)}; the ${booked.toFixed(2)} difference to the contract value is booked as deductions.`
+        : (got.gross > value + 0.005 ? `Settled: received ${got.gross.toFixed(2)}, more than the contract value.` : 'Settled: received in full.');
+      got = await contractReceived(client, c.id);
+    }
+  }
+  const { rows: [out] } = await client.query(
+    `UPDATE sale_contracts SET received_amount = $2, status = $3::contract_status, deductions_amount = $4, settle_note = $5
+     WHERE id = $1 RETURNING *`,
+    [c.id, got.gross, sets.status, sets.deductions_amount, sets.settle_note]);
+  return out;
+}
+
+/**
+ * Counts a deposit already in the ledger toward a contract — no new money
+ * moves. Fills the income category from the commodity ("Canola" → Canola
+ * sales) and the buyer as payee when the deposit has neither; the contract
+ * settles itself once its deposits reach the value (refreshContract).
+ */
+export async function linkContractToTransaction(client, contractId, txId, { createdHere = false } = {}) {
   const tx = await linkableTx(client, txId, 'in');
   if (!tx.account_id) throw new PostingError('A contract payment lands in a bank account.');
   const { rows } = await client.query('SELECT * FROM sale_contracts WHERE id = $1 FOR UPDATE', [contractId]);
   const c = rows[0];
   if (!c) throw new PostingError('Contract not found.');
-  if (c.status === 'settled') throw new PostingError(`That ${c.commodity} contract is already settled.`);
+  if (c.status === 'settled') throw new PostingError(`That ${c.commodity} contract is already settled — reopen it on the Contracts tab to add another deposit.`);
   if (c.status === 'cancelled') throw new PostingError(`That ${c.commodity} contract is cancelled.`);
-  await client.query(
-    `UPDATE sale_contracts SET status = 'settled', linked_transaction_id = $1, linked_existing = true WHERE id = $2`,
-    [tx.id, c.id]
-  );
+  await client.query('INSERT INTO contract_payments (contract_id, transaction_id, created_here) VALUES ($1, $2, $3)', [c.id, tx.id, createdHere]);
   const cat = !tx.category_id && !tx.is_split ? await incomeCategoryFor(client, c.commodity) : null;
   const payee = !tx.payee_id && c.counterparty ? await payeeId(client, c.counterparty) : null;
   await client.query(
@@ -378,7 +742,71 @@ export async function linkContractToTransaction(client, contractId, txId) {
      WHERE id = $3`,
     [cat, payee, tx.id, UNCATEGORIZED_INCOME]
   );
-  return { contract: c };
+  return { contract: await refreshContract(client, c.id) };
+}
+
+/** A settled contract back to collecting deposits (its deductions booking undone). */
+async function reopenContract(client, c) {
+  await undoContractDeductions(client, c.id);
+  await client.query(
+    `UPDATE sale_contracts SET status = CASE WHEN delivery_date IS NOT NULL AND delivery_date <= CURRENT_DATE THEN 'delivered'::contract_status ELSE 'open'::contract_status END,
+       deductions_amount = 0, settle_note = NULL WHERE id = $1`, [c.id]);
+}
+
+/**
+ * Takes a deposit off its contract. A deposit recorded from the Contracts
+ * tab is removed with it; a real one (statement, ledger) stays in the
+ * ledger and is remembered as "not this contract" so it isn't matched back.
+ */
+export async function unlinkContractPayment(client, txId) {
+  const { rows: [cp] } = await client.query('SELECT * FROM contract_payments WHERE transaction_id = $1', [txId]);
+  if (!cp) throw new PostingError('That deposit isn\'t linked to a contract.');
+  const { rows: [c] } = await client.query('SELECT * FROM sale_contracts WHERE id = $1 FOR UPDATE', [cp.contract_id]);
+  if (c.status === 'settled') await reopenContract(client, c);
+  await client.query('DELETE FROM contract_payments WHERE id = $1', [cp.id]);
+  if (cp.created_here) await removeTransaction(client, txId);
+  else {
+    await client.query('INSERT INTO contract_link_rejections (contract_id, transaction_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [c.id, txId]);
+  }
+  return refreshContract(client, c.id);
+}
+
+/**
+ * A person settling a contract whose deposits fell short of the allowance:
+ * 'deductions' — the rest was checkoff, freight, dockage (booked as such);
+ * 'short' — less was delivered (income stays at what arrived).
+ */
+export async function settleContractByHand(client, contractId, mode) {
+  const { rows: [c] } = await client.query('SELECT * FROM sale_contracts WHERE id = $1 FOR UPDATE', [contractId]);
+  if (!c) return null;
+  if (c.status === 'settled') return c;
+  const got = await contractReceived(client, c.id);
+  if (!got.n) throw new PostingError('No deposits are linked to this contract yet — link the deposits first.');
+  let booked = 0;
+  let note;
+  if (mode === 'deductions') {
+    booked = await bookContractDeductions(client, c);
+    note = `Settled by hand: deposits came to ${got.net.toFixed(2)}; the ${booked.toFixed(2)} difference is booked as deductions.`;
+  } else {
+    note = `Settled by hand as delivered short: received ${got.gross.toFixed(2)} of ${Number(c.total_value).toFixed(2)}.`;
+  }
+  const after = await contractReceived(client, c.id);
+  const { rows: [out] } = await client.query(
+    `UPDATE sale_contracts SET status = 'settled', received_amount = $2, deductions_amount = $3, settle_note = $4 WHERE id = $1 RETURNING *`,
+    [c.id, after.gross, booked, note]);
+  return out;
+}
+
+/** Reopens a settled contract, keeping its deposits linked (it won't re-settle on its own until more arrive). */
+export async function reopenContractByHand(client, contractId) {
+  const { rows: [c] } = await client.query('SELECT * FROM sale_contracts WHERE id = $1 FOR UPDATE', [contractId]);
+  if (!c) return null;
+  if (c.status !== 'settled') return c;
+  await reopenContract(client, c);
+  const got = await contractReceived(client, c.id);
+  const { rows: [out] } = await client.query(
+    `UPDATE sale_contracts SET received_amount = $2, settle_note = 'Reopened by hand.' WHERE id = $1 RETURNING *`, [c.id, got.gross]);
+  return out;
 }
 
 /** Marks a scheduled loan payment made BY a transaction already in the ledger. */
@@ -394,6 +822,7 @@ export async function linkLoanPaymentToTransaction(client, paymentId, txId) {
     [tx.date, tx.id, payment.id]
   );
   await client.query('UPDATE transactions SET is_debt_service = true WHERE id = $1', [tx.id]);
+  await splitLoanPayment(client, tx.id, payment.id);
   if (!tx.payee_id) {
     const { rows: l } = await client.query('SELECT COALESCE(lender, name) AS who FROM loans WHERE id = $1', [payment.loan_id]);
     if (l[0]?.who) await client.query('UPDATE transactions SET payee_id = $1 WHERE id = $2', [await payeeId(client, l[0].who), tx.id]);
@@ -429,30 +858,91 @@ export async function recordLoanPayment(client, paymentId, {
     `UPDATE loan_payments SET paid = true, paid_date = $1, linked_transaction_id = $2 WHERE id = $3 RETURNING *`,
     [date, tx.id, payment.id]
   );
+  await splitLoanPayment(client, tx.id, payment.id);
   return { payment: updated[0], transaction: tx };
 }
 
-/** Settles a sale contract: money in, contract closed. `amount` = what actually arrived. */
+// ---- Loan payments: interest vs principal in the ledger ---------------------
+//
+// A loan payment is two different things: interest (a cost — deductible,
+// in profit and costings) and principal (paying down the loan — not a
+// cost). The entry is split into those two pieces from the loan's
+// schedule: interest under Interest › Loan interest, principal as a
+// transfer to the loan. Every report reads the pieces like any other
+// split. The schedule's interest is used; if the bank took a different
+// total, the difference goes to principal. Pieces carry these memo
+// prefixes so unlinking can take them back off.
+export const LOAN_INTEREST_MEMO = 'Loan interest — ';
+export const LOAN_PRINCIPAL_MEMO = 'Loan principal — ';
+
+export async function splitLoanPayment(client, txId, paymentId) {
+  const { rows: [tx] } = await client.query('SELECT * FROM transactions WHERE id = $1', [txId]);
+  const { rows: [p] } = await client.query(
+    `SELECT lp.*, COALESCE(l.name, l.lender) AS loan_name FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id WHERE lp.id = $1`, [paymentId]);
+  if (!tx || !p || tx.is_split || Number(tx.amount) >= 0) return false;
+  if (await closedMonth(client, tx.date)) return false;
+  const paid = -Number(tx.amount);
+  const interest = Math.min(round2(Number(p.interest_amount) || 0), paid);
+  const principal = round2(paid - interest);
+  const interestCat = interest > 0 ? await expenseCategoryFor(client, 'Interest › Loan interest') : null;
+  const owner = ownerOf(tx);
+  const pieces = [];
+  if (interest > 0.005) pieces.push({ amount: -interest, category_id: interestCat, memo: `${LOAN_INTEREST_MEMO}${p.loan_name}`, is_transfer: false });
+  if (principal > 0.005) pieces.push({ amount: -principal, category_id: null, memo: `${LOAN_PRINCIPAL_MEMO}${p.loan_name}`, is_transfer: true });
+  if (!pieces.length) return false;
+  for (const pc of pieces) {
+    await client.query(
+      `INSERT INTO transaction_splits (transaction_id, amount, category_id, memo, ledger, is_capex, is_transfer, ${SEG_COLS})
+       VALUES ($1,$2,$3,$4,$5,false,$6,${SEGMENT_COLUMNS.map((_, i) => `$${7 + i}`).join(',')})`,
+      [tx.id, pc.amount, pc.category_id, pc.memo, tx.ledger, pc.is_transfer, ...SEGMENT_COLUMNS.map((k) => owner[k])]);
+  }
+  await client.query('UPDATE transactions SET is_split = true, category_id = NULL WHERE id = $1', [tx.id]);
+  return true;
+}
+
+/** Takes the interest/principal pieces back off (the entry stops being a loan payment). */
+export async function unsplitLoanPayment(client, txId) {
+  await client.query(
+    `DELETE FROM transaction_splits WHERE transaction_id = $1 AND (memo LIKE $2 OR memo LIKE $3)`,
+    [txId, `${LOAN_INTEREST_MEMO}%`, `${LOAN_PRINCIPAL_MEMO}%`]);
+  await client.query(
+    `UPDATE transactions SET is_split = EXISTS (SELECT 1 FROM transaction_splits WHERE transaction_id = $1) WHERE id = $1`, [txId]);
+}
+
+/** Splits every recorded loan payment that isn't split yet (payments recorded before this existed). */
+export async function splitAllLoanPayments(client) {
+  const { rows } = await client.query(
+    `SELECT lp.id, lp.linked_transaction_id FROM loan_payments lp JOIN transactions t ON t.id = lp.linked_transaction_id
+     WHERE lp.paid AND NOT t.is_split`);
+  let n = 0;
+  for (const r of rows) if (await splitLoanPayment(client, r.linked_transaction_id, r.id)) n++;
+  return n;
+}
+
+/**
+ * Records money arriving for a contract (the Contracts tab's "Record
+ * deposit", or a statement line the agent marked as this contract's
+ * payment): a deposit into the account, counted toward the contract.
+ * `amount` defaults to what's still to come.
+ */
 export async function settleContract(client, contractId, {
-  account_id, date, amount = null, source = null, external_id = null, entered_by = 'manual',
+  account_id, date, amount = null, source = null, external_id = null, entered_by = 'manual', description = null,
 }) {
   const { rows } = await client.query('SELECT * FROM sale_contracts WHERE id = $1 FOR UPDATE', [contractId]);
   if (!rows.length) return null;
   const contract = rows[0];
   if (contract.status === 'settled') return { contract, alreadyPaid: true, transaction: null };
-
-  const received = Math.abs(Number(amount ?? contract.total_value));
+  const remaining = Math.max(round2(Number(contract.total_value) - Number(contract.received_amount || 0)), 0);
+  const received = Math.abs(Number(amount ?? remaining));
+  if (!received) throw new PostingError('Nothing left to receive on this contract — enter the amount that arrived.');
   const tx = await insertTransaction(client, {
     account_id, ledger: ledgerForSegment(contract.segment), date, amount: received,
-    description: `Contract settled: ${contract.commodity}${contract.counterparty ? ` — ${contract.counterparty}` : ''}`,
+    description: description || `Contract payment: ${contract.commodity}${contract.counterparty ? ` — ${contract.counterparty}` : ''}`,
     owner: ownerOf({ segment: contract.segment }), source, external_id, entered_by, awaiting_statement: true,
     category_id: await incomeCategoryFor(client, contract.commodity), payee: contract.counterparty,
   });
-  const { rows: updated } = await client.query(
-    `UPDATE sale_contracts SET status = 'settled', linked_transaction_id = $1 WHERE id = $2 RETURNING *`,
-    [tx.id, contract.id]
-  );
-  return { contract: updated[0], transaction: tx };
+  const r = await linkContractToTransaction(client, contract.id, tx.id, { createdHere: !source });
+  return { contract: r.contract, transaction: tx };
 }
 
 /**

@@ -1092,3 +1092,111 @@ WHERE NOT t.awaiting_statement AND t.source IS NULL
   AND (EXISTS (SELECT 1 FROM bills b WHERE b.linked_transaction_id = t.id AND NOT b.linked_existing)
     OR EXISTS (SELECT 1 FROM loan_payments lp WHERE lp.linked_transaction_id = t.id AND NOT lp.linked_existing)
     OR EXISTS (SELECT 1 FROM sale_contracts c WHERE c.linked_transaction_id = t.id AND NOT c.linked_existing));
+
+-- Sale contracts are paid by one or more deposits (grain pays per load or
+-- per settlement, each net of checkoff/levies/freight). Each deposit that
+-- counts toward a contract is a row here. received_amount is the gross
+-- received (a deposit split by a settlement ticket counts its gross sale);
+-- the contract settles when that reaches the contract value less the
+-- deductions allowance (setting contract_deduction_allowance_pct, default
+-- 3%), and the remaining gap is booked as deductions so income shows at
+-- the contract value. See lib/postings.js refreshContract.
+CREATE TABLE IF NOT EXISTS contract_payments (
+  id             SERIAL PRIMARY KEY,
+  contract_id    INTEGER NOT NULL REFERENCES sale_contracts(id) ON DELETE CASCADE,
+  transaction_id INTEGER NOT NULL UNIQUE REFERENCES transactions(id) ON DELETE CASCADE,
+  created_here   BOOLEAN NOT NULL DEFAULT false, -- recorded from the Contracts tab (removed again on unlink)
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_contract_payments_contract ON contract_payments (contract_id);
+ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS received_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
+ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS deductions_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
+ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS settle_note TEXT;
+-- Contracts settled the old way (one linked deposit) move onto the list.
+INSERT INTO contract_payments (contract_id, transaction_id, created_here)
+SELECT id, linked_transaction_id, NOT linked_existing FROM sale_contracts
+WHERE linked_transaction_id IS NOT NULL
+ON CONFLICT (transaction_id) DO NOTHING;
+UPDATE sale_contracts c SET received_amount = x.gross, linked_transaction_id = NULL
+FROM (SELECT cp.contract_id, SUM(CASE WHEN t.is_split
+        THEN COALESCE((SELECT SUM(s.amount) FROM transaction_splits s WHERE s.transaction_id = t.id AND s.amount > 0), 0)
+        ELSE t.amount END) AS gross
+      FROM contract_payments cp JOIN transactions t ON t.id = cp.transaction_id GROUP BY cp.contract_id) x
+WHERE x.contract_id = c.id AND c.linked_transaction_id IS NOT NULL;
+-- "That deposit isn't this contract": never linked automatically again.
+CREATE TABLE IF NOT EXISTS contract_link_rejections (
+  contract_id    INTEGER NOT NULL REFERENCES sale_contracts(id) ON DELETE CASCADE,
+  transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (contract_id, transaction_id)
+);
+INSERT INTO settings (key, value) VALUES ('contract_deduction_allowance_pct', '3') ON CONFLICT (key) DO NOTHING;
+
+-- Bills on finance terms (input financing: interest-free until a date,
+-- then interest at a set rate until paid). What's owing on any date is
+-- bill_owing(): the balance (the invoice, or the latest statement's
+-- balance) plus simple daily interest (actual/365) from the later of the
+-- interest-free date and that statement's date. Ordinary bills owe their
+-- amount. The forecast counts a financed bill at what will be owing on
+-- its due date (the date you plan to pay it).
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS is_financed BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS finance_rate_pct NUMERIC(6,3);
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS interest_free_until DATE;
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS balance_amount NUMERIC(14,2);
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS balance_as_of DATE;
+CREATE OR REPLACE FUNCTION bill_owing(b bills, d date) RETURNS numeric LANGUAGE sql STABLE AS $$
+  SELECT CASE
+    WHEN NOT b.is_financed THEN b.amount
+    ELSE round(COALESCE(b.balance_amount, b.amount) * (1 + COALESCE(b.finance_rate_pct, 0) / 100.0 *
+      GREATEST(d - COALESCE(GREATEST(b.balance_as_of, b.interest_free_until), b.received_date, b.created_at::date, d), 0) / 365.0), 2)
+  END
+$$;
+
+-- Documents filed on a sale contract (the signed contract, amendments,
+-- confirmations) — kept, not read. Settlement tickets belong to deposits.
+ALTER TABLE receipts ADD COLUMN IF NOT EXISTS contract_id INTEGER REFERENCES sale_contracts(id) ON DELETE SET NULL;
+
+-- Vendors: a bill belongs to a vendor (a payee), so the Bills tab can show
+-- one balance per vendor and one payment can clear several of its bills.
+-- Existing bills take the vendor from their name ("JS & CL Gayler — Inv.
+-- 0588652" → JS & CL Gayler).
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS payee_id INTEGER REFERENCES payees(id) ON DELETE SET NULL;
+INSERT INTO payees (name)
+SELECT DISTINCT trim(regexp_replace(name, '\s+(—|–|-|#|inv\.?\s|invoice\s).*$', '', 'i'))
+FROM bills WHERE payee_id IS NULL AND trim(regexp_replace(name, '\s+(—|–|-|#|inv\.?\s|invoice\s).*$', '', 'i')) <> ''
+ON CONFLICT ((lower(name))) DO NOTHING;
+UPDATE bills b SET payee_id = p.id FROM payees p
+WHERE b.payee_id IS NULL AND lower(p.name) = lower(trim(regexp_replace(b.name, '\s+(—|–|-|#|inv\.?\s|invoice\s).*$', '', 'i')));
+
+-- Money a vendor is holding for you: a deposit paid ahead. 'prepayment'
+-- is applied to later bills; 'refundable' (a bin or container deposit) is
+-- given back. The payment that made it is held as yours (a transfer, not
+-- an expense); the parts applied to bills become those bills' expense.
+CREATE TABLE IF NOT EXISTS vendor_credits (
+  id                    SERIAL PRIMARY KEY,
+  payee_id              INTEGER NOT NULL REFERENCES payees(id) ON DELETE CASCADE,
+  kind                  TEXT NOT NULL CHECK (kind IN ('prepayment', 'refundable')),
+  amount                NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+  date                  DATE NOT NULL,
+  transaction_id        INTEGER REFERENCES transactions(id) ON DELETE SET NULL,  -- the deposit paid
+  status                TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'used', 'refunded', 'kept')),
+  refund_transaction_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+  kept_category_id      INTEGER REFERENCES expense_categories(id) ON DELETE SET NULL,
+  note                  TEXT,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS credit_applications (
+  id         SERIAL PRIMARY KEY,
+  credit_id  INTEGER NOT NULL REFERENCES vendor_credits(id) ON DELETE CASCADE,
+  bill_id    INTEGER NOT NULL REFERENCES bills(id) ON DELETE CASCADE,
+  amount     NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- What a bill still needs paid: less any deposit applied to it.
+CREATE OR REPLACE FUNCTION bill_owing(b bills, d date) RETURNS numeric LANGUAGE sql STABLE AS $$
+  SELECT GREATEST(0, CASE
+    WHEN NOT b.is_financed THEN b.amount
+    ELSE round(COALESCE(b.balance_amount, b.amount) * (1 + COALESCE(b.finance_rate_pct, 0) / 100.0 *
+      GREATEST(d - COALESCE(GREATEST(b.balance_as_of, b.interest_free_until), b.received_date, b.created_at::date, d), 0) / 365.0), 2)
+  END - COALESCE((SELECT SUM(ca.amount) FROM credit_applications ca WHERE ca.bill_id = b.id), 0))
+$$;

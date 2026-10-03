@@ -14,7 +14,7 @@
 // Receipts page — matching works the same either way.
 import { pool } from '../db.js';
 import { toISODate } from './dates.js';
-import { payeeId, linkBillToTransaction, linkContractToTransaction, incomeCategoryFor, normalizeSplits, ownerOf, PostingError } from './postings.js';
+import { payeeId, refreshContract, linkBillToTransaction, linkContractToTransaction, incomeCategoryFor, normalizeSplits, ownerOf, PostingError } from './postings.js';
 import { SEGMENT_COLUMNS } from './segments.js';
 import { closedMonth } from './periods.js';
 import { OWNERS } from './segments.js';
@@ -40,6 +40,8 @@ Return ONLY a JSON object, no other text, with these fields (angle brackets desc
   "date": <document date as "YYYY-MM-DD">,
   "due_date": <invoice only: due date "YYYY-MM-DD", else null>,
   "invoice_number": <invoice only, else null>,
+  "interest_free_until": <invoice on a financing program ("interest free until", "0% until", "deferred to"): that date "YYYY-MM-DD", else null>,
+  "finance_rate_pct": <invoice on a financing program: the annual interest rate charged after that date, as printed, else null>,
   "total": <receipt/invoice: amount paid or owed, positive (negative only for a refund). sales_ticket: the NET paid to the farm>,
   "gst": <GST (or the GST part of HST) exactly as printed, else null. Never calculate it>,
   "pst": <Saskatchewan PST as printed, else null>,
@@ -167,6 +169,26 @@ export async function processReceipt(id) {
 
 const docType = (ex) => (ex && ['invoice', 'sales_ticket'].includes(ex.doc_type) ? ex.doc_type : 'receipt');
 
+/**
+ * A document attached by hand to one ledger entry: it belongs there, so
+ * it's attached straight away; when a reader is set up it's read first so
+ * the entry gets the exact GST, the business, and — for a settlement
+ * ticket on a deposit — the gross sale and deductions.
+ */
+export async function readAndAttach(id, txId) {
+  const { rows: [rc] } = await pool.query('SELECT * FROM receipts WHERE id = $1', [id]);
+  if (!rc) return;
+  if (readerEnabled()) {
+    try {
+      const ex = await extract(rc);
+      if (ex.is_receipt) await pool.query('UPDATE receipts SET extracted = $2, error = NULL WHERE id = $1', [id, ex]);
+    } catch (e) {
+      await pool.query('UPDATE receipts SET error = $2 WHERE id = $1', [id, `Attached, but couldn't be read: ${String(e.message).slice(0, 300)}`]);
+    }
+  }
+  await attachReceipt(id, txId, pool, { extra: true });
+}
+
 /** Transactions with this exact amount in a date window, not yet carrying a document. */
 async function candidates(client, ex, amount, fromDays, toDays) {
   const { rows } = await client.query(
@@ -289,6 +311,14 @@ async function billFromInvoice(id, ex, client) {
        ex.category_id || null, ...SEGMENT_COLUMNS.map((c) => owner[c])]
     );
     billId = b.id;
+    if (ex.party) await client.query('UPDATE bills SET payee_id = $2 WHERE id = $1', [billId, await payeeId(client, ex.party)]);
+    // Input financing printed on the invoice: interest-free date and rate.
+    const rate = Number(ex.finance_rate_pct);
+    if (ex.interest_free_until || (Number.isFinite(rate) && rate > 0)) {
+      await client.query(
+        `UPDATE bills SET is_financed = true, finance_rate_pct = $2, interest_free_until = $3 WHERE id = $1`,
+        [billId, Number.isFinite(rate) ? rate : 0, ex.interest_free_until || null]);
+    }
   }
   await client.query(`UPDATE receipts SET status = 'billed', bill_id = $2 WHERE id = $1`, [id, billId]);
 }
@@ -301,12 +331,14 @@ async function billFromInvoice(id, ex, client) {
  * transaction instead of guessing a split. A sales ticket also settles its
  * contract and splits the deposit into gross sale and deductions.
  */
-export async function attachReceipt(receiptId, txId, client = pool) {
+export async function attachReceipt(receiptId, txId, client = pool, { extra = false } = {}) {
   const { rows: [rc] } = await client.query('SELECT * FROM receipts WHERE id = $1', [receiptId]);
   const { rows: [tx] } = await client.query('SELECT * FROM transactions WHERE id = $1', [txId]);
   if (!rc || !tx) throw Object.assign(new Error('Receipt or transaction not found.'), { status: 404 });
+  // Matching gives a transaction one document; attaching by hand from the
+  // ledger can add more (an invoice and its receipt, a ticket and a stub).
   const { rows: other } = await client.query('SELECT id FROM receipts WHERE transaction_id = $1 AND id <> $2', [txId, receiptId]);
-  if (other.length) throw Object.assign(new Error('That transaction already has a receipt.'), { status: 409 });
+  if (other.length && !extra) throw Object.assign(new Error('That transaction already has a receipt.'), { status: 409 });
   await client.query(
     `UPDATE receipts SET status = 'matched', transaction_id = $2, candidates = NULL, matched_at = now() WHERE id = $1`,
     [receiptId, txId]
@@ -345,27 +377,6 @@ async function categoryByName(client, name, kind) {
  * review flag, when the ticket's numbers don't add up to the deposit.
  */
 async function applySalesTicket(ex, tx, client) {
-  // Contract: same commodity, value between the net and a little over gross.
-  const { rows: linked } = await client.query('SELECT 1 FROM sale_contracts WHERE linked_transaction_id = $1', [tx.id]);
-  if (!linked.length && ex.commodity) {
-    const gross = Number(ex.gross) || Number(ex.total);
-    const { rows: cs } = await client.query(
-      `SELECT * FROM sale_contracts
-       WHERE status IN ('open', 'delivered') AND (commodity ILIKE '%' || $1 || '%' OR $1 ILIKE '%' || commodity || '%')
-         AND total_value BETWEEN $2 * 0.8 AND $3 * 1.05`,
-      [String(ex.commodity).trim(), Number(ex.total), gross]
-    );
-    let pick = cs;
-    if (pick.length > 1 && ex.party) {
-      const w = String(ex.party).toLowerCase().split(/\W+/).filter((x) => x.length > 2);
-      const byBuyer = pick.filter((c) => w.some((x) => String(c.counterparty || '').toLowerCase().includes(x)));
-      if (byBuyer.length) pick = byBuyer;
-    }
-    if (pick.length > 1) pick = pick.filter((c) => Math.abs(Number(c.total_value) - gross) < 0.01);
-    if (pick.length === 1) {
-      try { await linkContractToTransaction(client, pick[0].id, tx.id); } catch (e) { if (!(e instanceof PostingError)) throw e; }
-    }
-  }
   const { rows: [fresh] } = await client.query('SELECT * FROM transactions WHERE id = $1', [tx.id]);
   const sets = [];
   const vals = [];
@@ -408,6 +419,29 @@ async function applySalesTicket(ex, tx, client) {
   if (sets.length) {
     vals.push(fresh.id);
     await client.query(`UPDATE transactions SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals);
+  }
+  // Contract: same commodity, still expecting at least this ticket's gross.
+  // Linked after the split above, so the contract counts the gross sale.
+  const { rows: linked } = await client.query('SELECT contract_id FROM contract_payments WHERE transaction_id = $1', [tx.id]);
+  if (linked.length) await refreshContract(client, linked[0].contract_id); // already counted: now at its gross
+  if (!linked.length && ex.commodity) {
+    const gross = Number(ex.gross) || Number(ex.total);
+    const { rows: cs } = await client.query(
+      `SELECT *, GREATEST(total_value - received_amount, 0) AS remaining FROM sale_contracts
+       WHERE status IN ('open', 'delivered') AND (commodity ILIKE '%' || $1 || '%' OR $1 ILIKE '%' || commodity || '%')
+         AND GREATEST(total_value - received_amount, 0) * 1.03 + 1 >= $2`,
+      [String(ex.commodity).trim(), gross]
+    );
+    let pick = cs;
+    if (pick.length > 1 && ex.party) {
+      const w = String(ex.party).toLowerCase().split(/\W+/).filter((x) => x.length > 2);
+      const byBuyer = pick.filter((c) => w.some((x) => String(c.counterparty || '').toLowerCase().includes(x)));
+      if (byBuyer.length) pick = byBuyer;
+    }
+    if (pick.length > 1) pick = pick.filter((c) => Math.abs(Number(c.remaining) - gross) < 0.01);
+    if (pick.length === 1) {
+      try { await linkContractToTransaction(client, pick[0].id, tx.id); } catch (e) { if (!(e instanceof PostingError)) throw e; }
+    }
   }
 }
 

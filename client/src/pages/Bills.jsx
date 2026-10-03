@@ -2,6 +2,8 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import { money } from '../format.js';
 import { OwnerFields, ownerPayload, ownerFieldsFrom, ownerSummary, emptyOwnerFields, OWNER_LABELS, OWNER_KEYS } from '../owners.jsx';
 import CategorySelect from '../components/CategorySelect.jsx';
+import PayeeSelect, { usePayees } from '../components/PayeeSelect.jsx';
+import VendorBills from '../components/VendorBills.jsx';
 import { cents } from '../components/SplitEditor.jsx';
 import { uploadBody } from './Receipts.jsx';
 
@@ -35,11 +37,56 @@ const belongsTo = (b, owner) => {
 };
 
 const emptyForm = {
-  name: '', ledger: 'business', category_id: '', amount: '', frequency: 'one_time',
+  name: '', payee_id: '', ledger: 'business', category_id: '', amount: '', frequency: 'one_time',
   received_date: '', due_date: '', notes: '',
   has_gst: false, gst_pct: '5',
+  is_financed: false, finance_rate_pct: '', interest_free_until: '', balance_amount: '', balance_as_of: '',
   ...emptyOwnerFields,
 };
+
+// Input financing terms: interest-free until a date, then simple interest
+// at the rate. A balance from a statement replaces the invoice as the base.
+function FinanceFields({ state, setState, disabled = false }) {
+  const set = (k) => (e) => setState({ ...state, [k]: e.target.value });
+  return (
+    <>
+      <div className="field">
+        <label>
+          <input type="checkbox" disabled={disabled} checked={!!state.is_financed}
+            onChange={(e) => setState({ ...state, is_financed: e.target.checked })} />
+          {' '}On finance terms (input financing)
+        </label>
+      </div>
+      {state.is_financed && (
+        <>
+          <div className="field">
+            <label>Interest-free until</label>
+            <input type="date" disabled={disabled} value={state.interest_free_until || ''} onChange={set('interest_free_until')} />
+          </div>
+          <div className="field">
+            <label>Interest after that (% per year)</label>
+            <input type="number" step="0.01" min="0" disabled={disabled} value={state.finance_rate_pct ?? ''} onChange={set('finance_rate_pct')} />
+          </div>
+          <div className="field">
+            <label>Balance on latest statement (optional)</label>
+            <input type="number" step="0.01" disabled={disabled} value={state.balance_amount ?? ''} onChange={set('balance_amount')} placeholder="Leave blank to use the invoice" />
+          </div>
+          <div className="field">
+            <label>…as of</label>
+            <input type="date" disabled={disabled} value={state.balance_as_of || ''} onChange={set('balance_as_of')} />
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+const financePayload = (f) => ({
+  is_financed: !!f.is_financed,
+  finance_rate_pct: f.is_financed && f.finance_rate_pct !== '' ? Number(f.finance_rate_pct) : null,
+  interest_free_until: f.is_financed ? f.interest_free_until || null : null,
+  balance_amount: f.is_financed && f.balance_amount !== '' && f.balance_amount != null ? Number(f.balance_amount) : null,
+  balance_as_of: f.is_financed ? f.balance_as_of || null : null,
+});
 
 export default function Bills() {
   const [bills, setBills] = useState([]);
@@ -61,6 +108,9 @@ export default function Bills() {
   });
   useEffect(() => { try { window.localStorage.setItem('moneyhub.billSort', JSON.stringify(sort)); } catch { /* private mode */ } }, [sort]);
   const [photoFor, setPhotoFor] = useState(null);
+  const payees = usePayees();
+  const [view, setView] = useState(() => { try { return window.localStorage.getItem('moneyhub.billView') || 'bill'; } catch { return 'bill'; } });
+  useEffect(() => { try { window.localStorage.setItem('moneyhub.billView', view); } catch { /* private mode */ } }, [view]);
   const photoRef = useRef(null);
 
   const load = () => {
@@ -120,9 +170,11 @@ export default function Bills() {
         ...form,
         amount: Number(form.amount),
         category_id: form.category_id ? Number(form.category_id) : null,
+        payee_id: form.payee_id ? Number(form.payee_id) : null,
         received_date: form.received_date || null,
         notes: form.notes || null,
         gst_pct: form.has_gst ? Number(form.gst_pct) : 5,
+        ...financePayload(form),
         ...ownerPayload(form),
       }),
     });
@@ -166,8 +218,11 @@ export default function Bills() {
   const startEdit = (b) => {
     setEditingId(b.id);
     setEditForm({
-      name: b.name, category_id: b.category_id || '', amount: b.amount, due_date: b.due_date?.slice(0, 10),
+      name: b.name, payee_id: b.payee_id ? String(b.payee_id) : '', category_id: b.category_id || '', amount: b.amount, due_date: b.due_date?.slice(0, 10),
       notes: b.notes || '', has_gst: b.has_gst, gst_pct: b.gst_pct,
+      is_financed: !!b.is_financed, finance_rate_pct: b.finance_rate_pct == null ? '' : Number(b.finance_rate_pct),
+      interest_free_until: b.interest_free_until || '', balance_amount: b.balance_amount == null ? '' : Number(b.balance_amount),
+      balance_as_of: b.balance_as_of || '',
       ...ownerFieldsFrom(b),
     });
     setError(null);
@@ -183,8 +238,10 @@ export default function Bills() {
       body: JSON.stringify({
         ...editForm,
         category_id: editForm.category_id ? Number(editForm.category_id) : null,
+        payee_id: editForm.payee_id ? Number(editForm.payee_id) : null,
         amount: Number(editForm.amount),
         gst_pct: Number(editForm.gst_pct),
+        ...(bills.find((x) => x.id === id)?.status === 'paid' ? {} : financePayload(editForm)),
         ...ownerPayload(editForm),
       }),
     });
@@ -220,7 +277,7 @@ export default function Bills() {
 
   const totalUnpaid = bills
     .filter((b) => b.status === 'unpaid')
-    .reduce((s, b) => s + Number(b.amount), 0);
+    .reduce((s, b) => s + Number(b.owing_now ?? b.amount), 0);
   const totalUnpaidGst = bills
     .filter((b) => b.status === 'unpaid')
     .reduce((s, b) => s + Number(b.gst_amount || 0), 0);
@@ -244,8 +301,15 @@ export default function Bills() {
 
       <div className="panel">
         <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-          <span>Invoices received{filtering ? ` — ${shown.length} of ${bills.length}` : ''}</span>
-          <span style={{ display: 'inline-flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', textTransform: 'none', letterSpacing: 0 }}>
+          <span style={{ display: 'inline-flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span className="seg-toggle" role="group" aria-label="View" style={{ textTransform: 'none', letterSpacing: 0 }}>
+              {[['bill', 'By bill'], ['vendor', 'By vendor']].map(([k, l]) => (
+                <button key={k} type="button" aria-pressed={view === k} className={view === k ? 'on' : ''} onClick={() => setView(k)}>{l}</button>
+              ))}
+            </span>
+            {view === 'bill' && <span>Invoices received{filtering ? ` — ${shown.length} of ${bills.length}` : ''}</span>}
+          </span>
+          {view === 'bill' && <span style={{ display: 'inline-flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', textTransform: 'none', letterSpacing: 0 }}>
             <input aria-label="Search bills" placeholder="Search name, category, notes" value={search}
               onChange={(e) => setSearch(e.target.value)} style={{ width: 200 }} />
             <select aria-label="Category" value={catFilter} onChange={(e) => setCatFilter(e.target.value)}>
@@ -263,8 +327,18 @@ export default function Bills() {
               <option value="paid">Paid</option>
               <option value="all">All</option>
             </select>
-          </span>
+          </span>}
         </div>
+        {view === 'vendor' ? (
+          <>
+            <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 16px 12px' }}>
+              One line per vendor: what its unpaid bills come to, deposits it's holding for you, and the net. A single payment
+              for a vendor's oldest bills (or all of them) marks each one paid on its own and is split across their categories.
+              Open a vendor to pay several bills at once, record a deposit, or apply one to a bill.
+            </p>
+            <VendorBills accounts={accounts} categories={categories} onChanged={load} />
+          </>
+        ) : (<>
         <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 16px 12px' }}>
           A bill is marked paid on its own when the payment for exactly its total shows up in the ledger — from a statement or
           entered by hand. If more than one payment fits, it's listed under the bill to confirm. "Mark paid" is for paying it
@@ -297,6 +371,7 @@ export default function Bills() {
                       <td>
                         {b.name}
                         {b.frequency !== 'one_time' && <span className="tag">{b.frequency === 'monthly' ? 'Monthly' : 'Quarterly'}</span>}
+                        {b.is_financed && <span className="tag">Financed</span>}
                         <div>
                           {b.invoice_receipt_id ? (
                             <a className="tag" style={{ marginLeft: 0 }} href={`/api/receipts/${b.invoice_receipt_id}/image`} target="_blank" rel="noreferrer">Invoice</a>
@@ -304,6 +379,8 @@ export default function Bills() {
                             <button type="button" className="small-link" onClick={() => { setPhotoFor(b.id); photoRef.current?.click(); }}>Add invoice (photo or PDF)</button>
                           )}
                         </div>
+                        {b.vendor && b.vendor !== b.name && <div className="split-lines">{b.vendor}</div>}
+                        {Number(b.deposit_applied) > 0 && <div className="split-lines">Deposit applied {cents(Number(b.deposit_applied))}</div>}
                         {b.notes && <div className="split-lines">{b.notes}</div>}
                       </td>
                       <td>
@@ -320,6 +397,13 @@ export default function Bills() {
                       </td>
                       <td>
                         <span className="nowrap">{money(Number(b.amount))}</span>
+                        {b.is_financed && b.status === 'unpaid' && (
+                          <div className="split-lines nowrap">
+                            {b.owing_now > Number(b.amount) + 0.005 ? `owing now ${cents(b.owing_now)}` : `0% until ${b.interest_free_until || '—'}`}
+                            {b.owing_at_due > b.owing_now + 0.005 && <div>{cents(b.owing_at_due)} by {b.due_date?.slice(0, 10)}</div>}
+                            <div>{Number(b.finance_rate_pct)}%/yr after{b.balance_as_of ? ` · stmt ${b.balance_as_of}` : ''}</div>
+                          </div>
+                        )}
                         {b.has_gst && (
                           <div className="split-lines nowrap">
                             {money(Number(b.subtotal_amount))} + GST {money(Number(b.gst_amount))} ({Number(b.gst_pct)}%)
@@ -372,6 +456,7 @@ export default function Bills() {
                               <input type="checkbox" checked={payByCheck} onChange={(e) => setPayByCheck(e.target.checked)} />
                               By check
                             </label>
+                            {b.is_financed && <span className="split-lines nowrap">Pays {cents(b.owing_now)} (invoice + interest to today)</span>}
                             <button className="small" disabled={!payAccountId} onClick={confirmPay}>Confirm</button>
                             <button className="small secondary" onClick={() => { setPayingId(null); setPayAccountId(''); setPayByCheck(false); }}>Cancel</button>
                           </span>
@@ -404,8 +489,13 @@ export default function Bills() {
                             )}
                             <div className="form-panel" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
                               <div className="field">
-                                <label>Name / vendor</label>
+                                <label>Name</label>
                                 <input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} />
+                              </div>
+                              <div className="field">
+                                <label>Vendor</label>
+                                <PayeeSelect payees={payees} value={editForm.payee_id} emptyLabel="No vendor"
+                                  onChange={(v) => setEditForm({ ...editForm, payee_id: v })} />
                               </div>
                               <div className="field">
                                 <label>Category</label>
@@ -436,6 +526,7 @@ export default function Bills() {
                                 <label>Notes</label>
                                 <input value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} />
                               </div>
+                              <FinanceFields state={editForm} setState={setEditForm} disabled={b.status === 'paid'} />
                               <OwnerFields state={editForm} setState={setEditForm} />
                             </div>
                             <div style={{ marginTop: 8 }}>
@@ -453,14 +544,19 @@ export default function Bills() {
             </tbody>
           </table>
         )}
+        </>)}
       </div>
 
       <div className="panel">
         <div className="panel-header">Record a received bill</div>
         <form className="form-panel" onSubmit={submit}>
           <div className="field">
-            <label>Name / vendor</label>
+            <label>Name</label>
             <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. AgriChem Ltd — invoice #4471" />
+          </div>
+          <div className="field">
+            <label>Vendor (blank = from the name)</label>
+            <PayeeSelect payees={payees} value={form.payee_id} emptyLabel="From the name" onChange={(v) => setForm({ ...form, payee_id: v })} />
           </div>
           <div className="field">
             <label>Ledger</label>
@@ -508,12 +604,13 @@ export default function Bills() {
               <option value="quarterly">Quarterly (recurs automatically once paid)</option>
             </select>
           </div>
+          <FinanceFields state={form} setState={setForm} />
           <div className="field">
             <label>Received date (optional)</label>
             <input type="date" value={form.received_date} onChange={(e) => setForm({ ...form, received_date: e.target.value })} />
           </div>
           <div className="field">
-            <label>Due date</label>
+            <label>{form.is_financed ? 'Due date (or when you plan to pay it)' : 'Due date'}</label>
             <input type="date" required value={form.due_date} onChange={(e) => setForm({ ...form, due_date: e.target.value })} />
           </div>
           <div className="field">

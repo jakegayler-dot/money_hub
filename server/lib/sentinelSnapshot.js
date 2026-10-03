@@ -229,6 +229,7 @@ export function contractItems(contracts, { from, to, appUrl }) {
       source_id: `contract-payment:${c.id}`, kind: 'event', category: 'finance',
       title: `Payment expected: ${label || `contract ${c.id}`}`,
       notes: [`Contract value ${fmtCents(toCents(c.total_value) || 0)}${qty ? ` (${qty})` : ''}`,
+        Number(c.received_amount) > 0 && c.status !== 'settled' ? `Received so far ${fmtCents(toCents(c.received_amount) || 0)}` : null,
         `Status: ${c.status}`, c.notes ? String(c.notes) : null].filter(Boolean).join('\n'),
       starts_at: date, status: c.status === 'settled' ? 'done' : 'scheduled',
       deep_link: linkFor(appUrl, '/contracts'),

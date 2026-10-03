@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
-import { recordLoanPayment, removeTransaction } from '../lib/postings.js';
+import { recordLoanPayment, removeTransaction, unsplitLoanPayment } from '../lib/postings.js';
 import { ledgerForSegment } from '../lib/segments.js';
 import { buildSchedule, scheduleFromTerms, dueDateFor, FREQUENCIES } from '../lib/amortization.js';
 import { toISODate, todayISO } from '../lib/dates.js';
@@ -59,6 +59,7 @@ router.post('/payments/:paymentId/unrecord', ah(async (req, res) => {
     );
     if (payment.linked_transaction_id && payment.linked_existing) {
       // Matched to a transaction already in the ledger: unlink it, keep it.
+      await unsplitLoanPayment(client, payment.linked_transaction_id);
       await client.query('UPDATE transactions SET is_debt_service = false WHERE id = $1', [payment.linked_transaction_id]);
     } else if (payment.linked_transaction_id) {
       await removeTransaction(client, payment.linked_transaction_id);

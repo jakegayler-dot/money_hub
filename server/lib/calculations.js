@@ -4,6 +4,7 @@ import { forecastEstimates } from './inventoryForecast.js';
 import { ownerWeights, businessShare } from './segments.js';
 import { monthIndex, todayISO, toISODate, addMonths, addDays } from './dates.js';
 import { LATEST_STATEMENTS_SQL } from './cardLedger.js';
+import { farmIncomeTax } from './tax.js';
 
 const MONTHS = 12;
 
@@ -13,7 +14,7 @@ const MONTHS = 12;
 export async function monthlyAccountFees(year) {
   const { rows } = await pool.query(
     `SELECT fee_amount, fee_frequency FROM accounts
-     WHERE ledger = 'business' AND fee_frequency != 'none' AND fee_amount > 0`
+     WHERE fee_frequency != 'none' AND fee_amount > 0`
   );
   const byMonth = Array(MONTHS).fill(0);
   for (const r of rows) {
@@ -166,14 +167,14 @@ export async function termDebtCoverage() {
   // passed: the money still hasn't moved, so it lands in this period.
   const [contractRow, billRow, fees, projService, cardRow] = await Promise.all([
     pool.query(
-      `SELECT COALESCE(SUM(total_value), 0) AS total FROM sale_contracts
+      `SELECT COALESCE(SUM(GREATEST(total_value - received_amount, 0)), 0) AS total FROM sale_contracts
        WHERE status IN ('open', 'delivered') AND expected_payment_date <= $1 AND ${BUSINESS_SEGMENT}`,
       [projTo]
     ),
     pool.query(
       // Every unpaid bill, counted at its farm share — a bill split 60%
       // Cattle / 40% Jake is $60 of every $100 here, not all or nothing.
-      `SELECT due_date, amount, frequency, ledger, segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_jake_pct, segment_ashley_pct FROM bills
+      `SELECT due_date, bill_owing(bills, due_date) AS amount, frequency, ledger, segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_jake_pct, segment_ashley_pct FROM bills
        WHERE status = 'unpaid' AND due_date <= $1`,
       [projTo]
     ),
@@ -260,11 +261,11 @@ export function coverageWithAddedDebt(coverage, addedAnnualService) {
 export async function liquidityFloor() {
   const bufferPct = Number(await getSetting('liquidity_buffer_pct', 0.15));
 
-  const { rows: accountRows } = await pool.query(
-    `SELECT COALESCE(SUM(opening_balance), 0) AS total
-     FROM accounts WHERE ledger = 'business' AND account_type = 'operating'`
-  );
-  const startingBalance = Number(accountRows[0].total);
+  // Everything: a sole proprietorship's farm and household money is one
+  // pot, so the forecast starts from every account and carries every
+  // owner's bills, contracts, loans, cards and estimates.
+  const accounts = await allAccountBalances();
+  const startingBalance = accounts.reduce((s, a) => s + a.balance, 0);
 
   const now = new Date();
   const y0 = now.getFullYear();
@@ -281,52 +282,53 @@ export async function liquidityFloor() {
 
   const [billRows, debtRows, contractRows, fees, cardRows] = await Promise.all([
     pool.query(
-      // Every unpaid bill, at its farm share (see businessShare).
-      `SELECT due_date, amount, frequency, ledger, segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_jake_pct, segment_ashley_pct FROM bills
+      // Every unpaid bill, in full (financed bills at what they'll owe on the due date).
+      `SELECT id, name, due_date, bill_owing(bills, due_date) AS amount, frequency, ledger, segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_jake_pct, segment_ashley_pct FROM bills
        WHERE status = 'unpaid' AND due_date < $1`,
       [endStr]
     ),
-    // Loans owned by Jake/Ashley (e.g. a home mortgage) post to the
-    // personal ledger when recorded, so they stay out of the business forecast.
+    // Every scheduled loan payment, farm and personal (a home mortgage included).
     pool.query(
-      `SELECT lp.due_date, lp.principal_amount + lp.interest_amount AS amount
+      `SELECT lp.due_date, lp.principal_amount + lp.interest_amount AS amount, lp.interest_amount, COALESCE(l.name, l.lender) AS loan
        FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
-       WHERE lp.paid = false AND lp.due_date < $1
-         AND (l.segment IS NULL OR l.segment NOT IN ('personal', 'jake', 'ashley'))`,
+       WHERE lp.paid = false AND lp.due_date < $1`,
       [endStr]
     ),
     pool.query(
-      `SELECT expected_payment_date AS due_date, total_value AS amount
+      `SELECT id, commodity, counterparty, expected_payment_date AS due_date, GREATEST(total_value - received_amount, 0) AS amount
        FROM sale_contracts
-       WHERE status IN ('open', 'delivered') AND expected_payment_date < $1
-         AND segment NOT IN ('personal', 'jake', 'ashley')`,
+       WHERE status IN ('open', 'delivered') AND expected_payment_date < $1`,
       [endStr]
     ),
     monthlyAccountFees(y0), // same value every month (monthly fees + annual/12)
     // What's left unpaid on each card's latest statement — a scheduled
     // outflow at its due date, same treatment as an unpaid bill.
-    // Business-owned cards only.
+    // Every active card.
     pool.query(
-      `SELECT s.due_date, GREATEST(s.statement_balance - COALESCE(s.paid_amount, 0), 0) AS amount
+      `SELECT s.due_date, GREATEST(s.statement_balance - COALESCE(s.paid_amount, 0), 0) AS amount, cc.name AS card
        FROM (${LATEST_STATEMENTS_SQL}) s JOIN credit_cards cc ON cc.id = s.credit_card_id
-       WHERE s.paid = false AND cc.status = 'active' AND s.due_date < $1
-         AND (cc.segment IS NULL OR cc.segment NOT IN ('personal', 'jake', 'ashley'))`,
+       WHERE s.paid = false AND cc.status = 'active' AND s.due_date < $1`,
       [endStr]
     ),
   ]);
   const feesPerMonth = fees[0] || 0;
 
-  // Estimates: the business share of each active estimate (everything not
-  // owned by Jake or Ashley), at each occurrence from today through the
-  // window. Past occurrences never count — see lib/estimates.js.
+  // Estimates: every active estimate, at each occurrence from today through
+  // the window. Past occurrences never count — see lib/estimates.js.
+  // Every flow, itemized by month — what the Cash Flow page lists when a
+  // month is opened. kind: contract / estimate_in / bill / loan / card /
+  // fee / tax / estimate_out. amount is signed (money in positive).
+  const items = Array.from({ length: MONTHS }, () => []);
+  const put = (i, it) => items[Math.min(Math.max(i, 0), MONTHS - 1)].push({ ...it, amount: Math.round(it.amount * 100) / 100 });
   const estInBy = Array(MONTHS).fill(0);
   const estOutBy = Array(MONTHS).fill(0);
   for (const est of await forecastEstimates()) {
-    const w = ownerWeights(est);
-    const businessShare = 1 - w.jake - w.ashley;
-    if (businessShare <= 0) continue;
     for (const d of occurrences(est, todayISO(), endStr)) {
-      const amt = signedAmount(est) * businessShare;
+      const amt = signedAmount(est);
+      put(idxFor(d), {
+        kind: amt >= 0 ? 'estimate_in' : 'estimate_out', label: est.name || est.commodity || 'Estimate',
+        date: toISODate(d), amount: amt, estimate: true,
+      });
       const i = Math.min(idxFor(d), MONTHS - 1);
       if (amt >= 0) estInBy[i] += amt; else estOutBy[i] += -amt;
     }
@@ -334,16 +336,40 @@ export async function liquidityFloor() {
 
   const billsBy = Array(MONTHS).fill(0);
   for (const r of billRows.rows) {
-    const share = businessShare(r);
-    if (!share) continue;
-    for (const d of billDates(r, todayISO(), endStr)) billsBy[Math.min(idxFor(d), MONTHS - 1)] += Number(r.amount) * share;
+    for (const d of billDates(r, todayISO(), endStr)) {
+      billsBy[Math.min(idxFor(d), MONTHS - 1)] += Number(r.amount);
+      put(idxFor(d), { kind: 'bill', label: r.name, date: toISODate(d), amount: -Number(r.amount), id: r.id,
+        overdue: toISODate(d) < todayISO() });
+    }
   }
+  // The farm's Dec 31 income tax instalment (personal tax, paid from the same pot).
+  const taxBy = Array(MONTHS).fill(0);
+  try {
+    const tax = await farmIncomeTax(y0);
+    const due = tax.instalment.due;
+    if (tax.instalment.amount > 0 && !tax.instalment.paid && due >= todayISO() && due < endStr) {
+      taxBy[Math.min(idxFor(due), MONTHS - 1)] += tax.instalment.amount;
+      put(idxFor(due), { kind: 'tax', label: 'Income tax instalment (farm)', date: due, amount: -tax.instalment.amount, estimate: true });
+    }
+  } catch (e) { console.error('Tax instalment skipped in cash flow:', e.message); }
   const debtBy = Array(MONTHS).fill(0);
-  for (const r of debtRows.rows) debtBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
+  for (const r of debtRows.rows) {
+    debtBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
+    put(idxFor(r.due_date), { kind: 'loan', label: r.loan, date: toISODate(r.due_date), amount: -Number(r.amount),
+      interest: Number(r.interest_amount) });
+  }
   const contractsBy = Array(MONTHS).fill(0);
-  for (const r of contractRows.rows) contractsBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
+  for (const r of contractRows.rows) {
+    contractsBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
+    put(idxFor(r.due_date), { kind: 'contract', label: [r.commodity, r.counterparty].filter(Boolean).join(' — '),
+      date: toISODate(r.due_date), amount: Number(r.amount), id: r.id, overdue: toISODate(r.due_date) < todayISO() });
+  }
   const cardsBy = Array(MONTHS).fill(0);
-  for (const r of cardRows.rows) cardsBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
+  for (const r of cardRows.rows) {
+    cardsBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
+    put(idxFor(r.due_date), { kind: 'card', label: `${r.card} statement`, date: toISODate(r.due_date), amount: -Number(r.amount) });
+  }
+  if (feesPerMonth) for (let i = 0; i < MONTHS; i++) put(i, { kind: 'fee', label: 'Account fees', amount: -feesPerMonth });
 
   // Two projections from the same starting balance. COMMITTED uses only
   // documented flows (contracts, bills, loan schedules, fees). WITH
@@ -357,7 +383,7 @@ export async function liquidityFloor() {
   const trajectory = monthsMeta.map((meta, i) => {
     const committedNet = contractsBy[i] - billsBy[i] - debtBy[i] - feesPerMonth - cardsBy[i];
     committedRunning += committedNet;
-    running += committedNet + estInBy[i] - estOutBy[i];
+    running += committedNet + estInBy[i] - estOutBy[i] - taxBy[i];
     return {
       year: meta.year,
       month: meta.month,
@@ -370,20 +396,22 @@ export async function liquidityFloor() {
       creditCardDue: cardsBy[i],
       estimatedInflows: estInBy[i],
       estimatedOutflows: estOutBy[i],
+      taxInstalment: taxBy[i],
+      items: items[i].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount)),
     };
   });
 
   const floorMonth = trajectory.reduce((a, b) => (b.balance < a.balance ? b : a));
   const committedFloor = trajectory.reduce((a, b) => (b.committedBalance < a.committedBalance ? b : a));
 
-  // Buffer benchmark: average monthly business outflow over the trailing
-  // 12 months of actuals (not the calendar year to date).
+  // Buffer benchmark: average monthly outflow (farm and household) over
+  // the trailing 12 months of actuals (not the calendar year to date).
   const avgMonthlyExpense =
     (await pool.query(
       `SELECT COALESCE(AVG(monthly_outflow), 0) AS avg FROM (
          SELECT date_trunc('month', date) AS m, SUM(-amount) AS monthly_outflow
          FROM transaction_lines
-         WHERE ledger = 'business' AND amount < 0 AND is_transfer = false
+         WHERE amount < 0 AND is_transfer = false
            AND date >= CURRENT_DATE - INTERVAL '12 months'
          GROUP BY m
        ) sub`
@@ -393,6 +421,7 @@ export async function liquidityFloor() {
 
   return {
     startingBalance,
+    accounts,
     trajectory,
     floorMonth,
     committedFloorMonth: { year: committedFloor.year, month: committedFloor.month, balance: committedFloor.committedBalance },
@@ -442,14 +471,21 @@ export async function reserveStatus(year) {
   };
 }
 
-/** Cash above the floor and reserve obligations — what could actually be deployed today. */
+/** Every account and its balance today — the cash the forecast starts from. */
+export async function allAccountBalances() {
+  const { rows } = await pool.query(
+    `SELECT id, name, ledger, account_type, opening_balance FROM accounts ORDER BY ledger, account_type, name`);
+  return rows.map((a) => ({ id: a.id, name: a.name, ledger: a.ledger, type: a.account_type, balance: Number(a.opening_balance) }));
+}
+
+/**
+ * Cash above the floor and the reserve — what could actually be deployed
+ * today. All accounts are counted (the reserve's money included), so the
+ * whole reserve target is held back, not just its shortfall.
+ */
 export async function deployableCapital(year, liquidity, reserve) {
-  const operatingCash = (await pool.query(
-    `SELECT COALESCE(SUM(opening_balance), 0) AS total FROM accounts
-     WHERE ledger = 'business' AND account_type = 'operating'`
-  )).rows[0].total;
-  const reserveShortfall = Math.max(0, reserve.target - reserve.currentReserve);
-  return Number(operatingCash) - liquidity.requiredFloor - reserveShortfall;
+  const cash = (await allAccountBalances()).reduce((s, a) => s + a.balance, 0);
+  return cash - liquidity.requiredFloor - reserve.target;
 }
 
 async function avgMonthlyExpenseValue(year) {
@@ -457,7 +493,7 @@ async function avgMonthlyExpenseValue(year) {
     `SELECT COALESCE(AVG(monthly_outflow), 0) AS avg FROM (
        SELECT EXTRACT(MONTH FROM date) AS m, SUM(-amount) AS monthly_outflow
        FROM transaction_lines
-       WHERE ledger = 'business' AND amount < 0 AND is_transfer = false AND EXTRACT(YEAR FROM date) = $1
+       WHERE amount < 0 AND is_transfer = false AND EXTRACT(YEAR FROM date) = $1
        GROUP BY m
      ) sub`,
     [year]
@@ -466,11 +502,7 @@ async function avgMonthlyExpenseValue(year) {
 }
 
 export async function runwayMonths(year) {
-  const { rows } = await pool.query(
-    `SELECT COALESCE(SUM(opening_balance), 0) AS total FROM accounts
-     WHERE ledger = 'business' AND account_type = 'operating'`
-  );
-  const operatingCash = Number(rows[0].total);
+  const operatingCash = (await allAccountBalances()).reduce((s, a) => s + a.balance, 0);
   const avg = await avgMonthlyExpenseValue(year);
   return avg > 0 ? operatingCash / avg : null;
 }

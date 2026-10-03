@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import MetricCard from '../components/MetricCard.jsx';
-import { money, pct } from '../format.js';
+import CashFlowTerminal from '../components/CashFlowTerminal.jsx';
+import { money } from '../format.js';
 import { OwnerFields, ownerPayload, ownerSummary, emptyOwnerFields } from '../owners.jsx';
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -8,82 +8,6 @@ const monthLabel = (t, i) =>
   i === 0 || t.month === 1 ? `${MONTH_NAMES[t.month - 1]} ’${String(t.year).slice(2)}` : MONTH_NAMES[t.month - 1];
 const monthLabelFull = (t) => `${MONTH_NAMES[t.month - 1]} ${t.year}`;
 const FREQ_LABELS = { one_time: 'One-time', monthly: 'Monthly', quarterly: 'Quarterly', annual: 'Annual' };
-
-// Two-series line chart: projected business cash WITH estimates (solid,
-// the default basis) and COMMITTED ONLY (dashed), plus the required floor
-// as a labeled reference line. Series are told apart by colour AND dash
-// AND a direct end label, never colour alone. Each month has a full-height
-// hover target whose tooltip carries both values.
-function ForecastChart({ trajectory, requiredFloor }) {
-  const W = 760, H = 280;
-  const pad = { top: 18, right: 118, bottom: 28, left: 78 };
-  const innerW = W - pad.left - pad.right;
-  const innerH = H - pad.top - pad.bottom;
-
-  const all = trajectory.flatMap((t) => [t.balance, t.committedBalance]).concat([requiredFloor, 0]);
-  // Round gridlines to a clean step (1, 2 or 5 × a power of ten) so the
-  // axis reads $100k / $200k / $300k rather than $122,267.
-  const rough = (Math.max(...all) - Math.min(...all) || 1) / 4;
-  const mag = Math.pow(10, Math.floor(Math.log10(rough)));
-  const step = [1, 2, 5, 10].map((m) => m * mag).find((s) => s >= rough);
-  const yMin = Math.floor(Math.min(...all) / step) * step;
-  const yMax = Math.ceil(Math.max(...all) / step) * step;
-  const n = trajectory.length;
-  const x = (i) => pad.left + (i / (n - 1 || 1)) * innerW;
-  const y = (v) => pad.top + (1 - (v - yMin) / (yMax - yMin)) * innerH;
-  const line = (key) => trajectory.map((t, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(t[key]).toFixed(1)}`).join(' ');
-  const grid = [];
-  for (let v = yMin; v <= yMax + step / 2; v += step) grid.push(v);
-  const last = trajectory[n - 1];
-  // Keep the two end labels from colliding.
-  let yEst = y(last.balance) + 4;
-  let yCom = y(last.committedBalance) + 4;
-  if (Math.abs(yEst - yCom) < 14) { if (yEst <= yCom) yCom = yEst + 14; else yEst = yCom + 14; }
-
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto', display: 'block' }} role="img"
-      aria-label="Projected business cash over 12 months, with estimates and committed only, against the required floor">
-      {grid.map((v, i) => (
-        <g key={i}>
-          <line x1={pad.left} x2={pad.left + innerW} y1={y(v)} y2={y(v)} stroke="var(--border)" strokeWidth="1" />
-          <text x={pad.left - 8} y={y(v) + 4} textAnchor="end" fontSize="11" fill="var(--text-muted)" fontFamily="var(--font-mono)">
-            {money(Math.round(v))}
-          </text>
-        </g>
-      ))}
-
-      <line x1={pad.left} x2={pad.left + innerW} y1={y(requiredFloor)} y2={y(requiredFloor)}
-        stroke="var(--negative)" strokeWidth="1.5" strokeDasharray="2 4" />
-      <text x={pad.left + 4} y={y(requiredFloor) - 6} fontSize="11" fill="var(--negative)">
-        Required floor {money(Math.round(requiredFloor))}
-      </text>
-
-      <path d={line('committedBalance')} fill="none" stroke="var(--series-committed)" strokeWidth="2" strokeDasharray="6 4" strokeLinejoin="round" />
-      <path d={line('balance')} fill="none" stroke="var(--series-estimate)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-      {trajectory.map((t, i) => (
-        <circle key={i} cx={x(i)} cy={y(t.balance)} r="4" fill="var(--series-estimate)" stroke="var(--panel)" strokeWidth="2" />
-      ))}
-
-      <text x={pad.left + innerW + 8} y={yEst} fontSize="11" fill="var(--text)">With estimates</text>
-      <text x={pad.left + innerW + 8} y={yCom} fontSize="11" fill="var(--text-muted)">Committed only</text>
-
-      {trajectory.map((t, i) => (
-        <g key={`m${i}`}>
-          <text x={x(i)} y={H - 8} textAnchor="middle" fontSize="11" fill="var(--text-muted)">{monthLabel(t, i)}</text>
-          <rect x={x(i) - innerW / (2 * (n - 1 || 1))} y={pad.top} width={innerW / (n - 1 || 1)} height={innerH} fill="transparent">
-            <title>
-              {`${monthLabelFull(t)}
-With estimates: ${money(Math.round(t.balance))}
-Committed only: ${money(Math.round(t.committedBalance))}
-Contracts +${money(Math.round(t.contractInflows))} · est. in +${money(Math.round(t.estimatedInflows))}
-Bills −${money(Math.round(t.unpaidBillsDue))} · debt −${money(Math.round(t.debtServiceDue))} · fees −${money(Math.round(t.accountFees))} · est. out −${money(Math.round(t.estimatedOutflows))}`}
-            </title>
-          </rect>
-        </g>
-      ))}
-    </svg>
-  );
-}
 
 const emptyEstimate = {
   name: '', direction: 'outflow', amount: '', frequency: 'one_time',
@@ -269,59 +193,17 @@ export default function CashFlow() {
   if (error) return <div className="empty-state">Could not load forecast: {error}</div>;
   if (!data) return <div className="empty-state">Loading…</div>;
 
-  const { trajectory, floorMonth, committedFloorMonth, requiredFloor, bufferPct, startingBalance, passes } = data.liquidity;
+  const { trajectory, floorMonth, requiredFloor, startingBalance, passes, accounts = [] } = data.liquidity;
   const end = trajectory[trajectory.length - 1];
-  const estGap = end.balance - end.committedBalance;
 
   return (
     <>
       <div className="page-header">
         <h1 className="page-title">Cash Flow</h1>
-        <span className="page-meta">Business accounts · rolling 12 months, {monthLabelFull(trajectory[0])} – {monthLabelFull(end)}</span>
+        <span className="page-meta">All accounts, farm and personal · rolling 12 months, {monthLabelFull(trajectory[0])} – {monthLabelFull(end)}</span>
       </div>
 
-      <div className="grid">
-        <MetricCard
-          label="Lowest point — with estimates"
-          value={money(floorMonth.balance)}
-          sub={`${monthLabelFull(floorMonth)} · this is what gates purchases`}
-          tone={passes ? 'positive' : 'negative'}
-        />
-        <MetricCard
-          label="Lowest point — committed only"
-          value={money(committedFloorMonth.balance)}
-          sub={`${monthLabelFull(committedFloorMonth)} · documented flows alone`}
-          tone={committedFloorMonth.balance >= requiredFloor ? undefined : 'negative'}
-        />
-        <MetricCard label="Required floor" value={money(requiredFloor)} sub={`${pct(bufferPct)} buffer on trailing-12-month avg expenses`} />
-        <MetricCard label="Balance today" value={money(startingBalance)} sub="Business operating accounts, live" />
-        <MetricCard
-          label="Riding on estimates"
-          value={`${estGap >= 0 ? '+' : '−'}${money(Math.abs(Math.round(estGap)))}`}
-          sub={`By ${monthLabelFull(end)}: the gap between the two lines`}
-        />
-      </div>
-
-      <div className="panel">
-        <div className="panel-header">Projected business cash — next 12 months</div>
-        <div style={{ padding: '14px 20px 0', display: 'flex', gap: 18, fontSize: 12, color: 'var(--text-muted)', flexWrap: 'wrap' }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
-            <svg width="22" height="8" aria-hidden="true"><line x1="0" x2="22" y1="4" y2="4" stroke="var(--series-estimate)" strokeWidth="2" /></svg>
-            With estimates (default)
-          </span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
-            <svg width="22" height="8" aria-hidden="true"><line x1="0" x2="22" y1="4" y2="4" stroke="var(--series-committed)" strokeWidth="2" strokeDasharray="6 4" /></svg>
-            Committed only
-          </span>
-        </div>
-        <div style={{ padding: '4px 12px 0' }}><ForecastChart trajectory={trajectory} requiredFloor={requiredFloor} /></div>
-        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0, padding: '10px 20px 16px' }}>
-          Both lines start from today's live balance. Committed only: contracts, unpaid bills, scheduled loan
-          payments and fees. With estimates: the same plus your estimated money in and out. A large balance
-          before a long stretch of estimated costs with no committed income isn't spendable — the lowest point
-          of the estimates line is what the Purchase Evaluator gates on.
-        </p>
-      </div>
+      <CashFlowTerminal liquidity={data.liquidity} />
 
       <div className="panel">
         <div className="panel-header">Month by month</div>
@@ -329,7 +211,7 @@ export default function CashFlow() {
           <table>
             <thead>
               <tr>
-                <th>Month</th><th>Contracts</th><th>Est. in</th><th>Bills</th><th>Debt service</th><th>Fees</th><th>Est. out</th>
+                <th>Month</th><th>Contracts</th><th>Est. in</th><th>Bills</th><th>Debt service</th><th>Cards</th><th>Fees</th><th>Tax</th><th>Est. out</th>
                 <th>Committed bal.</th><th>With estimates</th>
               </tr>
             </thead>
@@ -344,7 +226,9 @@ export default function CashFlow() {
                     <td style={{ color: 'var(--text-muted)' }}>{v(t.estimatedInflows, '+')}</td>
                     <td>{v(t.unpaidBillsDue, '−')}</td>
                     <td>{v(t.debtServiceDue, '−')}</td>
+                    <td>{v(t.creditCardDue, '−')}</td>
                     <td>{v(t.accountFees, '−')}</td>
+                    <td>{v(t.taxInstalment, '−')}</td>
                     <td style={{ color: 'var(--text-muted)' }}>{v(t.estimatedOutflows, '−')}</td>
                     <td style={t.committedBalance < requiredFloor ? { color: 'var(--negative)' } : undefined}>{money(Math.round(t.committedBalance))}</td>
                     <td style={t.balance < requiredFloor ? { color: 'var(--negative)' } : { fontWeight: 500 }}>{money(Math.round(t.balance))}</td>
@@ -354,6 +238,24 @@ export default function CashFlow() {
             </tbody>
           </table>
         </div>
+      </div>
+
+      <div className="panel">
+        <div className="panel-header">Accounts in the starting balance</div>
+        <table>
+          <thead><tr><th>Account</th><th>Ledger</th><th>Type</th><th>Balance today</th></tr></thead>
+          <tbody>
+            {accounts.map((a) => (
+              <tr key={a.id}>
+                <td>{a.name}</td>
+                <td>{a.ledger}</td>
+                <td>{a.type}</td>
+                <td className="nowrap" style={a.balance < 0 ? { color: 'var(--negative)' } : undefined}>{money(a.balance)}</td>
+              </tr>
+            ))}
+            <tr><td colSpan={3} style={{ fontWeight: 600 }}>Total</td><td className="nowrap" style={{ fontWeight: 600 }}>{money(startingBalance)}</td></tr>
+          </tbody>
+        </table>
       </div>
 
       <Estimates onChange={() => setRefresh((n) => n + 1)} />

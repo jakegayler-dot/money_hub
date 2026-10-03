@@ -180,6 +180,23 @@ Anything you already entered by hand inside the history window is recognized and
 
 ---
 
+## 5. Documents (photos and PDFs) — `POST /api/receipts/upload`
+
+Attach a receipt, invoice, settlement ticket or contract document. Auth: `X-Api-Key` (the same `INGEST_API_KEY`) or `X-Receipt-Key` (`RECEIPT_UPLOAD_KEY`). The body is the file itself — raw bytes with `Content-Type: application/pdf` / `image/jpeg` (PNG, WebP, GIF also accepted; HEIC is refused — convert to JPEG), a multipart form field, or JSON `{"file": "<base64>"}`. Up to 25 MB.
+
+Where it goes depends on the query string:
+
+| Query | What happens |
+|---|---|
+| *(none)* | Read (when `ANTHROPIC_API_KEY` is set) and matched on its own: a receipt to its payment, an invoice to its payment or into Bills, a settlement ticket to its deposit and contract. |
+| `?transaction_id=ID` | Attached to that ledger entry (several per entry allowed). Read first when a reader is set up, so the entry gets exact GST and the business — and a settlement ticket on a deposit splits it into gross sale and deductions and counts it toward its contract. |
+| `?bill_id=ID` | Filed as that bill's invoice (not read); moves onto the payment when the bill is paid. |
+| `?contract_id=ID` | Filed with that sale contract (the signed contract, an amendment) — kept, not read. |
+
+Finding IDs: a statement import's `results[].transaction_id`; `GET /api/transactions?q=<text>&from=YYYY-MM-DD&to=YYYY-MM-DD` (also `account_id`, `credit_card_id`); `GET /api/bills`; `GET /api/contracts` (or the `id` returned by `POST /api/contracts/ingest`). All accept `X-Api-Key`.
+
+Response: `201 {"id": <document id>, "ok": true, "message": "..."}`. Errors: 401 (key), 404 (no such entry/bill/contract), 415 (not an image or PDF).
+
 ## Quarter Section setup brief (paste this to Quarter Section)
 
 > Build an automatic export from Quarter Section to Money Hub's ingest API.

@@ -69,7 +69,7 @@ function WhatItIs({ amount, accountId, date, accounts, links, value, onChange })
       )}
       {value.type === 'contract' && (
         <div className="field" style={{ gridColumn: 'span 2' }}>
-          <label>Which contract (✓ = amount matches)</label>
+          <label>Which contract (amount = still to come; ✓ = this covers it)</label>
           <select value={value.target} onChange={(e) => set({ target: e.target.value })}>
             <option value="">{links.contracts.length ? 'Pick a contract' : 'No open contracts'}</option>
             {sorted(links.contracts).map((c) => (
@@ -277,7 +277,7 @@ function ReviewItem({ line, categories, accounts, links, payees, onDone }) {
       if (!what.target) { setErr('Pick which loan payment this is.'); return; }
       overrides.kind = 'loan_payment'; overrides.loan_payment_id = Number(what.target);
     } else if (usePicker && what.type === 'contract') {
-      if (!what.target) { setErr('Pick which contract this settles.'); return; }
+      if (!what.target) { setErr('Pick which contract this is toward.'); return; }
       overrides.kind = 'contract_payment'; overrides.contract_id = Number(what.target);
     } else if (usePicker && what.type === 'card') {
       if (!what.target) { setErr('Pick which card this pays.'); return; }
@@ -452,7 +452,7 @@ function FlaggedItem({ tx, categories, accounts, links, payees, onDone }) {
           body.link_loan_payment_id = Number(what.target);
         }
         if (what.type === 'contract') {
-          if (!what.target) { setErr('Pick which contract this settles.'); return; }
+          if (!what.target) { setErr('Pick which contract this is toward.'); return; }
           body.link_contract_id = Number(what.target);
         }
         if (what.type === 'card') {

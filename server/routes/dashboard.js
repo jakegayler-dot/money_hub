@@ -41,7 +41,7 @@ router.get('/', ah(async (req, res) => {
     // Money contracted but not yet received — already counted into the
     // liquidity forecast at its expected payment month.
     pool.query(
-      `SELECT COUNT(*)::int AS count, COALESCE(SUM(total_value), 0) AS total
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(GREATEST(total_value - received_amount, 0)), 0) AS total
        FROM sale_contracts WHERE status IN ('open', 'delivered')`
     ),
     pool.query(`SELECT * FROM credit_cards WHERE status = 'active'`),

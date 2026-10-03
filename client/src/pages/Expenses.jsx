@@ -1,3 +1,4 @@
+import { MonthlyBars, EntriesPanel } from '../components/IncomeDrill.jsx';
 import { Fragment, useEffect, useState } from 'react';
 import { money } from '../format.js';
 import { OWNER_KEYS, OWNER_LABELS } from '../owners.jsx';
@@ -23,6 +24,9 @@ export default function Expenses() {
   const [payeeTotals, setPayeeTotals] = useState(null);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
+  // What's opened up: a month (both sides) or one category's entries.
+  const [drill, setDrill] = useState(null);
+  useEffect(() => setDrill(null), [owner]);
   const year = new Date().getFullYear();
 
   const loadCategories = () => { fetch('/api/expenses').then((r) => r.json()).then((d) => setCategories(Array.isArray(d) ? d : [])); };
@@ -87,6 +91,21 @@ export default function Expenses() {
       {error && <div className="notice" style={{ borderColor: 'var(--negative)', color: 'var(--negative)' }}>{error}</div>}
 
       <div className="panel">
+        <div className="panel-header spend-header">
+          <span>Month by month — {year}</span>
+          {ownerToggle}
+        </div>
+        <div style={{ padding: '10px 12px 6px' }}>
+          <MonthlyBars year={year} owner={owner} selected={drill?.source === 'month' ? drill.month : null}
+            onPick={(mo) => setDrill(mo ? {
+              source: 'month', kind: 'both', month: mo,
+              label: `${new Date(year, mo - 1, 1).toLocaleString('en-CA', { month: 'long' })} ${year} — income and spending`,
+            } : null)} />
+        </div>
+      </div>
+      {drill?.source === 'month' && <EntriesPanel year={year} owner={owner} pick={drill} onClose={() => setDrill(null)} />}
+
+      <div className="panel">
         <div className="panel-header">Actual spend by owner — {year}</div>
         {!segmentTotals ? (
           <div className="empty-state">Loading…</div>
@@ -123,9 +142,11 @@ export default function Expenses() {
         ) : spend.categories.length === 0 && !spend.uncategorized ? (
           <div className="empty-state">No spending recorded for {owner === 'all' ? 'anyone' : OWNER_LABELS[owner]} in {year} yet.</div>
         ) : (
-          <SpendBars data={spend} />
+          <SpendBars data={spend} picked={drill?.source === 'expense' ? drill.key : null}
+            onPick={(p) => setDrill(p ? { ...p, source: 'expense', kind: 'expense' } : null)} />
         )}
       </div>
+      {drill?.source === 'expense' && <EntriesPanel year={year} owner={owner} pick={drill} onClose={() => setDrill(null)} />}
 
       <div className="panel">
         <div className="panel-header spend-header">
@@ -137,9 +158,11 @@ export default function Expenses() {
         ) : income.categories.length === 0 && !income.uncategorized ? (
           <div className="empty-state">No income recorded for {owner === 'all' ? 'anyone' : OWNER_LABELS[owner]} in {year} yet.</div>
         ) : (
-          <SpendBars data={income} income />
+          <SpendBars data={income} income picked={drill?.source === 'income' ? drill.key : null}
+            onPick={(p) => setDrill(p ? { ...p, source: 'income', kind: 'income' } : null)} />
         )}
       </div>
+      {drill?.source === 'income' && <EntriesPanel year={year} owner={owner} pick={drill} onClose={() => setDrill(null)} />}
 
       <div className="panel">
         <div className="panel-header spend-header">
@@ -228,7 +251,12 @@ export default function Expenses() {
 // Horizontal bars, one hue: parents sorted by spend, each opening to its
 // subcategories. Bars share one scale (the largest parent), so a
 // subcategory's bar is directly comparable to any parent's.
-function SpendBars({ data, income = false }) {
+function SpendBars({ data, income = false, picked = null, onPick = () => {} }) {
+  // Clicking a row lists its entries (a parent: its subcategories too) and,
+  // for a parent, also opens its subcategories.
+  const pick = (key, category_id, label, exact = false) => onPick(picked === key ? null : {
+    key, category_id, exact, label: `${label} — ${income ? 'income' : 'spending'} entries`,
+  });
   const [open, setOpen] = useState(() => new Set());
   const [tip, setTip] = useState(null);
   const max = Math.max(...data.categories.map((c) => c.total), data.uncategorized, 1);
@@ -249,7 +277,7 @@ function SpendBars({ data, income = false }) {
   const row = ({ key, label, amount, level, onClick, expanded, hasKids, muted }) => (
     <div
       key={key}
-      className={`spend-row level-${level}${onClick ? ' clickable' : ''}`}
+      className={`spend-row level-${level}${onClick ? ' clickable' : ''}${picked === key ? ' picked' : ''}`}
       role={onClick ? 'button' : undefined}
       tabIndex={onClick ? 0 : undefined}
       aria-expanded={hasKids ? expanded : undefined}
@@ -276,17 +304,20 @@ function SpendBars({ data, income = false }) {
         const expanded = open.has(c.id);
         return (
           <Fragment key={c.id}>
-            {row({ key: `p${c.id}`, label: c.name, amount: c.total, level: 0, hasKids, expanded, onClick: hasKids ? () => toggle(c.id) : undefined })}
+            {row({ key: `p${c.id}`, label: c.name, amount: c.total, level: 0, hasKids, expanded,
+              onClick: () => { if (hasKids && (!expanded || picked === `p${c.id}`)) toggle(c.id); pick(`p${c.id}`, c.id, c.name); } })}
             {hasKids && expanded && (
               <>
-                {c.children.map((ch) => row({ key: `c${ch.id}`, label: ch.name, amount: ch.total, level: 1 }))}
-                {Math.abs(c.direct) >= 0.005 && row({ key: `d${c.id}`, label: `${c.name} (not broken down)`, amount: c.direct, level: 1, muted: true })}
+                {c.children.map((ch) => row({ key: `c${ch.id}`, label: ch.name, amount: ch.total, level: 1, onClick: () => pick(`c${ch.id}`, ch.id, ch.name) }))}
+                {Math.abs(c.direct) >= 0.005 && row({ key: `d${c.id}`, label: `${c.name} (not broken down)`, amount: c.direct, level: 1, muted: true,
+                  onClick: () => pick(`d${c.id}`, c.id, `${c.name} (not broken down)`, true) })}
               </>
             )}
           </Fragment>
         );
       })}
-      {Math.abs(data.uncategorized) >= 0.005 && row({ key: 'uncat', label: 'Uncategorized', amount: data.uncategorized, level: 0, muted: true })}
+      {Math.abs(data.uncategorized) >= 0.005 && row({ key: 'uncat', label: 'Uncategorized', amount: data.uncategorized, level: 0, muted: true,
+        onClick: () => pick('uncat', 'none', 'Uncategorized') })}
       {tip && (
         <div className="spend-tip" style={{ left: tip.x, top: tip.y }} role="status">
           <strong>{tip.label}</strong>

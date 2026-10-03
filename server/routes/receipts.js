@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { isAuthorized } from '../lib/appAuth.js';
-import { processReceipt, matchReceipt, attachReceipt, readerEnabled } from '../lib/receipts.js';
+import { processReceipt, matchReceipt, attachReceipt, readAndAttach, readerEnabled } from '../lib/receipts.js';
 import { toISODate } from '../lib/dates.js';
 
 // Upload is mounted before the sign-in guard so the iPhone Shortcut can
@@ -102,6 +102,29 @@ receiptUpload.post('/', express.raw({ type: () => true, limit: '25mb' }), ah(asy
     await matchReceipt(r.id).catch((e) => console.error('Invoice attach failed', r.id, e.message));
     return res.status(201).json({ id: r.id, ok: true, message: 'Invoice photo added to the bill.' });
   }
+  // A document filed on a contract (the contract itself, an amendment):
+  // kept with the contract, not read or matched.
+  const contractId = Number(req.query.contract_id) || null;
+  if (contractId) {
+    const { rows: [c] } = await pool.query('SELECT * FROM sale_contracts WHERE id = $1', [contractId]);
+    if (!c) return res.status(404).json({ error: 'Contract not found.' });
+    const ex = { is_receipt: true, doc_type: 'contract', party: c.counterparty, commodity: c.commodity, total: Number(c.total_value), notes: '' };
+    const { rows: [r] } = await pool.query(
+      `INSERT INTO receipts (source, mime, bytes, image, contract_id, extracted, status) VALUES ('app', $1, $2, $3, $4, $5, 'filed') RETURNING id`,
+      [mime, buf.length, buf, contractId, ex]);
+    return res.status(201).json({ id: r.id, ok: true, message: 'Document filed with the contract.' });
+  }
+  // A document attached to one ledger entry (an income stub, a ticket, an invoice).
+  const txId = Number(req.query.transaction_id) || null;
+  if (txId) {
+    const { rows: [t] } = await pool.query('SELECT id FROM transactions WHERE id = $1', [txId]);
+    if (!t) return res.status(404).json({ error: 'Transaction not found.' });
+    const { rows: [r] } = await pool.query(
+      `INSERT INTO receipts (source, mime, bytes, image, status) VALUES ('app', $1, $2, $3, 'reading') RETURNING id`,
+      [mime, buf.length, buf]);
+    await readAndAttach(r.id, txId).catch((e) => console.error('Attach failed', r.id, e.message));
+    return res.status(201).json({ id: r.id, ok: true, message: 'Attached to the entry.' });
+  }
   const { rows: [r] } = await pool.query(
     `INSERT INTO receipts (source, mime, bytes, image) VALUES ($1, $2, $3, $4) RETURNING id`,
     [uploadKeyOk(req) ? 'shortcut' : 'app', mime, buf.length, buf]
@@ -113,7 +136,8 @@ receiptUpload.post('/', express.raw({ type: () => true, limit: '25mb' }), ah(asy
 const router = Router();
 
 const LIST = `
-  SELECT r.id, r.uploaded_at, r.source, r.bytes, r.mime, r.status, r.extracted, r.candidates, r.transaction_id, r.error, r.matched_at, r.bill_id,
+  SELECT r.id, r.uploaded_at, r.source, r.bytes, r.mime, r.contract_id,
+         (SELECT sc.commodity || COALESCE(' — ' || sc.counterparty, '') FROM sale_contracts sc WHERE sc.id = r.contract_id) AS contract_label, r.status, r.extracted, r.candidates, r.transaction_id, r.error, r.matched_at, r.bill_id,
          b.name AS bill_name, b.due_date AS bill_due, b.status AS bill_status, b.amount AS bill_amount,
          t.date AS tx_date, t.amount AS tx_amount, t.description AS tx_description, a.name AS tx_account, cc.name AS tx_card
   FROM receipts r

@@ -1,12 +1,19 @@
 import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
-import { settleContract, removeTransaction } from '../lib/postings.js';
+import {
+  settleContract, linkContractToTransaction, unlinkContractPayment, settleContractByHand, reopenContractByHand,
+  contractAllowancePct,
+} from '../lib/postings.js';
+import { autoLinkContracts, contractCandidates } from '../lib/contractMatch.js';
+import { toISODate } from '../lib/dates.js';
 import { todayISO } from '../lib/dates.js';
 import { ledgerForSegment } from '../lib/segments.js';
 import { requireIngestKey } from '../lib/ingestAuth.js';
 
 const router = Router();
+const setSetting = (db, key, value) => db.query(
+  'INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value', [key, JSON.stringify(value)]);
 
 // total_value falls back to quantity × price when not given explicitly, so
 // a pushing system can send either the extended value or the components.
@@ -41,16 +48,86 @@ function resolvePaymentDate({ expected_payment_date, delivery_date, contract_per
   return null;
 }
 
+// Each contract with the deposits counted toward it and, while it's open,
+// deposits that look like they belong to it. Deposits that clearly do
+// (buyer named, one contract fits) are linked first, so the list is current.
 router.get('/', ah(async (req, res) => {
-  const { status } = req.query;
-  const where = status ? 'WHERE status = $1' : '';
-  const params = status ? [status] : [];
+  try { await autoLinkContracts(); } catch (e) { console.error('Contract auto-link failed:', e.message); }
+  const status = ['open', 'delivered', 'settled', 'cancelled'].includes(req.query.status) ? req.query.status : null;
   const { rows } = await pool.query(
-    `SELECT * FROM sale_contracts ${where}
-     ORDER BY (status IN ('open','delivered')) DESC, expected_payment_date ASC`,
-    params
+    `SELECT c.*, GREATEST(c.total_value - c.received_amount, 0) AS remaining,
+            COALESCE((SELECT json_agg(json_build_object(
+                'id', t.id, 'date', t.date, 'amount', t.amount, 'description', t.description,
+                'account', a.name, 'created_here', cp.created_here, 'is_split', t.is_split,
+                'awaiting_statement', t.awaiting_statement,
+                'documents', (SELECT json_agg(json_build_object('id', r.id, 'mime', r.mime) ORDER BY r.id) FROM receipts r WHERE r.transaction_id = t.id)
+                ) ORDER BY t.date, t.id)
+              FROM contract_payments cp JOIN transactions t ON t.id = cp.transaction_id
+              LEFT JOIN accounts a ON a.id = t.account_id
+              WHERE cp.contract_id = c.id), '[]'::json) AS deposits,
+            COALESCE((SELECT json_agg(json_build_object('id', r.id, 'mime', r.mime, 'uploaded_at', r.uploaded_at) ORDER BY r.id)
+              FROM receipts r WHERE r.contract_id = c.id), '[]'::json) AS documents
+     FROM sale_contracts c
+     ${status ? 'WHERE c.status = $1' : ''}
+     ORDER BY (c.status IN ('open','delivered')) DESC, c.expected_payment_date ASC`,
+    status ? [status] : []
   );
-  res.json(rows);
+  const out = [];
+  for (const c of rows) {
+    const open = c.status === 'open' || c.status === 'delivered';
+    out.push({
+      ...c,
+      remaining: Number(c.remaining),
+      deposits: c.deposits.map((d) => ({ ...d, date: toISODate(d.date), amount: Number(d.amount) })),
+      suggestions: open ? (await contractCandidates(pool, c, 60))
+        .filter((t) => t.names_buyer || t.names_crop || t.covers_rest).slice(0, 5) : [],
+    });
+  }
+  res.json(out);
+}));
+
+// How far under the contract value deposits can come and still settle it
+// on their own (checkoff and levies). Default 3%.
+router.get('/settings', ah(async (req, res) => {
+  res.json({ deduction_allowance_pct: await contractAllowancePct() });
+}));
+router.post('/settings', ah(async (req, res) => {
+  const v = Number(req.body?.deduction_allowance_pct);
+  if (!Number.isFinite(v) || v < 0 || v >= 50) return res.status(400).json({ error: 'Allowance must be between 0 and 50 (%).' });
+  await setSetting(pool, 'contract_deduction_allowance_pct', v);
+  res.json({ deduction_allowance_pct: v });
+}));
+
+// A deposit already in the ledger counts toward this contract.
+router.post('/:id/link', ah(async (req, res) => {
+  const txId = Number(req.body?.transaction_id);
+  if (!txId) return res.status(400).json({ error: 'transaction_id is required.' });
+  const r = await withTransaction((client) => linkContractToTransaction(client, Number(req.params.id), txId));
+  res.json(r.contract);
+}));
+
+// Take a deposit off its contract (removed if it was recorded on this tab).
+router.post('/:id/unlink', ah(async (req, res) => {
+  const txId = Number(req.body?.transaction_id);
+  if (!txId) return res.status(400).json({ error: 'transaction_id is required.' });
+  const c = await withTransaction((client) => unlinkContractPayment(client, txId));
+  res.json(c);
+}));
+
+// Settle a partly paid contract: mode 'deductions' (the rest was checkoff,
+// freight, dockage) or 'short' (less was delivered).
+router.post('/:id/settle-now', ah(async (req, res) => {
+  const mode = req.body?.mode === 'short' ? 'short' : 'deductions';
+  const c = await withTransaction((client) => settleContractByHand(client, Number(req.params.id), mode));
+  if (!c) return res.status(404).json({ error: 'not found' });
+  res.json(c);
+}));
+
+// Settled → open again, deposits kept, deductions booking taken off.
+router.post('/:id/reopen', ah(async (req, res) => {
+  const c = await withTransaction((client) => reopenContractByHand(client, Number(req.params.id)));
+  if (!c) return res.status(404).json({ error: 'not found' });
+  res.json(c);
 }));
 
 // ---- Automated ingest ------------------------------------------------
@@ -148,46 +225,23 @@ router.post('/', ah(async (req, res) => {
   res.status(201).json(rows[0]);
 }));
 
-// Settling a contract is the moment money actually arrives: creates the
-// inflow transaction (positive amount, tagged with the contract's
-// enterprise segment), moves the account balance, marks the contract
-// settled — one DB transaction, same integrity pattern as paying a bill.
-// `amount` may override the contracted value, because final settlement
-// often differs (dockage, grade adjustments, final weights).
+// "Record deposit": money for this contract landed in an account (entered
+// by hand — it awaits the bank statement like any hand entry). `amount`
+// defaults to what's left on the contract.
 router.post('/:id/settle', ah(async (req, res) => {
-  const {
-    account_id,
-    settled_date = todayISO(),
-    amount = null,
-  } = req.body;
+  const { account_id, settled_date = todayISO(), amount = null } = req.body;
   if (!account_id) return res.status(400).json({ error: 'account_id is required — which account did the money land in?' });
   const r = await withTransaction((client) => settleContract(client, req.params.id, { account_id, date: settled_date, amount }));
   if (!r) return res.status(404).json({ error: 'not found' });
+  if (r.alreadyPaid) return res.status(409).json({ error: 'That contract is already settled — reopen it first to add a deposit.' });
   res.json(r.contract);
 }));
 
-// Mirror of a bill's unpay: deletes the settlement transaction, pulls the
-// money back out of the balance, reopens the contract.
+// Older name for reopen.
 router.post('/:id/unsettle', ah(async (req, res) => {
-  const contract = await withTransaction(async (client) => {
-    const { rows } = await client.query('SELECT * FROM sale_contracts WHERE id = $1 FOR UPDATE', [req.params.id]);
-    if (!rows.length) return null;
-    const contract = rows[0];
-    if (contract.status !== 'settled') return contract;
-    // Null the FK reference before deleting the transaction it points to —
-    // the old order (delete first) tripped the foreign key and failed.
-    const { rows: updated } = await client.query(
-      `UPDATE sale_contracts SET status = 'open', linked_transaction_id = NULL WHERE id = $1 RETURNING *`,
-      [contract.id]
-    );
-    // Settled by a deposit that was already in the ledger: let go of it, keep it.
-    if (contract.linked_transaction_id && !contract.linked_existing) await removeTransaction(client, contract.linked_transaction_id);
-    await client.query('UPDATE sale_contracts SET linked_existing = false WHERE id = $1', [contract.id]);
-    return updated[0];
-  });
-
-  if (!contract) return res.status(404).json({ error: 'not found' });
-  res.json(contract);
+  const c = await withTransaction((client) => reopenContractByHand(client, Number(req.params.id)));
+  if (!c) return res.status(404).json({ error: 'not found' });
+  res.json(c);
 }));
 
 // Same guardrail as bills: a settled contract's numbers are locked — its
@@ -205,7 +259,7 @@ router.patch('/:id', ah(async (req, res) => {
 
   if (current.status === 'settled') {
     return res.status(409).json({
-      error: 'This contract is settled — the money was received and booked. Unsettle it first if something needs correcting.',
+      error: 'This contract is settled — the money was received and booked. Reopen it first if something needs correcting.',
     });
   }
   if (status !== undefined && !['open', 'delivered', 'cancelled'].includes(status)) {
@@ -258,8 +312,9 @@ router.patch('/:id', ah(async (req, res) => {
 router.delete('/:id', ah(async (req, res) => {
   const { rows: currentRows } = await pool.query('SELECT * FROM sale_contracts WHERE id = $1', [req.params.id]);
   if (!currentRows.length) return res.status(404).json({ error: 'not found' });
-  if (currentRows[0].status === 'settled') {
-    return res.status(409).json({ error: 'This contract is settled and linked to a booked transaction — unsettle it before deleting.' });
+  const { rows: deps } = await pool.query('SELECT 1 FROM contract_payments WHERE contract_id = $1 LIMIT 1', [req.params.id]);
+  if (currentRows[0].status === 'settled' || deps.length) {
+    return res.status(409).json({ error: 'Deposits are counted toward this contract — unlink them before deleting it.' });
   }
   await pool.query('DELETE FROM sale_contracts WHERE id = $1', [req.params.id]);
   res.status(204).end();

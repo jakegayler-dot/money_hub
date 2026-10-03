@@ -10,9 +10,10 @@ const STATUS = {
   failed: <span className="badge fail">COULDN'T READ</span>,
   not_receipt: <span className="badge">NOT A RECEIPT</span>,
   billed: <span className="badge warn">BILL — NOT PAID YET</span>,
+  filed: <span className="badge pass">FILED WITH CONTRACT</span>,
 };
 
-const DOC_LABEL = { receipt: 'Receipt', invoice: 'Invoice', sales_ticket: 'Sales ticket' };
+const DOC_LABEL = { receipt: 'Receipt', invoice: 'Invoice', sales_ticket: 'Sales ticket', contract: 'Contract' };
 
 // Phone photos are 3–6 MB. Shrink to 1600 px on the long side as JPEG —
 // ~150–250 KB and still sharp enough to read every line.
@@ -183,6 +184,9 @@ export function ReceiptRow({ r, act }) {
             On {r.tx_date} · {r.tx_description} · {cents(r.tx_amount)} · {r.tx_account || `${r.tx_card} (card)`}{' '}
             <a className="small-link" href={`/ledgers?edit=${r.transaction_id}`}>Open</a>
           </div>
+        )}
+        {r.status === 'filed' && r.contract_label && (
+          <div className="split-lines">Contract: {r.contract_label} <a className="small-link" href="/contracts">Contracts</a></div>
         )}
         {r.status === 'billed' && (
           <div className="split-lines">
