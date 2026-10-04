@@ -2,23 +2,37 @@ import { Fragment, useEffect, useState } from 'react';
 import { money } from '../format.js';
 import { cents } from './SplitEditor.jsx';
 import CategorySelect from './CategorySelect.jsx';
+import MetricCard from './MetricCard.jsx';
 
 const today = () => new Date().toISOString().slice(0, 10);
 const KIND = { prepayment: 'Prepayment (applied to bills)', refundable: 'Refundable deposit' };
 const CREDIT_STATUS = { open: 'Held', used: 'All applied', refunded: 'Refunded', kept: 'Kept by vendor' };
 
 /**
- * Bills by vendor: one line each with what's owed, deposits the vendor is
- * holding, and the net. Open a vendor to pay everything in one payment,
- * record a deposit, apply it to a bill, or mark it refunded.
+ * Bills by vendor, each vendor as an account. At the top: what's owed
+ * across every vendor (or the picked one). Find a vendor by typing or from
+ * the list; its account shows every bill, interest charge, payment and
+ * deposit with a running balance, and can be reconciled to the vendor's
+ * own statement.
  */
 export default function VendorBills({ accounts, categories, onChanged }) {
-  const [vendors, setVendors] = useState(null);
-  const [open, setOpen] = useState(null);
+  const [vendors, setVendors] = useState(null); // vendors with open bills or deposits
+  const [all, setAll] = useState(null); // summary + every vendor on file
+  const [picked, setPicked] = useState(() => {
+    const q = new URLSearchParams(window.location.search).get('vendor');
+    if (q) return Number(q);
+    try { return Number(window.localStorage.getItem('moneyhub.vendor')) || null; } catch { return null; }
+  });
+  const [query, setQuery] = useState('');
   const [error, setError] = useState(null);
+  const [tick, setTick] = useState(0); // bumps the open account to reload
 
-  const load = () => fetch('/api/bills/vendors').then((r) => r.json()).then((d) => setVendors(Array.isArray(d) ? d : []));
+  const load = () => Promise.all([
+    fetch('/api/bills/vendors').then((r) => r.json()).then((d) => setVendors(Array.isArray(d) ? d : [])),
+    fetch('/api/bills/summary').then((r) => r.json()).then((d) => setAll(d && d.summary ? d : { summary: null, vendors: [] })),
+  ]);
   useEffect(() => { load(); }, []);
+  useEffect(() => { try { window.localStorage.setItem('moneyhub.vendor', picked ? String(picked) : ''); } catch { /* private mode */ } }, [picked]);
 
   const call = async (method, url, body, what) => {
     setError(null);
@@ -29,47 +43,272 @@ export default function VendorBills({ accounts, categories, onChanged }) {
       return false;
     }
     await load();
+    setTick((t) => t + 1);
     onChanged?.();
     return true;
   };
 
-  if (!vendors) return <div className="empty-state">Loading…</div>;
-  if (!vendors.length) return <div className="empty-state">No unpaid bills or deposits.</div>;
+  if (!vendors || !all) return <div className="empty-state">Loading…</div>;
+  const known = all.vendors || [];
+  const pickedVendor = picked ? known.find((v) => v.payee_id === picked) : null;
+  if (picked && !pickedVendor && known.length) setTimeout(() => setPicked(null), 0);
+  const q = query.trim().toLowerCase();
+  const openById = new Map(vendors.map((v) => [v.payee_id ?? 0, v]));
+  const rows = q
+    ? known.filter((v) => v.name.toLowerCase().includes(q)).map((v) => openById.get(v.payee_id) || { ...v, bills: [], credits: [], owing: 0, held: 0, net: 0, oldest_due: null })
+    : vendors;
+  const pick = (id) => { setPicked(id); setQuery(''); };
 
   return (
     <>
       {error && <p className="review-error" style={{ margin: '0 16px 8px' }}>{error}</p>}
-      <table>
-        <thead>
-          <tr><th>Vendor</th><th>Open bills</th><th>Oldest due</th><th>Owing</th><th>Deposits held</th><th>Net</th></tr>
-        </thead>
-        <tbody>
-          {vendors.map((v) => {
-            const key = v.payee_id ?? 0;
-            const isOpen = open === key;
-            return (
-              <Fragment key={key}>
-                <tr className="vendor-row" onClick={() => setOpen(isOpen ? null : key)} style={{ cursor: 'pointer' }}>
-                  <td><span aria-hidden="true">{isOpen ? '▾' : '▸'}</span> {v.name}</td>
-                  <td>{v.bills.length}</td>
-                  <td>{v.oldest_due || '—'}{v.oldest_due && v.oldest_due < today() && <span className="badge fail" style={{ marginLeft: 6 }}>OVERDUE</span>}</td>
-                  <td className="nowrap">{money(v.owing)}</td>
-                  <td className="nowrap">{v.held ? money(v.held) : '—'}</td>
-                  <td className="nowrap" style={{ fontWeight: 600 }}>{money(v.net)}</td>
-                </tr>
-                {isOpen && (
-                  <tr className="contract-detail">
-                    <td colSpan={6}>
-                      <VendorDetail v={v} accounts={accounts} categories={categories} call={call} />
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
-            );
-          })}
-        </tbody>
-      </table>
+      <div className="vendor-find">
+        <div className="vendor-search">
+          <input type="search" aria-label="Find a vendor" placeholder="Find a vendor…" value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                const hit = known.filter((v) => v.name.toLowerCase().includes(q));
+                if (hit.length) pick(hit[0].payee_id);
+              }
+              if (e.key === 'Escape') setQuery('');
+            }} />
+          {q && picked && (
+            <ul className="vendor-suggest" role="listbox" aria-label="Matching vendors">
+              {known.filter((v) => v.name.toLowerCase().includes(q)).slice(0, 8).map((v) => (
+                <li key={v.payee_id}><button type="button" onClick={() => pick(v.payee_id)}>{v.name}</button></li>
+              ))}
+              {!known.some((v) => v.name.toLowerCase().includes(q)) && <li className="split-lines">No vendor matches.</li>}
+            </ul>
+          )}
+        </div>
+        <select aria-label="Pick a vendor" value={picked || ''} onChange={(e) => pick(e.target.value ? Number(e.target.value) : null)}>
+          <option value="">All vendors</option>
+          {known.map((v) => <option key={v.payee_id} value={v.payee_id}>{v.name}</option>)}
+        </select>
+        {picked && <button type="button" className="small secondary" onClick={() => pick(null)}>All vendors</button>}
+      </div>
+
+      {picked && pickedVendor ? (
+        <VendorAccount key={picked} payeeId={picked} reload={tick} open={openById.get(picked)} name={pickedVendor.name}
+          accounts={accounts} categories={categories} call={call} />
+      ) : (
+        <>
+          {all.summary && <BillSummaryCards s={all.summary} />}
+          {all.no_vendor > 0 && <p className="split-lines" style={{ margin: '0 16px 8px' }}>{all.no_vendor} unpaid bill{all.no_vendor === 1 ? ' has' : 's have'} no vendor set — edit {all.no_vendor === 1 ? 'it' : 'them'} under By bill to put {all.no_vendor === 1 ? 'it' : 'them'} on an account.</p>}
+          {!rows.length ? <div className="empty-state">{q ? 'No vendor matches.' : 'No unpaid bills or deposits.'}</div> : (
+            <table>
+              <thead>
+                <tr><th>Vendor</th><th>Open bills</th><th>Oldest due</th><th>Owing</th><th>Deposits held</th><th>Balance</th></tr>
+              </thead>
+              <tbody>
+                {rows.map((v) => {
+                  const key = v.payee_id ?? 0;
+                  return (
+                    <tr key={key} className="vendor-row" tabIndex={v.payee_id ? 0 : -1}
+                      onClick={() => v.payee_id && pick(v.payee_id)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && v.payee_id) pick(v.payee_id); }}
+                      style={{ cursor: v.payee_id ? 'pointer' : 'default' }}>
+                      <td>{v.payee_id ? <span aria-hidden="true">▸ </span> : null}{v.name}</td>
+                      <td>{v.bills.length}</td>
+                      <td>{v.oldest_due || '—'}{v.oldest_due && v.oldest_due < today() && <span className="badge fail" style={{ marginLeft: 6 }}>OVERDUE</span>}</td>
+                      <td className="nowrap">{money(v.owing)}</td>
+                      <td className="nowrap">{v.held ? money(v.held) : '—'}</td>
+                      <td className="nowrap" style={{ fontWeight: 600 }}>{money(v.net)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
     </>
+  );
+}
+
+const nice = (d) => {
+  if (!d) return '';
+  const [y, m, dd] = d.split('-').map(Number);
+  return `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1]} ${dd}${y !== new Date().getFullYear() ? `, ${y}` : ''}`;
+};
+
+/** Headline figures: one vendor's (with its account balance and reconciliation) or every vendor's. */
+function BillSummaryCards({ s, account }) {
+  return (
+    <div className="grid vendor-summary">
+      {account && (
+        <MetricCard label="Account balance" value={money(account.balance)} tone={account.balance < -0.005 ? 'positive' : undefined}
+          sub={account.balance < -0.005 ? 'They hold your money' : account.last ? `Reconciled to ${nice(account.last.statement_date)}` : 'Not reconciled yet'} />
+      )}
+      <MetricCard label="Owing on bills" value={money(s.owing)} sub={s.bills ? `${s.bills} bill${s.bills === 1 ? '' : 's'}${s.oldest_due ? ` · oldest due ${nice(s.oldest_due)}` : ''}` : 'Nothing owing'} />
+      <MetricCard label="Overdue" value={money(s.overdue)} tone={s.overdue > 0 ? 'negative' : undefined} sub={s.overdue_count ? `${s.overdue_count} bill${s.overdue_count === 1 ? '' : 's'} past due` : 'None'} />
+      <MetricCard label="Due in 30 days" value={money(s.due_30)} sub={s.due_30_count ? `${s.due_30_count} bill${s.due_30_count === 1 ? '' : 's'}` : 'None'} />
+      <MetricCard label="Deposits held" value={money(s.held)} sub={s.held ? 'For later bills or refund' : 'None'} />
+      {(s.financed > 0 || s.interest_month > 0) && (
+        <MetricCard label="Interest running" value={`${money(s.interest_month)}/mo`} tone={s.interest_month > 0 ? 'negative' : undefined}
+          sub={s.free_ending_count ? `${money(s.free_ending)} goes interest-bearing ${nice(s.free_ending_first)}` : `On ${money(s.financed)} financed`} />
+      )}
+      {s.scheduled_count > 0 && (
+        <MetricCard label="Scheduled" value={money(s.scheduled)} sub={`${s.scheduled_count} recurring, not billed yet`} />
+      )}
+    </div>
+  );
+}
+
+const KIND_LABEL = { bill: 'Bill', adjust: 'Adjustment', interest: 'Interest', deposit: 'Deposit', payment: 'Payment', diff: 'Difference', marked: 'Paid', refund: 'Refund', kept: 'Kept' };
+
+/** One vendor's account: figures, pay/deposit actions, the running-balance statement, and reconciling it. */
+function VendorAccount({ payeeId, reload, open, name, accounts, categories, call }) {
+  const [st, setSt] = useState(null);
+  const [range, setRange] = useState('year');
+  const [form, setForm] = useState(null); // { statement_date, statement_balance } while starting one
+  const [err, setErr] = useState(null);
+  const [showActions, setShowActions] = useState(false);
+
+  const load = () => fetch(`/api/bills/vendors/${payeeId}/statement`).then((r) => r.json()).then(setSt);
+  useEffect(() => { load(); }, [payeeId, reload]);
+
+  const post = async (method, path, body) => {
+    setErr(null);
+    const r = await fetch(`/api/bills/vendors/${payeeId}/reconcile${path}`, {
+      method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined,
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { setErr(d.error || `HTTP ${r.status}`); return false; }
+    setSt(d);
+    return true;
+  };
+
+  if (!st) return <div className="empty-state">Loading…</div>;
+  if (st.error) return <div className="empty-state">{st.error}</div>;
+  const rec = st.reconciliation;
+  const recOn = !!rec.open;
+  const from = range === 'year' ? (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 1); return d.toISOString().slice(0, 10); })() : null;
+  const earlier = from ? st.lines.filter((l) => l.date < from) : [];
+  // While reconciling, show everything not yet reconciled even if older.
+  const shown = st.lines.filter((l) => !from || l.date >= from || (recOn && !(l.cleared && l.cleared.done)));
+  const hiddenBefore = earlier.filter((l) => !shown.includes(l));
+  const forward = hiddenBefore.length ? hiddenBefore[hiddenBefore.length - 1].balance : null;
+  const v = open || { payee_id: payeeId, name, bills: [], credits: [], owing: 0, held: 0, net: 0 };
+
+  return (
+    <div className="vendor-account">
+      <div className="vendor-account-head">
+        <h2>{st.name}</h2>
+        <span className="split-lines">Positive balance is what you owe; negative is money they hold for you.</span>
+      </div>
+      <BillSummaryCards s={st.summary} account={{ balance: st.balance, last: rec.last }} />
+
+      <div className="vendor-toolbar">
+        <span className="seg-toggle" role="group" aria-label="Period">
+          {[['year', 'Last 12 months'], ['all', 'All history']].map(([k, l]) => (
+            <button key={k} type="button" aria-pressed={range === k} className={range === k ? 'on' : ''} onClick={() => setRange(k)}>{l}</button>
+          ))}
+        </span>
+        <button type="button" className="small secondary" aria-expanded={showActions} onClick={() => setShowActions(!showActions)}>
+          {showActions ? 'Hide' : 'Pay bills or record a deposit'}
+        </button>
+        {!recOn && !form && (
+          <button type="button" className="small" onClick={() => setForm({ statement_date: today(), statement_balance: '' })}>Reconcile to a statement</button>
+        )}
+        {!recOn && rec.last && (
+          <span className="split-lines">
+            Reconciled to {nice(rec.last.statement_date)} at {cents(rec.last.statement_balance)}{' '}
+            <button type="button" className="small-link" onClick={() => window.confirm('Undo the last reconciliation? Its lines go back to unticked.') && post('POST', '/undo')}>Undo</button>
+          </span>
+        )}
+      </div>
+
+      {showActions && <VendorDetail v={v} accounts={accounts} categories={categories} call={call} />}
+
+      {form && !recOn && (
+        <div className="recon-bar">
+          <span>From the vendor's statement:</span>
+          <label className="split-lines">Date <input type="date" value={form.statement_date} onChange={(e) => setForm({ ...form, statement_date: e.target.value })} /></label>
+          <label className="split-lines">Balance <input type="number" step="0.01" style={{ width: 120 }} placeholder="0.00" value={form.statement_balance}
+            onChange={(e) => setForm({ ...form, statement_balance: e.target.value })} /></label>
+          <button type="button" className="small" disabled={!form.statement_date || form.statement_balance === ''}
+            onClick={() => post('POST', '', { statement_date: form.statement_date, statement_balance: Number(form.statement_balance) }).then((ok) => ok && setForm(null))}>
+            Start
+          </button>
+          <button type="button" className="small-link" onClick={() => setForm(null)}>Cancel</button>
+          <span className="split-lines">Enter it negative if the statement shows a credit in your favour.</span>
+        </div>
+      )}
+
+      {recOn && (
+        <div className="recon-bar on" role="status">
+          <span>Statement {nice(rec.open.statement_date)}</span>
+          <span>Statement balance <b>{cents(rec.open.statement_balance)}</b></span>
+          <span>Ticked <b>{cents(rec.cleared_total)}</b></span>
+          <span>Difference <b className={Math.abs(rec.difference) < 0.005 ? 'pos' : 'neg'}>{cents(rec.difference)}</b></span>
+          <button type="button" className="small" disabled={Math.abs(rec.difference) >= 0.005} onClick={() => post('POST', '/finish')}>Finish</button>
+          <button type="button" className="small secondary" onClick={() => post('DELETE', '')}>Cancel</button>
+          <span className="split-lines">Tick each line that's on their statement. It finishes when the ticked lines come to their balance.</span>
+        </div>
+      )}
+      {err && <p className="review-error" style={{ margin: '0 16px 8px' }}>{err}</p>}
+      {rec.missing.length > 0 && (
+        <p className="review-error" style={{ margin: '0 16px 8px' }}>
+          Reconciled but no longer on the account: {rec.missing.map((m) => `${m.label} (${cents(m.amount)})`).join('; ')}. Undo that reconciliation or put the entry back.
+        </p>
+      )}
+
+      <div className="table-scroll">
+        <table className="vendor-statement">
+          <thead>
+            <tr>
+              <th className="recon-col" aria-label="On the vendor's statement">✓</th>
+              <th>Date</th><th>Item</th><th className="num">Charges</th><th className="num">Payments &amp; credits</th><th className="num">Balance</th>
+            </tr>
+          </thead>
+          <tbody>
+            {forward != null && (
+              <tr className="entries-group"><td /><td className="nowrap">{nice(from)}</td><td>Balance forward</td><td /><td /><td className="num nowrap">{cents(forward)}</td></tr>
+            )}
+            {shown.length === 0 && <tr><td colSpan={6} className="split-lines">Nothing on the account{from ? ' in the last 12 months' : ''}.</td></tr>}
+            {shown.map((l) => {
+              const done = l.cleared?.done;
+              const tickable = recOn && !done && l.date <= rec.open.statement_date;
+              return (
+                <tr key={l.key} className={`stmt-${l.kind}${l.cleared && !done ? ' ticked' : ''}`}>
+                  <td className="recon-col">
+                    {done ? <span title="Reconciled" aria-label="Reconciled" className="recon-done">✓</span>
+                      : tickable ? <input type="checkbox" aria-label={`On the statement: ${l.label}`} checked={!!l.cleared}
+                        onChange={(e) => post('POST', '/tick', { key: l.key, on: e.target.checked })} />
+                        : null}
+                  </td>
+                  <td className="nowrap">{nice(l.date)}</td>
+                  <td>
+                    <span className="stmt-kind">{KIND_LABEL[l.kind]}</span>{' '}
+                    {l.transaction_id && (l.kind === 'payment' || l.kind === 'refund' || l.kind === 'deposit')
+                      ? <a href={`/ledgers?edit=${l.transaction_id}`}>{l.label}</a> : l.label}
+                    {l.kind === 'bill' && l.due_date && <span className="tag">due {nice(l.due_date)}</span>}
+                    {l.awaiting && <span className="tag">Unconfirmed until statement</span>}
+                    {l.pays && l.pays.length > 1 && <div className="split-lines">Paid {l.pays.length} bills: {l.pays.join(', ')}</div>}
+                    {l.account && <div className="split-lines">{l.account}</div>}
+                    {l.cleared?.changed && <div className="review-error" style={{ margin: 0 }}>Changed since ticked (was {cents(l.cleared.amount)})</div>}
+                  </td>
+                  <td className="num nowrap">{l.amount > 0 ? cents(l.amount) : ''}</td>
+                  <td className="num nowrap pos">{l.amount < 0 ? cents(-l.amount) : ''}</td>
+                  <td className="num nowrap stmt-bal">{cents(l.balance)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {st.upcoming.length > 0 && (
+        <div className="vendor-block" style={{ padding: '10px 16px' }}>
+          <div className="split-lines" style={{ fontWeight: 600 }}>Scheduled — not on the balance until billed</div>
+          {st.upcoming.map((u) => (
+            <div key={u.bill_id} className="split-lines">{nice(u.date)} · {u.name} · <span className="nowrap">{cents(u.amount)}</span></div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

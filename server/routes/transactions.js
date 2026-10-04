@@ -10,7 +10,6 @@ import { toISODate } from '../lib/dates.js';
 import { assertOpen, CONFIRMED_SQL, PASSED_SQL } from '../lib/periods.js';
 import { matchPending } from '../lib/receipts.js';
 import { autoLinkBillsSoon } from '../lib/billMatch.js';
-import { autoLinkContractsSoon } from '../lib/contractMatch.js';
 import { cardBalances } from '../lib/cardLedger.js';
 
 const router = Router();
@@ -261,7 +260,6 @@ router.post('/', ah(async (req, res) => {
   });
   setImmediate(() => matchPending().catch(() => {}));
   autoLinkBillsSoon(); // a payment for a bill on file pays that bill
-  autoLinkContractsSoon(); // a deposit from a buyer counts toward its contract
   res.status(201).json(row);
 }));
 

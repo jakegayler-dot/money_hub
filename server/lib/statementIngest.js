@@ -326,29 +326,16 @@ async function processLineInner(client, { target, source, external_id, payload: 
           if (r.alreadyPaid) return hold('That contract is already settled.');
           return posted(r.transaction, `Payment toward contract: ${r.contract.commodity}${r.contract.status === 'settled' ? ' — now settled' : ''}`);
         }
-        // A contract is often paid in several deposits, each net of
-        // checkoff — so any deposit up to what's left on a contract is a
-        // candidate. The buyer named in the line (or an exact match to
-        // what's left) decides on its own; otherwise a person picks.
+        // No contract_id: Money Hub doesn't guess which contract a deposit
+        // belongs to. Held for the agent (or you) to say which.
         const { rows } = await client.query(
           `SELECT *, GREATEST(total_value - received_amount, 0) AS remaining FROM sale_contracts WHERE status IN ('open', 'delivered')
-             AND expected_payment_date BETWEEN $1::date - 150 AND $1::date + 180
-             AND $2 <= GREATEST(total_value - received_amount, 0) * 1.03 + 1
-           ORDER BY abs(GREATEST(total_value - received_amount, 0) - $2)`,
-          [date, amount]
-        );
+           ORDER BY expected_payment_date, id`);
         const contractCand = (c) => ({
           type: 'contract', id: c.id, label: `${c.commodity}${c.counterparty ? ` — ${c.counterparty}` : ''}`,
           amount: Number(c.remaining), date: toISODate(c.expected_payment_date),
         });
-        const exact = rows.filter((c) => Math.abs(Number(c.remaining) - amount) < 0.005);
-        const { list, byName } = narrow(rows, hint, (c) => [c.counterparty, c.commodity]);
-        const pick = exact.length === 1 ? exact[0] : (byName && list.length === 1 ? list[0] : null);
-        if (pick) {
-          const r = await settle(pick.id);
-          return posted(r.transaction, `Payment toward contract: ${pick.commodity}${pick.counterparty ? ` — ${pick.counterparty}` : ''}${r.contract.status === 'settled' ? ' — now settled' : ''}`);
-        }
-        if (rows.length) return hold(`Deposit of ${fmt(amount)} looks like a contract payment — which contract is it toward?`, rows.slice(0, 5).map(contractCand));
+        if (rows.length) return hold(`Contract payment of ${fmt(amount)} — send contract_id, or pick the contract.`, rows.map(contractCand));
         if (historical) return posted(await insertTransaction(client, plain), 'Historical settlement — no contract on file, posted as income');
         return hold(`No open contract near ${fmt(amount)} expected around ${date}. Post it as plain income if it wasn't under contract.`);
       }

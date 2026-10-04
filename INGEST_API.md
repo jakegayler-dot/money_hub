@@ -146,7 +146,7 @@ Same `X-Api-Key`. Returns every account (with `last4`), card, category, owner, u
 - **`bill_payment`** — paying a bill that's on the Bills tab (utilities, rent, invoices). Matched to the unpaid bill with that exact amount due within 45 days; the bill closes and a recurring one rolls to next cycle. A bill paid on a card works too (send it on the card statement).
 - **`loan_payment`** — a scheduled loan payment. Matched to the unpaid scheduled payment with that exact amount due within 20 days; recorded as debt service (kept out of operating expenses and coverage math).
 - **`card_payment`** — from a bank statement: paying a credit card (send `card_last4`). On a card statement: the "PAYMENT — THANK YOU" line; it's matched to the bank-side payment and never counted twice.
-- **`contract_payment`** — a grain/cattle settlement deposit. Settles the open contract when the amount matches exactly, or when `payee` names the buyer or commodity and only one contract fits.
+- **`contract_payment`** — a grain/cattle settlement deposit. Send `contract_id` (from the reference's `open_contracts`) and it counts toward that contract. Without `contract_id` it waits on Review — Money Hub never guesses the contract. Deposits already in the ledger are linked with §6.
 - **`transfer`** — money between accounts Money Hub tracks, or a loan advance. Not income or spending. When both statements are sent, the two sides pair up automatically.
 - **`owner_draw`** — business account → owner. Recorded as a transfer and as an owner draw.
 
@@ -196,6 +196,25 @@ Where it goes depends on the query string:
 Finding IDs: a statement import's `results[].transaction_id`; `GET /api/transactions?q=<text>&from=YYYY-MM-DD&to=YYYY-MM-DD` (also `account_id`, `credit_card_id`); `GET /api/bills`; `GET /api/contracts` (or the `id` returned by `POST /api/contracts/ingest`). All accept `X-Api-Key`.
 
 Response: `201 {"id": <document id>, "ok": true, "message": "..."}`. Errors: 401 (key), 404 (no such entry/bill/contract), 415 (not an image or PDF).
+
+## 6. Linking deposits to contracts — `/api/contracts/ingest/*`
+
+Your agent decides which deposits pay which contract; Money Hub links nothing on its own and suggests nothing. Same `X-Api-Key`.
+
+**`GET /api/contracts/ingest/reference`** (optional `?since=YYYY-MM-DD`, default 400 days back) returns:
+- `open_contracts` — `id`, `external_id`, `counterparty`, `commodity`, quantity and price, `total_value`, `received_amount`, `remaining`, `delivery_date`, `expected_payment_date`, `status`, and `linked` (deposits already on it).
+- `unlinked_deposits` — incoming ledger entries not on any contract: `transaction_id`, `date`, `amount`, `description`, `account`, `payee`.
+
+**`POST /api/contracts/ingest/link`**
+```json
+{ "links": [
+  { "transaction_id": 219, "contract_id": 37 },
+  { "transaction_id": 228, "contract_external_id": "QS-2026-0042" }
+] }
+```
+One object without `links` also works. Each link is applied on its own. A deposit already on a different contract moves to the new one; linking it again to the same contract is a no-op. The contract settles itself once its deposits reach its value less the checkoff allowance, and the gap is booked as deductions. Response `200` (all ok) or `207` (some failed): `{"results": [{transaction_id, contract_id, ok, status, received_amount, remaining} | {…, ok: false, error}]}`.
+
+**`POST /api/contracts/ingest/unlink`** `{"transaction_ids": [219]}` takes entries off their contract. The entries stay in the ledger, and a contract that had settled reopens. Deposits recorded by hand on the Contracts tab can only be changed there.
 
 ## Quarter Section setup brief (paste this to Quarter Section)
 

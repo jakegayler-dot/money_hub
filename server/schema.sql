@@ -1200,3 +1200,30 @@ CREATE OR REPLACE FUNCTION bill_owing(b bills, d date) RETURNS numeric LANGUAGE 
       GREATEST(d - COALESCE(GREATEST(b.balance_as_of, b.interest_free_until), b.received_date, b.created_at::date, d), 0) / 365.0), 2)
   END - COALESCE((SELECT SUM(ca.amount) FROM credit_applications ca WHERE ca.bill_id = b.id), 0))
 $$;
+
+-- Vendor accounts: each vendor is a payable account with a running balance
+-- (bills and interest up; payments and deposits down), built from the
+-- bills, payments and deposits above. A reconciliation checks it against
+-- the vendor's own statement: the statement's date and balance, and the
+-- lines ticked as on it. Ticked lines stay ticked once the reconciliation
+-- is finished; `amount` is what the line was when ticked, so a later edit
+-- shows up as changed.
+ALTER TABLE vendor_credits ADD COLUMN IF NOT EXISTS closed_date DATE;
+CREATE TABLE IF NOT EXISTS vendor_reconciliations (
+  id                SERIAL PRIMARY KEY,
+  payee_id          INTEGER NOT NULL REFERENCES payees(id) ON DELETE CASCADE,
+  statement_date    DATE NOT NULL,
+  statement_balance NUMERIC(14,2) NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done')),
+  finished_at       TIMESTAMPTZ,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS vendor_reconciliations_one_open ON vendor_reconciliations (payee_id) WHERE status = 'open';
+CREATE TABLE IF NOT EXISTS vendor_cleared (
+  payee_id          INTEGER NOT NULL REFERENCES payees(id) ON DELETE CASCADE,
+  line_key          TEXT NOT NULL,
+  reconciliation_id INTEGER NOT NULL REFERENCES vendor_reconciliations(id) ON DELETE CASCADE,
+  amount            NUMERIC(14,2) NOT NULL,
+  label             TEXT,
+  PRIMARY KEY (payee_id, line_key)
+);

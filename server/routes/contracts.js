@@ -5,7 +5,6 @@ import {
   settleContract, linkContractToTransaction, unlinkContractPayment, settleContractByHand, reopenContractByHand,
   contractAllowancePct,
 } from '../lib/postings.js';
-import { autoLinkContracts, contractCandidates } from '../lib/contractMatch.js';
 import { toISODate } from '../lib/dates.js';
 import { todayISO } from '../lib/dates.js';
 import { ledgerForSegment } from '../lib/segments.js';
@@ -48,11 +47,9 @@ function resolvePaymentDate({ expected_payment_date, delivery_date, contract_per
   return null;
 }
 
-// Each contract with the deposits counted toward it and, while it's open,
-// deposits that look like they belong to it. Deposits that clearly do
-// (buyer named, one contract fits) are linked first, so the list is current.
+// Each contract with the deposits linked to it (by your agent, or by hand).
+// Nothing is linked or suggested automatically.
 router.get('/', ah(async (req, res) => {
-  try { await autoLinkContracts(); } catch (e) { console.error('Contract auto-link failed:', e.message); }
   const status = ['open', 'delivered', 'settled', 'cancelled'].includes(req.query.status) ? req.query.status : null;
   const { rows } = await pool.query(
     `SELECT c.*, GREATEST(c.total_value - c.received_amount, 0) AS remaining,
@@ -74,13 +71,10 @@ router.get('/', ah(async (req, res) => {
   );
   const out = [];
   for (const c of rows) {
-    const open = c.status === 'open' || c.status === 'delivered';
     out.push({
       ...c,
       remaining: Number(c.remaining),
       deposits: c.deposits.map((d) => ({ ...d, date: toISODate(d.date), amount: Number(d.amount) })),
-      suggestions: open ? (await contractCandidates(pool, c, 60))
-        .filter((t) => t.names_buyer || t.names_crop || t.covers_rest).slice(0, 5) : [],
     });
   }
   res.json(out);
@@ -96,6 +90,112 @@ router.post('/settings', ah(async (req, res) => {
   if (!Number.isFinite(v) || v < 0 || v >= 50) return res.status(400).json({ error: 'Allowance must be between 0 and 50 (%).' });
   await setSetting(pool, 'contract_deduction_allowance_pct', v);
   res.json({ deduction_allowance_pct: v });
+}));
+
+// ---- Agent linking ----------------------------------------------------
+// Your agent links ledger entries (deposits already in the ledger) to
+// contracts — Money Hub never guesses. Same API key as the other ingest
+// endpoints (X-Api-Key). See INGEST_API.md §6.
+
+// Open contracts, and incoming deposits not linked to anything, to work from.
+router.get('/ingest/reference', requireIngestKey, ah(async (req, res) => {
+  const since = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.since || '')) ? req.query.since : null;
+  const { rows: contracts } = await pool.query(
+    `SELECT c.id, c.external_id, c.counterparty, c.commodity, c.quantity, c.unit, c.price_per_unit, c.total_value, c.received_amount,
+            GREATEST(c.total_value - c.received_amount, 0) AS remaining, c.delivery_date, c.expected_payment_date, c.status,
+            COALESCE((SELECT json_agg(json_build_object('transaction_id', t.id, 'date', t.date, 'amount', t.amount, 'description', t.description) ORDER BY t.date)
+                      FROM contract_payments cp JOIN transactions t ON t.id = cp.transaction_id WHERE cp.contract_id = c.id), '[]'::json) AS linked
+     FROM sale_contracts c WHERE c.status IN ('open', 'delivered') ORDER BY c.expected_payment_date, c.id`);
+  const { rows: deposits } = await pool.query(
+    `SELECT t.id AS transaction_id, t.date, t.amount, t.description, a.name AS account, p.name AS payee
+     FROM transactions t JOIN accounts a ON a.id = t.account_id LEFT JOIN payees p ON p.id = t.payee_id
+     WHERE t.amount > 0 AND NOT t.is_transfer AND t.date >= COALESCE($1::date, CURRENT_DATE - 400)
+       AND NOT EXISTS (SELECT 1 FROM contract_payments x WHERE x.transaction_id = t.id)
+       AND NOT EXISTS (SELECT 1 FROM vendor_credits x WHERE x.refund_transaction_id = t.id)
+     ORDER BY t.date DESC, t.id DESC LIMIT 500`, [since]);
+  const d = (v) => (v ? toISODate(v) : null);
+  res.json({
+    open_contracts: contracts.map((c) => ({
+      ...c, total_value: Number(c.total_value), received_amount: Number(c.received_amount), remaining: Number(c.remaining),
+      delivery_date: d(c.delivery_date), expected_payment_date: d(c.expected_payment_date),
+    })),
+    unlinked_deposits: deposits.map((t) => ({ ...t, date: d(t.date), amount: Number(t.amount) })),
+  });
+}));
+
+// Link entries to contracts: { links: [{ transaction_id, contract_id | contract_external_id }] }
+// (or one such object). Each link is applied on its own; the reply says
+// what happened to each, and where each contract now stands.
+router.post('/ingest/link', requireIngestKey, ah(async (req, res) => {
+  const body = req.body || {};
+  const links = Array.isArray(body.links) ? body.links : Array.isArray(body) ? body : [body];
+  if (!links.length || links.length > 200) return res.status(400).json({ error: 'Send 1–200 links.' });
+  const results = [];
+  for (const l of links) {
+    const txId = Number(l?.transaction_id);
+    let contractId = l?.contract_id != null ? Number(l.contract_id) : null;
+    try {
+      if (!txId) throw Object.assign(new Error('transaction_id is required.'), { status: 400 });
+      if (!contractId && l?.contract_external_id) {
+        const { rows: [c] } = await pool.query('SELECT id FROM sale_contracts WHERE external_id = $1', [String(l.contract_external_id)]);
+        if (!c) throw Object.assign(new Error(`No contract with external_id ${l.contract_external_id}.`), { status: 404 });
+        contractId = c.id;
+      }
+      if (!contractId) throw Object.assign(new Error('contract_id or contract_external_id is required.'), { status: 400 });
+      const { rows: [cur] } = await pool.query('SELECT contract_id, created_here FROM contract_payments WHERE transaction_id = $1', [txId]);
+      if (cur && cur.contract_id === contractId) {
+        const { rows: [c] } = await pool.query('SELECT * FROM sale_contracts WHERE id = $1', [contractId]);
+        results.push({ transaction_id: txId, contract_id: contractId, ok: true, note: 'Already linked.', status: c.status,
+          received_amount: Number(c.received_amount), remaining: Math.max(0, Number(c.total_value) - Number(c.received_amount)) });
+        continue;
+      }
+      if (cur && cur.created_here) throw Object.assign(new Error('That deposit was recorded by hand on another contract — change it on the Contracts tab.'), { status: 409 });
+      const c = await withTransaction(async (client) => {
+        if (cur) await unlinkContractPayment(client, txId); // moving it to another contract
+        await client.query('DELETE FROM contract_link_rejections WHERE contract_id = $1 AND transaction_id = $2', [contractId, txId]);
+        return (await linkContractToTransaction(client, contractId, txId)).contract;
+      });
+      results.push({ transaction_id: txId, contract_id: contractId, ok: true, moved_from: cur ? cur.contract_id : undefined,
+        status: c.status, received_amount: Number(c.received_amount), remaining: Math.max(0, Number(c.total_value) - Number(c.received_amount)) });
+    } catch (e) {
+      results.push({ transaction_id: txId || null, contract_id: contractId, ok: false, error: e.message });
+    }
+  }
+  res.status(results.every((r) => r.ok) ? 200 : 207).json({ results });
+}));
+
+// Take entries off their contracts: { transaction_ids: [...] }. The entries stay in the ledger.
+router.post('/ingest/unlink', requireIngestKey, ah(async (req, res) => {
+  const ids = (Array.isArray(req.body?.transaction_ids) ? req.body.transaction_ids : [req.body?.transaction_id]).map(Number).filter(Boolean);
+  if (!ids.length) return res.status(400).json({ error: 'transaction_ids is required.' });
+  const results = [];
+  for (const id of ids) {
+    try {
+      const { rows: [cp] } = await pool.query('SELECT created_here FROM contract_payments WHERE transaction_id = $1', [id]);
+      if (cp?.created_here) throw new Error('That deposit was recorded by hand on the Contracts tab — remove it there.');
+      const c = await withTransaction((client) => unlinkContractPayment(client, id));
+      results.push({ transaction_id: id, ok: true, contract_id: c?.id, status: c?.status });
+    } catch (e) {
+      results.push({ transaction_id: id, ok: false, error: e.message });
+    }
+  }
+  res.status(results.every((r) => r.ok) ? 200 : 207).json({ results });
+}));
+
+// Incoming deposits matching what you type (description, payee, amount) — for linking by hand.
+router.get('/deposits', ah(async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (!q) return res.json([]);
+  const num = Number(q.replace(/[$,\s]/g, ''));
+  const { rows } = await pool.query(
+    `SELECT t.id, t.date, t.amount, t.description, a.name AS account,
+            (SELECT c.commodity FROM contract_payments cp JOIN sale_contracts c ON c.id = cp.contract_id WHERE cp.transaction_id = t.id) AS on_contract
+     FROM transactions t JOIN accounts a ON a.id = t.account_id LEFT JOIN payees p ON p.id = t.payee_id
+     WHERE t.amount > 0 AND NOT t.is_transfer
+       AND (t.description ILIKE $1 OR p.name ILIKE $1 OR ($2::numeric IS NOT NULL AND abs(t.amount - $2::numeric) < 1))
+     ORDER BY t.date DESC, t.id DESC LIMIT 15`,
+    [`%${q.replace(/[%_]/g, '')}%`, Number.isFinite(num) && num > 0 ? num : null]);
+  res.json(rows.map((t) => ({ ...t, date: toISODate(t.date), amount: Number(t.amount) })));
 }));
 
 // A deposit already in the ledger counts toward this contract.

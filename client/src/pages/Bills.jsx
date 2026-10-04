@@ -332,9 +332,9 @@ export default function Bills() {
         {view === 'vendor' ? (
           <>
             <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 16px 12px' }}>
-              One line per vendor: what its unpaid bills come to, deposits it's holding for you, and the net. A single payment
-              for a vendor's oldest bills (or all of them) marks each one paid on its own and is split across their categories.
-              Open a vendor to pay several bills at once, record a deposit, or apply one to a bill.
+              Each vendor is an account: bills and finance interest raise its balance; payments and deposits lower it. Pick a vendor
+              to see every line with a running balance, pay several bills in one payment, or reconcile it to their statement.
+              Profit and tax still count each bill when it's paid.
             </p>
             <VendorBills accounts={accounts} categories={categories} onChanged={load} />
           </>

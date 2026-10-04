@@ -521,7 +521,7 @@ export async function refundVendorCredit(client, creditId, refundTxId) {
 
 /** The vendor kept the deposit: what's left becomes an expense. */
 export async function keepVendorCredit(client, creditId, categoryId) {
-  await client.query(`UPDATE vendor_credits SET status = 'kept', kept_category_id = $2 WHERE id = $1 AND status = 'open'`, [creditId, categoryId || null]);
+  await client.query(`UPDATE vendor_credits SET status = 'kept', kept_category_id = $2, closed_date = CURRENT_DATE WHERE id = $1 AND status = 'open'`, [creditId, categoryId || null]);
   await rebuildCreditSplits(client, creditId);
 }
 

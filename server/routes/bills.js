@@ -12,6 +12,7 @@ const vendorFromName = (name) => String(name || '').replace(/\s+(—|–|-|#|inv
 import { autoLinkBills, autoLinkBillsSoon, billCandidates } from '../lib/billMatch.js';
 import { todayISO, toISODate, addMonths } from '../lib/dates.js';
 import { matchPending } from '../lib/receipts.js';
+import { vendorStatement, billSummary, reconState } from '../lib/vendorAccount.js';
 
 // "$13,$14,..." placeholder run for the segment columns, starting at n.
 const segPlaceholders = (n) => SEGMENT_COLUMNS.map((_, i) => `$${n + i}`).join(',');
@@ -365,6 +366,129 @@ router.get('/vendors/:payeeId/payments', ah(async (req, res) => {
      ORDER BY t.date DESC LIMIT 20`,
     [req.params.payeeId, words.length ? `(${words.map((w) => w.replace(/[^a-z0-9]/g, '')).join('|')})` : '^$']);
   res.json(rows.map((t) => ({ ...t, date: toISODate(t.date), amount: Number(t.amount) })));
+}));
+
+// ---- Vendor accounts ------------------------------------------------------
+// Headline figures across every vendor, and the vendors to pick from (any
+// with a bill or deposit on file, paid or not).
+router.get('/summary', ah(async (req, res) => {
+  try { await autoLinkBills(); } catch (e) { console.error('Bill auto-link failed:', e.message); }
+  const { rows: bills } = await pool.query(
+    `SELECT b.*, COALESCE((SELECT SUM(amount) FROM credit_applications WHERE bill_id = b.id), 0) AS applied
+     FROM bills b WHERE b.status = 'unpaid'`);
+  const { rows: credits } = await pool.query(
+    `SELECT vc.*, vc.amount - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE credit_id = vc.id), 0) AS remaining
+     FROM vendor_credits vc WHERE vc.status = 'open'`);
+  const { rows: vendors } = await pool.query(
+    `SELECT p.id AS payee_id, p.name,
+            (SELECT max(statement_date) FROM vendor_reconciliations r WHERE r.payee_id = p.id AND r.status = 'done') AS reconciled_to
+     FROM payees p
+     WHERE EXISTS (SELECT 1 FROM bills b WHERE b.payee_id = p.id) OR EXISTS (SELECT 1 FROM vendor_credits c WHERE c.payee_id = p.id)
+     ORDER BY lower(p.name)`);
+  res.json({
+    summary: billSummary(bills, credits),
+    no_vendor: bills.filter((b) => !b.payee_id).length,
+    vendors: vendors.map((v) => ({ ...v, reconciled_to: v.reconciled_to ? toISODate(v.reconciled_to) : null })),
+  });
+}));
+
+// One vendor's account: running balance, what's scheduled, its headline
+// figures, and the reconciliation against the vendor's statement.
+async function statementFor(payeeId) {
+  const { rows: [p] } = await pool.query('SELECT id, name FROM payees WHERE id = $1', [payeeId]);
+  if (!p) return null;
+  const st = await vendorStatement(pool, payeeId);
+  const rec = await reconState(pool, payeeId);
+  const lines = st.lines.map((l) => {
+    const c = rec.cleared.get(l.key);
+    return c ? { ...l, cleared: { done: c.status === 'done', amount: c.amount, changed: Math.abs(c.amount - l.amount) >= 0.005 } } : l;
+  });
+  const present = new Set(st.lines.map((l) => l.key));
+  const missing = [...rec.cleared.values()].filter((c) => !present.has(c.line_key))
+    .map((c) => ({ key: c.line_key, label: c.label, amount: c.amount, done: c.status === 'done' }));
+  const credits = st.credits.map((c) => ({ ...c, remaining: Number(c.remaining) }));
+  return {
+    payee_id: p.id, name: p.name, lines, upcoming: st.upcoming, balance: st.balance,
+    summary: billSummary(st.bills, credits),
+    reconciliation: { open: rec.open || null, last: rec.last || null, cleared_total: rec.cleared_total, difference: rec.difference, missing },
+  };
+}
+router.get('/vendors/:payeeId/statement', ah(async (req, res) => {
+  try { await autoLinkBills(); } catch (e) { console.error('Bill auto-link failed:', e.message); }
+  const out = await statementFor(Number(req.params.payeeId));
+  if (!out) return res.status(404).json({ error: 'Vendor not found.' });
+  res.json(out);
+}));
+
+// Start (or change) a reconciliation: the vendor statement's date and closing balance.
+router.post('/vendors/:payeeId/reconcile', ah(async (req, res) => {
+  const payeeId = Number(req.params.payeeId);
+  const { statement_date, statement_balance } = req.body || {};
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(statement_date || ''))) return res.status(400).json({ error: 'Enter the statement date.' });
+  if (statement_balance === '' || statement_balance == null || !Number.isFinite(Number(statement_balance))) {
+    return res.status(400).json({ error: 'Enter the balance the statement shows (negative if they owe you).' });
+  }
+  const { rows: [last] } = await pool.query(
+    `SELECT max(statement_date) AS d FROM vendor_reconciliations WHERE payee_id = $1 AND status = 'done'`, [payeeId]);
+  if (last?.d && toISODate(last.d) >= statement_date) {
+    return res.status(400).json({ error: `This vendor is already reconciled to ${toISODate(last.d)} — use a later statement.` });
+  }
+  await pool.query(
+    `INSERT INTO vendor_reconciliations (payee_id, statement_date, statement_balance) VALUES ($1, $2, $3)
+     ON CONFLICT (payee_id) WHERE status = 'open' DO UPDATE SET statement_date = EXCLUDED.statement_date, statement_balance = EXCLUDED.statement_balance`,
+    [payeeId, statement_date, Number(statement_balance)]);
+  res.json(await statementFor(payeeId));
+}));
+
+// Tick or untick a line as on the vendor's statement.
+router.post('/vendors/:payeeId/reconcile/tick', ah(async (req, res) => {
+  const payeeId = Number(req.params.payeeId);
+  const { key, on } = req.body || {};
+  const { rows: [open] } = await pool.query(`SELECT id FROM vendor_reconciliations WHERE payee_id = $1 AND status = 'open'`, [payeeId]);
+  if (!open) return res.status(400).json({ error: 'Start a reconciliation first.' });
+  const { rows: [have] } = await pool.query('SELECT reconciliation_id FROM vendor_cleared WHERE payee_id = $1 AND line_key = $2', [payeeId, key]);
+  if (have && have.reconciliation_id !== open.id) return res.status(400).json({ error: 'That line was reconciled on an earlier statement.' });
+  if (!on) {
+    await pool.query('DELETE FROM vendor_cleared WHERE payee_id = $1 AND line_key = $2', [payeeId, key]);
+  } else {
+    const st = await vendorStatement(pool, payeeId);
+    const line = st.lines.find((l) => l.key === key);
+    if (!line) return res.status(404).json({ error: 'That line is no longer on the account.' });
+    await pool.query(
+      `INSERT INTO vendor_cleared (payee_id, line_key, reconciliation_id, amount, label) VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (payee_id, line_key) DO UPDATE SET amount = EXCLUDED.amount, label = EXCLUDED.label`,
+      [payeeId, key, open.id, line.amount, line.label]);
+  }
+  res.json(await statementFor(payeeId));
+}));
+
+// Finish: only when the ticked lines come to the statement balance.
+router.post('/vendors/:payeeId/reconcile/finish', ah(async (req, res) => {
+  const payeeId = Number(req.params.payeeId);
+  const rec = await reconState(pool, payeeId);
+  if (!rec.open) return res.status(400).json({ error: 'No reconciliation is open.' });
+  if (Math.abs(rec.difference) >= 0.005) {
+    return res.status(400).json({ error: `Ticked lines are ${rec.difference > 0 ? 'short of' : 'over'} the statement by ${Math.abs(rec.difference).toFixed(2)}.` });
+  }
+  await pool.query(`UPDATE vendor_reconciliations SET status = 'done', finished_at = now() WHERE id = $1`, [rec.open.id]);
+  res.json(await statementFor(payeeId));
+}));
+
+// Cancel the open reconciliation (its ticks go with it).
+router.delete('/vendors/:payeeId/reconcile', ah(async (req, res) => {
+  const payeeId = Number(req.params.payeeId);
+  await pool.query(`DELETE FROM vendor_reconciliations WHERE payee_id = $1 AND status = 'open'`, [payeeId]);
+  res.json(await statementFor(payeeId));
+}));
+
+// Undo the latest finished reconciliation (only if none is open).
+router.post('/vendors/:payeeId/reconcile/undo', ah(async (req, res) => {
+  const payeeId = Number(req.params.payeeId);
+  const rec = await reconState(pool, payeeId);
+  if (rec.open) return res.status(400).json({ error: 'Finish or cancel the open reconciliation first.' });
+  if (!rec.last) return res.status(400).json({ error: 'Nothing to undo.' });
+  await pool.query('DELETE FROM vendor_reconciliations WHERE id = $1', [rec.last.id]);
+  res.json(await statementFor(payeeId));
 }));
 
 router.patch('/:id', ah(async (req, res) => {
