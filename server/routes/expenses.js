@@ -3,6 +3,7 @@ import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { allocateBySegment, ownerWeights, OWNERS } from '../lib/segments.js';
 import { toISODate } from '../lib/dates.js';
+import { EARNING_COLUMNS, lineValue } from '../lib/earnings.js';
 
 const router = Router();
 
@@ -32,16 +33,16 @@ router.get('/by-category', ah(async (req, res) => {
   const owner = String(req.query.owner || 'all');
   if (owner !== 'all' && !OWNERS.includes(owner)) return res.status(400).json({ error: `owner must be all, ${OWNERS.join(', ')}` });
   const kind = req.query.kind === 'income' ? 'income' : 'expense';
-  const weight = (row) => (owner === 'all' ? 1 : ownerWeights(row)[owner]);
 
   const [{ rows: cats }, { rows: lines }] = await Promise.all([
     pool.query('SELECT id, name, parent_id, kind FROM expense_categories'),
     pool.query(
-      `SELECT amount, category_id, is_capex, segment, is_segment_split,
-              segment_grain_pct, segment_livestock_pct, segment_jake_pct, segment_ashley_pct
-       FROM transaction_lines
-       WHERE is_transfer = false AND (is_debt_service = false OR split_id IS NOT NULL) -- a loan payment's interest piece counts
-         AND EXTRACT(YEAR FROM date) = $1`,
+      `SELECT ${EARNING_COLUMNS}, l.category_id
+       FROM transaction_lines l
+       JOIN transactions t ON t.id = l.transaction_id
+       LEFT JOIN loan_payments lp ON lp.linked_transaction_id = l.transaction_id
+       WHERE l.is_transfer = false AND (l.is_debt_service = false OR l.split_id IS NOT NULL) -- a loan payment's interest piece counts
+         AND EXTRACT(YEAR FROM l.date) = $1`,
       [year]
     ),
   ]);
@@ -58,11 +59,16 @@ router.get('/by-category', ah(async (req, res) => {
   let capex = 0;
   for (const l of lines) {
     if (!belongs(l)) continue;
-    const w = weight(l);
-    if (!w) continue;
-    // Spending is positive (a refund negative); income is positive.
-    const amt = (kind === 'income' ? 1 : -1) * Number(l.amount) * w;
-    if (l.is_capex) { capex += amt; continue; }
+    // Spending is positive (a refund negative); income is positive. Farm
+    // shares count without GST, household shares as paid (lib/earnings.js).
+    if (l.is_capex) {
+      const w = owner === 'all' ? 1 : ownerWeights(l)[owner];
+      capex += (kind === 'income' ? 1 : -1) * Number(l.amount) * (w || 0);
+      continue;
+    }
+    const v = lineValue(l, owner);
+    if (!v) continue;
+    const amt = (kind === 'income' ? 1 : -1) * v;
     if (!l.category_id || !byId.has(l.category_id)) { uncategorized += amt; continue; }
     spent.set(l.category_id, (spent.get(l.category_id) || 0) + amt);
   }
@@ -105,11 +111,11 @@ async function countedLines(year, owner, kind) {
   const [{ rows: cats }, { rows: lines }] = await Promise.all([
     pool.query('SELECT id, name, parent_id, kind FROM expense_categories'),
     pool.query(
-      `SELECT l.transaction_id, l.split_id, l.date, l.amount, l.category_id, l.is_capex, l.description, l.segment, l.is_segment_split,
-              l.segment_grain_pct, l.segment_livestock_pct, l.segment_jake_pct, l.segment_ashley_pct,
+      `SELECT ${EARNING_COLUMNS}, l.transaction_id, l.date, l.category_id, l.description,
               a.name AS account, cc.name AS card, p.name AS payee
        FROM transaction_lines l
        JOIN transactions t ON t.id = l.transaction_id
+       LEFT JOIN loan_payments lp ON lp.linked_transaction_id = l.transaction_id
        LEFT JOIN accounts a ON a.id = l.account_id
        LEFT JOIN credit_cards cc ON cc.id = l.credit_card_id
        LEFT JOIN payees p ON p.id = t.payee_id
@@ -123,13 +129,13 @@ async function countedLines(year, owner, kind) {
     const c = l.category_id ? byId.get(l.category_id) : null;
     const isIncome = c ? c.kind === 'income' : Number(l.amount) > 0;
     if ((kind === 'income') !== isIncome || l.is_capex) continue;
-    const w = owner === 'all' ? 1 : ownerWeights(l)[owner];
-    if (!w) continue;
+    const v = lineValue(l, owner);
+    if (!v) continue;
     const parent = c ? (c.parent_id && byId.has(c.parent_id) ? byId.get(c.parent_id) : c) : null;
     out.push({
       transaction_id: l.transaction_id, date: toISODate(l.date), month: Number(toISODate(l.date).slice(5, 7)),
       description: l.description, payee: l.payee, account: l.account || (l.card ? `${l.card} (card)` : null),
-      amount: Math.round((kind === 'income' ? 1 : -1) * Number(l.amount) * w * 100) / 100,
+      amount: Math.round((kind === 'income' ? 1 : -1) * v * 100) / 100,
       category_id: c ? c.id : null, category: c ? (parent && parent.id !== c.id ? `${parent.name} › ${c.name}` : c.name) : null,
       parent_id: parent ? parent.id : null,
     });

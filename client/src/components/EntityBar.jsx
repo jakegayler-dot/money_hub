@@ -125,12 +125,21 @@ export default function EntityBar() {
           </div>
 
           <div className="entity-card">
-            <div className="metric-label">Earnings — {new Date().getFullYear()} to date</div>
+            <div className="metric-label">
+              {data?.earningsYTD.kind === 'personal' ? 'Net personal cash' : 'Farm earnings'} — {new Date().getFullYear()} to date
+            </div>
             <div className={`metric-value${data ? (data.earningsYTD.total >= 0 ? ' positive' : ' negative') : ''}`}>
               {data ? signed(data.earningsYTD.total) : '—'}
             </div>
             <div className="metric-sub">
-              {data ? <>In {money(data.earningsYTD.revenue)} − out {money(data.earningsYTD.costs)}</> : 'Loading…'}
+              {data ? (
+                <>
+                  In {money(data.earningsYTD.revenue)} − out {money(data.earningsYTD.costs)}
+                  {data.earningsYTD.kind === 'farm' && ' · GST out, capital purchases and loan principal not counted'}
+                  {data.earningsYTD.household != null && <><br />Household (Jake + Ashley) {signed(data.earningsYTD.household)}</>}
+                  {data.earningsYTD.no_owner?.count > 0 && <><br /><a href="/ledgers">{data.earningsYTD.no_owner.count} entr{data.earningsYTD.no_owner.count === 1 ? 'y' : 'ies'} ({money(data.earningsYTD.no_owner.amount)}) with no owner</a></>}
+                </>
+              ) : 'Loading…'}
             </div>
           </div>
 

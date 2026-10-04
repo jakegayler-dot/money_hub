@@ -9,6 +9,7 @@ import { loadBalanceSheet, inventoryOwnerRow } from '../lib/balanceSheet.js';
 import { todayISO, addMonths, monthIndex } from '../lib/dates.js';
 import { billDates } from '../lib/billDates.js';
 import { farmIncomeTax } from '../lib/tax.js';
+import { EARNING_COLUMNS, lineValue, lineAmounts } from '../lib/earnings.js';
 
 const router = Router();
 const HORIZON = 12;
@@ -65,12 +66,11 @@ router.get('/', ah(async (req, res) => {
     // Earnings: every split piece under its own owner, card purchases
     // included, transfers excluded.
     pool.query(
-      `SELECT t.amount, t.split_id, t.is_capex, t.is_debt_service, t.segment, t.is_segment_split,
-              t.segment_grain_pct, t.segment_livestock_pct, t.segment_jake_pct, t.segment_ashley_pct,
-              lp.interest_amount
-       FROM transaction_lines t
-       LEFT JOIN loan_payments lp ON lp.linked_transaction_id = t.transaction_id
-       WHERE t.is_transfer = false AND t.date >= $1 AND t.date <= CURRENT_DATE`,
+      `SELECT ${EARNING_COLUMNS}
+       FROM transaction_lines l
+       JOIN transactions t ON t.id = l.transaction_id
+       LEFT JOIN loan_payments lp ON lp.linked_transaction_id = l.transaction_id
+       WHERE l.is_transfer = false AND l.date >= $1 AND l.date <= CURRENT_DATE`,
       [ytdStart]
     ),
     pool.query(
@@ -160,20 +160,20 @@ router.get('/', ah(async (req, res) => {
   const withEst = project(true);
   const committedOnly = project(false);
 
-  // ---- Earnings YTD ----
+  // ---- Earnings YTD (lib/earnings.js: the same figure as the Tax tab) ----
+  // Combined shows the farm's earnings, with the household's net beside it;
+  // Grain / Cattle their share; Jake / Ashley their net personal cash.
+  const view = entity === 'all' ? 'farm' : entity;
   let revenue = 0;
   let costs = 0;
+  let household = 0;
+  let noOwner = 0;
+  let noOwnerCount = 0;
   for (const t of ytdTx.rows) {
-    if (t.is_capex) continue;
-    const weight = w(t);
-    if (!weight) continue;
-    // Loan payments: interest is a cost, principal isn't (its piece is a
-    // transfer, filtered out above). Unsplit older payments: the schedule's interest.
-    const amount = t.is_debt_service
-      ? (t.split_id != null ? Number(t.amount) : (t.interest_amount != null ? -Number(t.interest_amount) : 0))
-      : Number(t.amount);
-    if (amount >= 0) revenue += amount * weight;
-    else costs += -amount * weight;
+    const v = lineValue(t, view);
+    if (v >= 0) revenue += v; else costs += -v;
+    if (entity === 'all') household += lineValue(t, 'household');
+    if (!t.is_capex && ownerWeights(t).unassigned > 0.005) { noOwner += Math.abs(lineAmounts(t).gross) * ownerWeights(t).unassigned; noOwnerCount++; }
   }
 
   // ---- Equity ----
@@ -202,7 +202,12 @@ router.get('/', ah(async (req, res) => {
       committed: shape(committedOnly),
       estimatedNet12: r2(estimated.reduce((s, x) => s + x, 0)),
     },
-    earningsYTD: { total: r2(revenue - costs), revenue: r2(revenue), costs: r2(costs), from: ytdStart },
+    earningsYTD: {
+      total: r2(revenue - costs), revenue: r2(revenue), costs: r2(costs), from: ytdStart,
+      kind: ['jake', 'ashley'].includes(entity) ? 'personal' : 'farm',
+      household: entity === 'all' ? r2(household) : null,
+      no_owner: entity === 'all' ? { count: noOwnerCount, amount: r2(noOwner) } : null,
+    },
     equity: {
       total: r2(cash + assetValue + inventoryValue - loanPrincipal - cardBalance),
       cash: r2(cash),

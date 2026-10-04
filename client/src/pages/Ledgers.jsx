@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { uploadBody } from './Receipts.jsx';
 
 const DOC_LABEL = { receipt: 'Receipt', invoice: 'Invoice', sales_ticket: 'Ticket', contract: 'Contract' };
@@ -86,6 +86,7 @@ export default function Ledgers() {
   });
   const [balance, setBalance] = useState(null);
   const [editing, setEditing] = useState(null); // the transaction being edited
+  const [adding, setAdding] = useState(false); // the new-entry form is open
   const [error, setError] = useState(null);
   // Attach a photo or PDF to one entry (an income stub, a ticket, an invoice).
   const fileRef = useRef(null);
@@ -197,7 +198,9 @@ export default function Ledgers() {
     setPieces(split
       ? t.splits.map((p) => ({ amount: String(Number(p.amount)), category_id: p.category_id ? String(p.category_id) : '', segment: p.segment || 'grain', memo: p.memo || '' }))
       : [newPiece(), newPiece()]);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    setAdding(false);
+    // Edited in place: bring its row into view (it may be far down, or opened from Review).
+    setTimeout(() => document.getElementById(`tx-${t.id}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 50);
   };
 
   const cancelEdit = () => { setEditing(null); setForm(emptyForm); setPieces([newPiece(), newPiece()]); setError(null); };
@@ -310,19 +313,7 @@ export default function Ledgers() {
     .filter((t) => !t.cleared)
     .reduce((s, t) => s + Math.abs(Number(t.amount)), 0);
 
-  return (
-    <>
-      <div className="page-header">
-        <h1 className="page-title">Ledgers</h1>
-        <select value={filter} onChange={(e) => setFilter(e.target.value)}>
-          <option value="all">All</option>
-          <option value="business">Business</option>
-          <option value="personal">Personal</option>
-        </select>
-      </div>
-
-      <div className="panel">
-        <div className="panel-header">{editing ? `Edit transaction — ${editing.description || `#${editing.id}`}` : 'Record transaction'}</div>
+  const formEl = (
         <form className="form-panel" onSubmit={submit}>
           {editing && lockedFor && (
             <p className="notice" style={{ margin: 0 }}>
@@ -544,7 +535,33 @@ export default function Ledgers() {
             {editing && <button type="button" className="secondary" onClick={cancelEdit}>Cancel</button>}
           </div>
         </form>
+  );
+  const cols = 6 + (balance ? 1 : 0);
+  const editInList = !!editing && visible.some((t) => t.id === editing.id);
+
+  return (
+    <>
+      <div className="page-header">
+        <h1 className="page-title">Ledgers</h1>
+        <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+        {!adding && <button type="button" className="small" onClick={() => { cancelEdit(); setAdding(true); }}>Record transaction</button>}
+        <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+          <option value="all">All</option>
+          <option value="business">Business</option>
+          <option value="personal">Personal</option>
+        </select>
+        </span>
       </div>
+
+      {(adding || (editing && !editInList)) && (
+        <div className="panel">
+          <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>{editing ? `Edit transaction — ${editing.description || `#${editing.id}`}` : 'Record transaction'}</span>
+            {!editing && <button type="button" className="small secondary" onClick={() => { setAdding(false); setForm(emptyForm); setError(null); }}>Close</button>}
+          </div>
+          {formEl}
+        </div>
+      )}
 
       <div className="panel">
         <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
@@ -631,7 +648,8 @@ export default function Ledgers() {
             </thead>
             <tbody>
               {visible.map((t) => (
-                <tr key={t.id} style={editing?.id === t.id ? { background: 'var(--gold-soft)' } : undefined}>
+                <Fragment key={t.id}>
+                <tr id={`tx-${t.id}`} style={editing?.id === t.id ? { background: 'var(--gold-soft)' } : undefined}>
                   <td>{t.date?.slice(0, 10)}</td>
                   <td>
                     {t.account_name || (t.card_name ? `${t.card_name} (card)` : '—')}
@@ -682,7 +700,7 @@ export default function Ledgers() {
                       <span className="tag" title="This month is closed on the Books tab" style={{ marginLeft: 0 }}>Closed month</span>
                     ) : (
                       <>
-                        <button className="small secondary" onClick={() => startEdit(t)}>Edit</button>{' '}
+                        <button className="small secondary" onClick={() => (editing?.id === t.id ? cancelEdit() : startEdit(t))}>{editing?.id === t.id ? 'Close' : 'Edit'}</button>{' '}
                         <button className="small secondary" title="Attach a photo or PDF (receipt, invoice, settlement ticket, cheque stub)"
                           disabled={attaching === t.id} onClick={() => { setAttachTo(t.id); fileRef.current?.click(); }}>
                           {attaching === t.id ? 'Attaching…' : 'Attach'}
@@ -692,6 +710,12 @@ export default function Ledgers() {
                     )}
                   </td>
                 </tr>
+                {editing?.id === t.id && (
+                  <tr className="ledger-edit-row">
+                    <td colSpan={cols}>{formEl}</td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>

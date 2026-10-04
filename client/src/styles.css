@@ -1097,3 +1097,7 @@ button.danger:hover { filter: brightness(1.08); }
 .vendor-statement .stmt-spot { color: var(--text-faint); }
 .stmt-toggle { margin-left: 8px; color: var(--text-faint); }
 .owner-rule-field { align-self: end; }
+
+/* Ledger: an entry edited in place, under its own row */
+tr.ledger-edit-row > td { background: var(--panel-alt); padding: 4px 0 12px; border-top: 0; }
+tr.ledger-edit-row .form-panel { border: 1px solid rgba(201, 162, 39, 0.35); border-radius: var(--radius-sm); margin: 0 12px; }
