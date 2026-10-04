@@ -14,7 +14,7 @@
 // Receipts page — matching works the same either way.
 import { pool } from '../db.js';
 import { toISODate } from './dates.js';
-import { payeeId, refreshContract, linkBillToTransaction, linkContractToTransaction, incomeCategoryFor, normalizeSplits, ownerOf, PostingError } from './postings.js';
+import { applyVendorOwnerToBill, payeeId, refreshContract, linkBillToTransaction, linkContractToTransaction, incomeCategoryFor, normalizeSplits, ownerOf, PostingError } from './postings.js';
 import { SEGMENT_COLUMNS } from './segments.js';
 import { closedMonth } from './periods.js';
 import { OWNERS } from './segments.js';
@@ -311,7 +311,10 @@ async function billFromInvoice(id, ex, client) {
        ex.category_id || null, ...SEGMENT_COLUMNS.map((c) => owner[c])]
     );
     billId = b.id;
-    if (ex.party) await client.query('UPDATE bills SET payee_id = $2 WHERE id = $1', [billId, await payeeId(client, ex.party)]);
+    if (ex.party) {
+      await client.query('UPDATE bills SET payee_id = $2 WHERE id = $1', [billId, await payeeId(client, ex.party)]);
+      await applyVendorOwnerToBill(client, billId); // the vendor's owner split, if it has one
+    }
     // Input financing printed on the invoice: interest-free date and rate.
     const rate = Number(ex.finance_rate_pct);
     if (ex.interest_free_until || (Number.isFinite(rate) && rate > 0)) {

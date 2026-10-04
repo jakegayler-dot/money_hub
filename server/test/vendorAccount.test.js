@@ -2,8 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { vendorStatement, billSummary, rawOwing, billDate } from '../lib/vendorAccount.js';
 
-const fakeDb = (bills, credits = []) => ({
-  query: async (sql) => ({ rows: sql.includes('FROM bills') ? bills : credits }),
+const fakeDb = (bills, credits = [], { payee = null, loose = [] } = {}) => ({
+  query: async (sql) => {
+    if (sql.includes('FROM payees')) return { rows: payee ? [payee] : [] };
+    if (sql.includes('FROM transactions t')) return { rows: loose };
+    return { rows: sql.includes('FROM bills') ? bills : credits };
+  },
 });
 const bill = (o) => ({
   id: 1, name: 'Inv', amount: 1000, status: 'unpaid', frequency: 'one_time', received_date: '2026-01-10', due_date: '2026-02-10',
@@ -44,4 +48,16 @@ test('future recurring bills are scheduled, not on the balance', async () => {
   const st = await vendorStatement(fakeDb([b]), 1, '2026-10-03');
   assert.equal(st.balance, 0);
   assert.equal(st.upcoming.length, 1);
+});
+
+test('entries with no bill: paid at purchase leaves the balance; on account pays it down; opening balance replaces earlier history', async () => {
+  const loose = [
+    { id: 70, date: '2026-02-01', amount: -500, description: 'Counter purchase', on_account: false },
+    { id: 71, date: '2026-03-01', amount: -1200, description: 'Paid on statement', on_account: true },
+    { id: 72, date: '2025-12-01', amount: -900, description: 'Before opening', on_account: true },
+  ];
+  const st = await vendorStatement(fakeDb([], [], { payee: { opening_balance: 3000, opening_date: '2026-01-01' }, loose }), 1, '2026-04-01');
+  assert.equal(st.balance, 1800);
+  assert.equal(st.lines.find((l) => l.key === 'spot:70').amount, 0);
+  assert.equal(st.lines.find((l) => l.key === 'acct:72').before_opening, true);
 });

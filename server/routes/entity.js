@@ -7,7 +7,7 @@ import { forecastEstimates } from '../lib/inventoryForecast.js';
 import { cardAmountsDue } from '../lib/cardLedger.js';
 import { loadBalanceSheet, inventoryOwnerRow } from '../lib/balanceSheet.js';
 import { todayISO, addMonths, monthIndex } from '../lib/dates.js';
-import { billDates } from '../lib/calculations.js';
+import { billDates } from '../lib/billDates.js';
 import { farmIncomeTax } from '../lib/tax.js';
 
 const router = Router();
@@ -80,7 +80,8 @@ router.get('/', ah(async (req, res) => {
       [endStr]
     ),
     pool.query(
-      `SELECT lp.due_date, lp.principal_amount + lp.interest_amount AS amount, l.segment
+      `SELECT lp.due_date, lp.principal_amount + lp.interest_amount AS amount, l.segment, l.is_segment_split,
+              l.segment_grain_pct, l.segment_livestock_pct, l.segment_jake_pct, l.segment_ashley_pct
        FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
        WHERE lp.paid = false AND lp.is_adjustment = false AND lp.due_date < $1`,
       [endStr]
@@ -117,7 +118,7 @@ router.get('/', ah(async (req, res) => {
   for (const b of bills.rows) {
     for (const d of billDates(b, today, endStr)) committed[idx(d)] -= Number(b.amount) * w(b);
   }
-  for (const p of loanPays.rows) committed[idx(p.due_date)] -= Number(p.amount) * w({ segment: p.segment });
+  for (const p of loanPays.rows) committed[idx(p.due_date)] -= Number(p.amount) * w(p);
   for (const s of cardStatements) committed[idx(s.due_date)] -= Number(s.amount) * w({ segment: s.segment });
   let feesPerMonth = 0;
   for (const a of accounts.rows) {
@@ -181,7 +182,7 @@ router.get('/', ah(async (req, res) => {
   let inventoryValue = 0;
   for (const it of sheet.inventoryRows) inventoryValue += it.counted_value * w(inventoryOwnerRow(it));
   let loanPrincipal = 0;
-  for (const l of sheet.loans) loanPrincipal += l.outstanding * w({ segment: l.segment });
+  for (const l of sheet.loans) loanPrincipal += l.outstanding * w(l);
   let cardBalance = 0;
   for (const c of sheet.creditCards) cardBalance += c.outstanding * w({ segment: c.segment });
 

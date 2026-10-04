@@ -14,10 +14,12 @@
 //      are held with the candidates listed.
 //   4. Otherwise post it as a plain transaction (with its split pieces).
 
+import { looksLikeCraGst } from './gstMatch.js';
 import { validateSegment } from './segments.js';
 import { toISODate } from './dates.js';
 import { closedMonth, monthLabel } from './periods.js';
 import {
+  applyVendorOwnerToTransaction,
   insertTransaction, ownerOf, ledgerForOwner, normalizeSplits, payBill, recordLoanPayment,
   settleContract, payCard, PostingError, payeeId, cleanGst,
 } from './postings.js';
@@ -101,6 +103,11 @@ export async function processLine(client, args) {
       await client.query('UPDATE transactions SET payee_id = COALESCE(payee_id, $1) WHERE id = $2',
         [await payeeId(client, party), out.transaction_id]);
     }
+  }
+  // A vendor with an owner rule (SaskPower: Grain 33 / Cattle 33 / Jake 34)
+  // splits every new line for it — named as the party or in the description.
+  if (out.status === 'posted' && out.transaction_id && !args.approved && (p.kind || 'standard') === 'standard') {
+    await applyVendorOwnerToTransaction(client, out.transaction_id, { matchDescription: true });
   }
   return out;
 }
@@ -205,6 +212,12 @@ async function processLineInner(client, { target, source, external_id, payload: 
     if (dups.length > 1) {
       return hold(`${dups.length} transactions for ${fmt(amount)} already on file near ${date} — which one is this, or is it new?`, dups.map(txCandidate));
     }
+  }
+
+  // GST/HST with CRA (a refund in, a remittance out) is a transfer: held so
+  // it's approved as one and linked to its quarter, never taxed as income.
+  if (!approved && !isCard && kind === 'standard' && looksLikeCraGst(`${p.description || ''} ${p.payee || ''}`)) {
+    return hold('Looks like GST/HST with CRA. Approve it as a transfer, then link it to its quarter on the Tax tab — posted as income or spending it would count for income tax.');
   }
 
   const where = isCard ? { credit_card_id: T.id } : { account_id: T.id };

@@ -878,14 +878,16 @@ export const LOAN_PRINCIPAL_MEMO = 'Loan principal — ';
 export async function splitLoanPayment(client, txId, paymentId) {
   const { rows: [tx] } = await client.query('SELECT * FROM transactions WHERE id = $1', [txId]);
   const { rows: [p] } = await client.query(
-    `SELECT lp.*, COALESCE(l.name, l.lender) AS loan_name FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id WHERE lp.id = $1`, [paymentId]);
+    `SELECT lp.*, COALESCE(l.name, l.lender) AS loan_name, l.segment AS loan_segment, l.is_segment_split AS loan_split,
+            l.segment_grain_pct, l.segment_livestock_pct, l.segment_jake_pct, l.segment_ashley_pct
+     FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id WHERE lp.id = $1`, [paymentId]);
   if (!tx || !p || tx.is_split || Number(tx.amount) >= 0) return false;
   if (await closedMonth(client, tx.date)) return false;
   const paid = -Number(tx.amount);
   const interest = Math.min(round2(Number(p.interest_amount) || 0), paid);
   const principal = round2(paid - interest);
   const interestCat = interest > 0 ? await expenseCategoryFor(client, 'Interest › Loan interest') : null;
-  const owner = ownerOf(tx);
+  const owner = loanOwner(p) || ownerOf(tx); // the loan's owner split decides, not the payment entry's tag
   const pieces = [];
   if (interest > 0.005) pieces.push({ amount: -interest, category_id: interestCat, memo: `${LOAN_INTEREST_MEMO}${p.loan_name}`, is_transfer: false });
   if (principal > 0.005) pieces.push({ amount: -principal, category_id: null, memo: `${LOAN_PRINCIPAL_MEMO}${p.loan_name}`, is_transfer: true });
@@ -898,6 +900,112 @@ export async function splitLoanPayment(client, txId, paymentId) {
   }
   await client.query('UPDATE transactions SET is_split = true, category_id = NULL WHERE id = $1', [tx.id]);
   return true;
+}
+
+// ---- Vendor owner rules -------------------------------------------------------
+
+const normName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+/** A vendor's owner split, or null when it has none. */
+export async function vendorOwner(client, payeeId) {
+  if (!payeeId) return null;
+  const { rows: [p] } = await client.query('SELECT * FROM payees WHERE id = $1', [payeeId]);
+  if (!p || !(p.segment || p.is_segment_split)) return null;
+  return ownerOf(p);
+}
+
+/** The vendor with an owner rule whose name appears in `text` (longest match), for bank lines that name it. */
+export async function ruledVendorIn(client, text) {
+  const t = normName(text);
+  if (!t) return null;
+  const { rows } = await client.query('SELECT id, name FROM payees WHERE segment IS NOT NULL OR is_segment_split');
+  const hits = rows.filter((r) => normName(r.name).length >= 4 && t.includes(normName(r.name)))
+    .sort((a, b) => normName(b.name).length - normName(a.name).length);
+  return hits[0]?.id || null;
+}
+
+/**
+ * Puts a transaction on its vendor's owner split: the entry itself, or —
+ * if it's split by category — each piece that isn't a transfer. Transfers
+ * and closed months are left alone. With `matchDescription`, an entry with
+ * no vendor takes the ruled vendor its description names (a statement line
+ * like "SASKPOWER PREAUTH"). Returns true if it changed anything.
+ */
+export async function applyVendorOwnerToTransaction(client, txId, { matchDescription = false } = {}) {
+  const { rows: [tx] } = await client.query('SELECT * FROM transactions WHERE id = $1', [txId]);
+  if (!tx || tx.is_transfer) return false;
+  let payee = tx.payee_id;
+  if (!payee && matchDescription) {
+    payee = await ruledVendorIn(client, tx.description);
+    if (payee) await client.query('UPDATE transactions SET payee_id = $2 WHERE id = $1', [tx.id, payee]);
+  }
+  const owner = await vendorOwner(client, payee);
+  if (!owner || await closedMonth(client, tx.date)) return false;
+  const ledger = ledgerForOwner(owner, tx.ledger || 'business');
+  const cols = SEGMENT_COLUMNS.map((c, i) => `${c} = $${i + 2}`).join(', ');
+  const vals = SEGMENT_COLUMNS.map((c) => owner[c]);
+  await client.query(`UPDATE transactions SET ${cols}, ledger = $${vals.length + 2} WHERE id = $1`, [tx.id, ...vals, ledger]);
+  if (tx.is_split) {
+    await client.query(`UPDATE transaction_splits SET ${cols}, ledger = $${vals.length + 2} WHERE transaction_id = $1 AND NOT is_transfer`, [tx.id, ...vals, ledger]);
+  }
+  return true;
+}
+
+/** Puts a bill on its vendor's owner split. */
+export async function applyVendorOwnerToBill(client, billId) {
+  const { rows: [b] } = await client.query('SELECT id, payee_id, ledger FROM bills WHERE id = $1', [billId]);
+  const owner = b && await vendorOwner(client, b.payee_id);
+  if (!owner) return false;
+  await client.query(
+    `UPDATE bills SET ${SEGMENT_COLUMNS.map((c, i) => `${c} = $${i + 2}`).join(', ')}, ledger = $${SEGMENT_COLUMNS.length + 2} WHERE id = $1`,
+    [b.id, ...SEGMENT_COLUMNS.map((c) => owner[c]), ledgerForOwner(owner, b.ledger || 'business')]);
+  return true;
+}
+
+/** A loan's owner split as segment columns, or null when the loan has no owner set. */
+function loanOwner(row) {
+  const split = !!(row.loan_split ?? row.is_segment_split);
+  const seg = row.loan_segment !== undefined ? row.loan_segment : row.segment;
+  if (!split && !seg) return null;
+  return ownerOf({ ...row, segment: seg, is_segment_split: split });
+}
+
+/**
+ * Re-tags the interest and principal pieces of recorded loan payments with
+ * their loan's owner split (after a loan's owner changes, and once at
+ * startup for payments split before loans carried a split). Closed months
+ * are left as filed.
+ */
+export async function syncLoanPieceOwners(client, loanId = null) {
+  const { rows } = await client.query(
+    `SELECT s.id, t.date, l.segment AS loan_segment, l.is_segment_split AS loan_split,
+            l.segment_grain_pct, l.segment_livestock_pct, l.segment_jake_pct, l.segment_ashley_pct,
+            s.segment, s.is_segment_split, s.segment_grain_pct AS s_g, s.segment_livestock_pct AS s_l,
+            s.segment_jake_pct AS s_j, s.segment_ashley_pct AS s_a
+     FROM transaction_splits s
+     JOIN transactions t ON t.id = s.transaction_id
+     JOIN loan_payments lp ON lp.linked_transaction_id = t.id
+     JOIN loans l ON l.id = lp.loan_id
+     WHERE (s.memo LIKE $1 OR s.memo LIKE $2) AND (l.segment IS NOT NULL OR l.is_segment_split)
+       AND ($3::int IS NULL OR l.id = $3)`,
+    [`${LOAN_INTEREST_MEMO}%`, `${LOAN_PRINCIPAL_MEMO}%`, loanId]);
+  let n = 0;
+  const closed = new Map();
+  for (const r of rows) {
+    const o = loanOwner(r);
+    const same = (o.segment || null) === (r.segment || null) && !!o.is_segment_split === !!r.is_segment_split
+      && [['segment_grain_pct', 's_g'], ['segment_livestock_pct', 's_l'], ['segment_jake_pct', 's_j'], ['segment_ashley_pct', 's_a']]
+        .every(([k, c]) => Number(o[k] ?? -1) === Number(r[c] ?? -1));
+    if (same) continue;
+    const key = toISODate(r.date).slice(0, 7);
+    if (!closed.has(key)) closed.set(key, !!(await closedMonth(client, r.date)));
+    if (closed.get(key)) continue;
+    await client.query(
+      `UPDATE transaction_splits SET ${SEGMENT_COLUMNS.map((c, i) => `${c} = $${i + 2}`).join(', ')} WHERE id = $1`,
+      [r.id, ...SEGMENT_COLUMNS.map((c) => o[c])]);
+    n++;
+  }
+  return n;
 }
 
 /** Takes the interest/principal pieces back off (the entry stops being a loan payment). */

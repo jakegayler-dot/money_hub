@@ -1,21 +1,21 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { money } from '../format.js';
 import { cents } from './SplitEditor.jsx';
 
 // ---------------------------------------------------------------------------
-// Cash flow terminal: the 12-month forecast as an instrument.
+// Cash flow terminal: the forecast as an instrument.
 //
 //   ticker strip   — the numbers that matter, with the what-if delta beside each
 //   balance chart  — with estimates (amber), committed only (blue, dashed),
-//                    what-if (aqua) when a scenario is on; floor reference;
+//                    what-if (aqua) when one is shown, the farm + personal
+//                    reserve (dotted) on the Farm view; floor reference;
 //                    price-tag flags on the right edge follow the crosshair
 //   flow strip     — money in (up) and out (down) per month, same months,
 //                    its own scale (never a second axis on the balance chart)
-//   scenario desk  — what-ifs that re-run the forecast live
 //   month ledger   — click any month: every flow behind it
 //
-// All what-if math runs here, from the server's itemized months, so moving a
-// slider is instant and nothing is saved.
+// What-ifs are built in their own window (WhatIf.jsx) and run on the server;
+// this draws the result it hands back.
 // ---------------------------------------------------------------------------
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -29,49 +29,11 @@ const kfmt = (v) => {
 const signed = (v) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${money(Math.abs(Math.round(v)))}`;
 
 const KIND_LABEL = {
-  contract: 'Contract', estimate_in: 'Estimated sale', bill: 'Bill', loan: 'Loan payment',
-  card: 'Card statement', fee: 'Account fees', tax: 'Income tax', estimate_out: 'Estimated cost', purchase: 'What-if purchase',
+  contract: 'Contract', estimate_in: 'Estimated sale', inventory: 'Inventory sale', bill: 'Bill', loan: 'Loan payment',
+  card: 'Card statement', fee: 'Account fees', tax: 'Income tax', gst: 'GST', estimate_out: 'Estimated cost',
+  whatif: 'What-if', opline: 'Operating line',
 };
-const KIND_LINK = { contract: '/contracts', bill: '/bills', loan: '/loans', card: '/credit-cards' };
-
-const NO_SCENARIO = { price: 0, costs: 0, delay: 0, buyAmount: 0, buyMonth: 3 };
-const PRESETS = [
-  { label: 'Prices slump 20%', s: { price: -20 } },
-  { label: 'Harvest money 2 months late', s: { delay: 2 } },
-  { label: 'Costs up 15%', s: { costs: 15 } },
-  { label: 'Buy a $250k machine in 3 months', s: { buyAmount: 250000, buyMonth: 3 } },
-];
-
-/** Re-runs the forecast under a scenario, item by item. */
-function runScenario(liquidity, sc) {
-  const n = liquidity.trajectory.length;
-  const months = liquidity.trajectory.map(() => ({ items: [] }));
-  const isCost = (k) => k === 'bill' || k === 'estimate_out';
-  liquidity.trajectory.forEach((t, i) => {
-    for (const it of t.items || []) {
-      let amount = it.amount;
-      let at = i;
-      if (it.kind === 'estimate_in') amount *= 1 + sc.price / 100;
-      if (isCost(it.kind)) amount *= 1 + sc.costs / 100;
-      if (it.kind === 'contract') at = i + sc.delay; // later than the window: it falls out
-      if (at < n) months[at].items.push({ ...it, amount, shifted: at !== i });
-    }
-  });
-  if (sc.buyAmount > 0 && sc.buyMonth >= 0 && sc.buyMonth < n) {
-    months[sc.buyMonth].items.push({ kind: 'purchase', label: 'One-off purchase', amount: -sc.buyAmount });
-  }
-  let bal = liquidity.startingBalance;
-  let com = liquidity.startingBalance;
-  return months.map((m, i) => {
-    const inflow = m.items.filter((x) => x.amount > 0).reduce((s, x) => s + x.amount, 0);
-    const outflow = m.items.filter((x) => x.amount < 0).reduce((s, x) => s + x.amount, 0);
-    const committedNet = m.items.filter((x) => !x.estimate).reduce((s, x) => s + x.amount, 0);
-    const open = bal;
-    bal += inflow + outflow;
-    com += committedNet;
-    return { ...liquidity.trajectory[i], open, balance: bal, committedBalance: com, inflow, outflow, items: m.items };
-  });
-}
+const KIND_LINK = { contract: '/contracts', bill: '/bills', loan: '/loans', card: '/credit-cards', gst: '/tax', tax: '/tax' };
 
 /** Eases displayed numbers toward their targets so lines glide when a scenario changes. */
 function useGlide(targets, ms = 520) {
@@ -97,15 +59,16 @@ function useGlide(targets, ms = 520) {
   return shown;
 }
 
-export default function CashFlowTerminal({ liquidity }) {
-  const [sc, setSc] = useState(NO_SCENARIO);
+export default function CashFlowTerminal({ liquidity, scenario = null, scenarioName = '', onOpenWhatIf, onClearScenario }) {
   const [hover, setHover] = useState(null);
   const [picked, setPicked] = useState(null);
-  const active = sc.price !== 0 || sc.costs !== 0 || sc.delay !== 0 || sc.buyAmount > 0;
-
-  const base = useMemo(() => runScenario(liquidity, NO_SCENARIO), [liquidity]);
-  const what = useMemo(() => runScenario(liquidity, sc), [liquidity, sc]);
+  const base = liquidity.trajectory;
   const n = base.length;
+  const sm = scenario?.scenario?.trajectory?.months;
+  const active = !!(sm && sm.length === n);
+  const what = active ? sm : base;
+  const reserve = liquidity.reserve;
+  useEffect(() => { setPicked(null); setHover(null); }, [n]);
 
   const glideWhat = useGlide(what.map((m) => m.balance));
   const glideFlows = useGlide(what.flatMap((m) => [m.inflow, m.outflow]));
@@ -140,7 +103,8 @@ export default function CashFlowTerminal({ liquidity }) {
   const pad = { top: 24, right: narrow ? 14 : 104, bottom: 8, left: narrow ? 46 : 70 };
   const iw = W - pad.left - pad.right;
   const ih = H - pad.top - pad.bottom;
-  const vals = [...base.map((m) => m.balance), ...base.map((m) => m.committedBalance), ...(active ? glideWhat : []), floor, 0, liquidity.startingBalance];
+  const vals = [...base.map((m) => m.balance), ...base.map((m) => m.committedBalance), ...(active ? glideWhat : []),
+    ...(reserve ? [reserve.startingBalance, ...reserve.balances] : []), floor, 0, liquidity.startingBalance];
   const rough = (Math.max(...vals) - Math.min(...vals) || 1) / 5;
   const mag = Math.pow(10, Math.floor(Math.log10(rough)));
   const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= rough);
@@ -154,6 +118,7 @@ export default function CashFlowTerminal({ liquidity }) {
   const estPts = [start, ...base.map((m) => m.balance)];
   const comPts = [start, ...base.map((m) => m.committedBalance)];
   const whatPts = [start, ...glideWhat];
+  const resPts = reserve ? [reserve.startingBalance, ...reserve.balances] : null;
   const area = `${path(estPts)} L${x(n)},${y(yMin)} L${x(0)},${y(yMin)} Z`;
   const grid = [];
   for (let v = yMin; v <= yMax + step / 2; v += step) grid.push(v);
@@ -195,7 +160,6 @@ export default function CashFlowTerminal({ liquidity }) {
     if (e.key === 'Escape') setPicked(null);
   };
 
-  const set = (patch) => setSc((s) => ({ ...s, ...patch }));
 
   return (
     <div className="cft">
@@ -216,17 +180,25 @@ export default function CashFlowTerminal({ liquidity }) {
         })}
       </div>
 
-      <div className="cft-body">
+      {active && (
+        <div className="cft-whatif-bar" role="status">
+          <span><i className="sw what" /> What-if on the chart: <strong>{scenarioName || 'What-if'}</strong></span>
+          <button type="button" className="small-link" onClick={onOpenWhatIf}>Edit</button>
+          <button type="button" className="small-link" onClick={onClearScenario}>Take it off</button>
+        </div>
+      )}
+      <div className="cft-body solo">
         <div className="cft-charts">
           <div className="cft-legend" aria-hidden="true">
             <span><i className="sw est" />With estimates</span>
             <span><i className="sw com" />Committed only</span>
             {active && <span><i className="sw what" />What-if</span>}
+            {resPts && <span><i className="sw res" />Farm + personal reserve</span>}
             <span><i className="sw floor" />Required floor {kfmt(floor)}</span>
           </div>
           <div ref={boxRef}>
           <svg ref={svgRef} viewBox={`0 0 ${W} ${H + FH}`} width={W} height={H + FH} className="cft-svg" role="img" tabIndex={0}
-            aria-label="Projected cash for the next 12 months with money in and out per month. Use left and right arrows to step through months."
+            aria-label={`Projected cash for the next ${n} months with money in and out per month. Use left and right arrows to step through months.`}
             onPointerMove={onMove} onPointerLeave={() => setHover(null)} onClick={() => at != null && setPicked(at === picked ? null : at)}
             onKeyDown={keyNav}>
             <defs>
@@ -254,6 +226,7 @@ export default function CashFlowTerminal({ liquidity }) {
             )}
 
             <path d={area} fill="url(#cftArea)" className="cft-fade" />
+            {resPts && <path d={path(resPts)} className="cft-line res cft-fade" />}
             <path d={path(comPts)} className="cft-line com cft-fade" />
             <path d={path(estPts)} className="cft-line est cft-draw" pathLength="1" filter="url(#cftGlow)" />
             {active && <path d={path(whatPts)} className="cft-line what" filter="url(#cftGlow)" />}
@@ -298,7 +271,7 @@ export default function CashFlowTerminal({ liquidity }) {
                   <g key={i} className={sel ? 'cft-bar sel' : 'cft-bar'}>
                     <rect x={mx(i) - bw / 2} y={fy0 - inn * fyk} width={bw} height={Math.max(0, inn * fyk - 1)} rx="2" className="in" />
                     <rect x={mx(i) - bw / 2} y={fy0 + 1} width={bw} height={Math.max(0, out * fyk - 1)} rx="2" className="out" />
-                    {(!narrow || i % 2 === 0 || i === at) && (
+                    {(i % (n > 18 ? (narrow ? 4 : 2) : n > 12 ? (narrow ? 3 : 2) : narrow ? 2 : 1) === 0 || i === at) && (
                       <text x={mx(i)} y={FH - 4} textAnchor="middle" className={`cft-axis${i === at ? ' on' : ''}`}>{short(m, i)}</text>
                     )}
                   </g>
@@ -314,6 +287,7 @@ export default function CashFlowTerminal({ liquidity }) {
               <span>Month-end, with estimates <b>{money(Math.round(estPts[at + 1]))}</b></span>
               <span>Committed <b>{money(Math.round(comPts[at + 1]))}</b></span>
               {active && <span>What-if <b>{money(Math.round(what[at].balance))}</b></span>}
+              {resPts && <span>With personal reserve <b>{money(Math.round(resPts[at + 1]))}</b></span>}
               <span>In <b className="pos">{signed(what[at].inflow)}</b></span>
               <span>Out <b className="neg">{signed(what[at].outflow)}</b></span>
               {picked == null && <em>Click to open the month</em>}
@@ -321,51 +295,9 @@ export default function CashFlowTerminal({ liquidity }) {
           )}
         </div>
 
-        <aside className="cft-desk" aria-label="What-if scenario">
-          <div className="cft-desk-head">
-            <span>What if…</span>
-            {active && <button type="button" className="small-link" onClick={() => setSc(NO_SCENARIO)}>Reset</button>}
-          </div>
-          <div className="cft-presets">
-            {PRESETS.map((p) => (
-              <button key={p.label} type="button" className="cft-chip" onClick={() => setSc({ ...NO_SCENARIO, ...p.s })}>{p.label}</button>
-            ))}
-          </div>
-          <Slider label="Prices on uncontracted sales" value={sc.price} min={-40} max={40} unit="%" onChange={(v) => set({ price: v })}
-            hint="Applies to estimated sales (grain in the bin, unpriced calves). Contracts are fixed." />
-          <Slider label="Costs: bills and estimated spending" value={sc.costs} min={-25} max={50} unit="%" onChange={(v) => set({ costs: v })} />
-          <Slider label="Contract payments arrive late" value={sc.delay} min={0} max={4} unit=" mo" onChange={(v) => set({ delay: v })}
-            hint="Payments pushed past the window drop out." />
-          <div className="cft-field">
-            <label htmlFor="cft-buy">One-off purchase</label>
-            <div className="cft-buy">
-              <input id="cft-buy" type="number" min="0" step="1000" placeholder="0" value={sc.buyAmount || ''}
-                onChange={(e) => set({ buyAmount: Math.max(0, Number(e.target.value) || 0) })} />
-              <select aria-label="Purchase month" value={sc.buyMonth} onChange={(e) => set({ buyMonth: Number(e.target.value) })}>
-                {base.map((m, i) => <option key={i} value={i}>{full(m)}</option>)}
-              </select>
-            </div>
-          </div>
-          <p className="cft-desk-note">
-            {active
-              ? `Low point ${money(Math.round(what[whatLow].balance))} in ${full(what[whatLow])} — ${what[whatLow].balance >= floor ? 'still above' : 'below'} the floor. Nothing here is saved.`
-              : 'Move a lever to see the aqua line re-run the forecast. Nothing here is saved.'}
-          </p>
-        </aside>
       </div>
 
       {picked != null && <MonthLedger m={what[picked]} b={base[picked]} active={active} onClose={() => setPicked(null)} />}
-    </div>
-  );
-}
-
-function Slider({ label, value, min, max, unit, onChange, hint }) {
-  const id = `cft-${label.replace(/\W+/g, '-')}`;
-  return (
-    <div className="cft-field">
-      <label htmlFor={id}>{label} <b className={value > 0 ? 'up' : value < 0 ? 'down' : ''}>{value > 0 ? '+' : ''}{value}{unit}</b></label>
-      <input id={id} type="range" min={min} max={max} step="1" value={value} onChange={(e) => onChange(Number(e.target.value))} />
-      {hint && <span className="cft-hint">{hint}</span>}
     </div>
   );
 }
@@ -382,7 +314,9 @@ function MonthLedger({ m, b, active, onClose }) {
           {KIND_LABEL[it.kind] !== it.label ? KIND_LABEL[it.kind] : ''}{it.date ? `${KIND_LABEL[it.kind] !== it.label ? ' · ' : ''}${it.date}` : ''}
           {it.estimate && <span className="tag">Estimate</span>}
           {it.overdue && <span className="tag">Overdue — counted now</span>}
-          {it.shifted && <span className="tag">Moved by what-if</span>}
+          {it.whatif && <span className="tag">What-if</span>}
+          {it.moved && !it.whatif && <span className="tag">Moved by what-if</span>}
+          {it.changed && !it.whatif && !it.moved && <span className="tag">Changed by what-if</span>}
           {it.kind === 'loan' && it.interest > 0 && <span className="tag">incl. {cents(it.interest)} interest</span>}
         </div>
       </td>

@@ -3,6 +3,7 @@ import { money } from '../format.js';
 import { cents } from './SplitEditor.jsx';
 import CategorySelect from './CategorySelect.jsx';
 import MetricCard from './MetricCard.jsx';
+import { OwnerFields, ownerPayload, ownerSummary, ownerFieldsFrom, emptyOwnerFields } from '../owners.jsx';
 
 const today = () => new Date().toISOString().slice(0, 10);
 const KIND = { prepayment: 'Prepayment (applied to bills)', refundable: 'Refundable deposit' };
@@ -18,11 +19,7 @@ const CREDIT_STATUS = { open: 'Held', used: 'All applied', refunded: 'Refunded',
 export default function VendorBills({ accounts, categories, onChanged }) {
   const [vendors, setVendors] = useState(null); // vendors with open bills or deposits
   const [all, setAll] = useState(null); // summary + every vendor on file
-  const [picked, setPicked] = useState(() => {
-    const q = new URLSearchParams(window.location.search).get('vendor');
-    if (q) return Number(q);
-    try { return Number(window.localStorage.getItem('moneyhub.vendor')) || null; } catch { return null; }
-  });
+  const [picked, setPicked] = useState(null); // always opens on the vendor list
   const [query, setQuery] = useState('');
   const [error, setError] = useState(null);
   const [tick, setTick] = useState(0); // bumps the open account to reload
@@ -32,7 +29,6 @@ export default function VendorBills({ accounts, categories, onChanged }) {
     fetch('/api/bills/summary').then((r) => r.json()).then((d) => setAll(d && d.summary ? d : { summary: null, vendors: [] })),
   ]);
   useEffect(() => { load(); }, []);
-  useEffect(() => { try { window.localStorage.setItem('moneyhub.vendor', picked ? String(picked) : ''); } catch { /* private mode */ } }, [picked]);
 
   const call = async (method, url, body, what) => {
     setError(null);
@@ -48,16 +44,20 @@ export default function VendorBills({ accounts, categories, onChanged }) {
     return true;
   };
 
-  if (!vendors || !all) return <div className="empty-state">Loading…</div>;
+  if (!vendors || !all) return <div className="empty-state vendor-loading">Loading vendors…</div>;
   const known = all.vendors || [];
   const pickedVendor = picked ? known.find((v) => v.payee_id === picked) : null;
-  if (picked && !pickedVendor && known.length) setTimeout(() => setPicked(null), 0);
   const q = query.trim().toLowerCase();
   const openById = new Map(vendors.map((v) => [v.payee_id ?? 0, v]));
   const rows = q
     ? known.filter((v) => v.name.toLowerCase().includes(q)).map((v) => openById.get(v.payee_id) || { ...v, bills: [], credits: [], owing: 0, held: 0, net: 0, oldest_due: null })
     : vendors;
-  const pick = (id) => { setPicked(id); setQuery(''); };
+  const pick = (id) => {
+    setPicked(id);
+    setQuery('');
+    // Opening a vendor from far down the list: bring its account into view.
+    setTimeout(() => document.querySelector('.vendor-find')?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 0);
+  };
 
   return (
     <>
@@ -91,7 +91,9 @@ export default function VendorBills({ accounts, categories, onChanged }) {
 
       {picked && pickedVendor ? (
         <VendorAccount key={picked} payeeId={picked} reload={tick} open={openById.get(picked)} name={pickedVendor.name}
-          accounts={accounts} categories={categories} call={call} />
+          accounts={accounts} categories={categories} call={call}
+          others={known.filter((v) => v.payee_id !== picked)}
+          onDeleted={() => { pick(null); load(); onChanged?.(); }} />
       ) : (
         <>
           {all.summary && <BillSummaryCards s={all.summary} />}
@@ -156,10 +158,116 @@ function BillSummaryCards({ s, account }) {
   );
 }
 
-const KIND_LABEL = { bill: 'Bill', adjust: 'Adjustment', interest: 'Interest', deposit: 'Deposit', payment: 'Payment', diff: 'Difference', marked: 'Paid', refund: 'Refund', kept: 'Kept' };
+const KIND_LABEL = { opening: 'Opening', spot: 'Paid at purchase', onaccount: 'On account', bill: 'Bill', adjust: 'Adjustment', interest: 'Interest', deposit: 'Deposit', payment: 'Payment', diff: 'Difference', marked: 'Paid', refund: 'Refund', kept: 'Kept' };
+
+/**
+ * The vendor's standing settings: an owner split every new bill and entry
+ * takes, and the account's opening balance.
+ */
+function AccountSettings({ payeeId, st, onSaved }) {
+  const [edit, setEdit] = useState(null); // 'owner' | 'opening'
+  const [owner, setOwner] = useState(emptyOwnerFields);
+  const [applyExisting, setApplyExisting] = useState(true);
+  const [usage, setUsage] = useState(null);
+  const [opening, setOpening] = useState({ amount: '', date: '' });
+  const [err, setErr] = useState(null);
+  const [note, setNote] = useState(null);
+  const rule = st.owner_rule;
+
+  const startOwner = () => {
+    setErr(null); setNote(null);
+    setOwner(rule ? ownerFieldsFrom(rule) : emptyOwnerFields);
+    setEdit('owner');
+    fetch(`/api/payees/${payeeId}/usage`).then((r) => r.json()).then(setUsage).catch(() => {});
+  };
+  const saveOwner = async (clear) => {
+    setErr(null);
+    const r = await fetch(`/api/payees/${payeeId}/owner`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(clear ? { clear: true } : { ...ownerPayload(owner), apply_existing: applyExisting }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { setErr(d.error || `HTTP ${r.status}`); return; }
+    setEdit(null);
+    setNote(clear ? 'Owner split removed.' : applyExisting && (d.bills || d.entries) ? `Re-split ${d.bills} bill${d.bills === 1 ? '' : 's'} and ${d.entries} entr${d.entries === 1 ? 'y' : 'ies'}.` : 'Saved.');
+    window.dispatchEvent(new Event('payees-changed'));
+    onSaved(null);
+  };
+  const startOpening = () => {
+    setErr(null); setNote(null);
+    setOpening(st.opening ? { amount: String(st.opening.amount), date: st.opening.date } : { amount: '', date: `${new Date().getFullYear()}-01-01` });
+    setEdit('opening');
+  };
+  const saveOpening = async (clear) => {
+    setErr(null);
+    const r = await fetch(`/api/bills/vendors/${payeeId}/opening`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(clear ? { clear: true } : { amount: Number(opening.amount), date: opening.date }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { setErr(d.error || `HTTP ${r.status}`); return; }
+    setEdit(null);
+    onSaved(d);
+  };
+
+  return (
+    <div className="vendor-settings">
+      <div className="vendor-setting-line">
+        <span>
+          <b>Owner split</b>{' '}
+          {rule ? <>{ownerSummary(rule)} <em>— every new bill and entry for {st.name}</em></> : <em>none — each bill and entry keeps its own owner</em>}
+        </span>
+        <button type="button" className="small-link" onClick={edit === 'owner' ? () => setEdit(null) : startOwner}>{rule ? 'Change' : 'Set a split'}</button>
+      </div>
+      <div className="vendor-setting-line">
+        <span>
+          <b>Opening balance</b>{' '}
+          {st.opening
+            ? <>{cents(Math.abs(st.opening.amount))} {st.opening.amount >= 0 ? 'owed to them' : 'credit with them'} <em>on {nice(st.opening.date)}</em></>
+            : <em>none — the account starts from its first bill or entry</em>}
+        </span>
+        <button type="button" className="small-link" onClick={edit === 'opening' ? () => setEdit(null) : startOpening}>{st.opening ? 'Change' : 'Set one'}</button>
+      </div>
+      {note && <span className="split-lines vendor-setting-note">{note}</span>}
+
+      {edit === 'owner' && (
+        <div className="vendor-setting-edit">
+          <div className="form-panel vendor-owner-form"><OwnerFields state={owner} setState={setOwner} label="Every bill and entry belongs to" /></div>
+          <label className="split-lines">
+            <input type="checkbox" checked={applyExisting} onChange={(e) => setApplyExisting(e.target.checked)} />
+            {' '}Also re-split what’s already on file{usage ? ` — ${usage.unpaid_bills + usage.paid_bills} bill${usage.unpaid_bills + usage.paid_bills === 1 ? '' : 's'} and ${usage.open_entries} entr${usage.open_entries === 1 ? 'y' : 'ies'}` : ''} (closed months stay as they are)
+          </label>
+          <p className="split-lines" style={{ margin: 0 }}>Statement lines and invoices the agents bring in always take this split; when you enter one by hand it starts from it and you can change it.</p>
+          {err && <p className="review-error" style={{ margin: 0 }}>{err}</p>}
+          <div className="vendor-delete-actions">
+            <button type="button" className="small" onClick={() => saveOwner(false)}>Save split</button>
+            {rule && <button type="button" className="small secondary" onClick={() => saveOwner(true)}>Remove split</button>}
+            <button type="button" className="small-link" onClick={() => setEdit(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {edit === 'opening' && (
+        <div className="vendor-setting-edit">
+          <div className="vendor-opening-form">
+            <label className="split-lines">Balance <input type="number" step="0.01" placeholder="0.00" value={opening.amount} onChange={(e) => setOpening({ ...opening, amount: e.target.value })} /></label>
+            <label className="split-lines">As of <input type="date" value={opening.date} onChange={(e) => setOpening({ ...opening, date: e.target.value })} /></label>
+          </div>
+          <p className="split-lines" style={{ margin: 0 }}>What you owed them on that date (negative if they held a credit for you). Bills and entries before it are shown but not counted — the opening balance already includes them.</p>
+          {err && <p className="review-error" style={{ margin: 0 }}>{err}</p>}
+          <div className="vendor-delete-actions">
+            <button type="button" className="small" disabled={opening.amount === '' || !opening.date} onClick={() => saveOpening(false)}>Save opening balance</button>
+            {st.opening && <button type="button" className="small secondary" onClick={() => saveOpening(true)}>Remove it</button>}
+            <button type="button" className="small-link" onClick={() => setEdit(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /** One vendor's account: figures, pay/deposit actions, the running-balance statement, and reconciling it. */
-function VendorAccount({ payeeId, reload, open, name, accounts, categories, call }) {
+function VendorAccount({ payeeId, reload, open, name, accounts, categories, call, others = [], onDeleted }) {
+  const [removing, setRemoving] = useState(false);
   const [st, setSt] = useState(null);
   const [range, setRange] = useState('year');
   const [form, setForm] = useState(null); // { statement_date, statement_balance } while starting one
@@ -180,7 +288,7 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
     return true;
   };
 
-  if (!st) return <div className="empty-state">Loading…</div>;
+  if (!st) return <div className="empty-state vendor-loading">Loading {name}…</div>;
   if (st.error) return <div className="empty-state">{st.error}</div>;
   const rec = st.reconciliation;
   const recOn = !!rec.open;
@@ -189,7 +297,16 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
   // While reconciling, show everything not yet reconciled even if older.
   const shown = st.lines.filter((l) => !from || l.date >= from || (recOn && !(l.cleared && l.cleared.done)));
   const hiddenBefore = earlier.filter((l) => !shown.includes(l));
-  const forward = hiddenBefore.length ? hiddenBefore[hiddenBefore.length - 1].balance : null;
+  const counted = hiddenBefore.filter((l) => l.balance != null);
+  const forward = counted.length ? counted[counted.length - 1].balance : null;
+  const setOnAccount = async (txId, on) => {
+    setErr(null);
+    const r = await fetch(`/api/bills/vendors/${payeeId}/on-account`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transaction_id: txId, on }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) setErr(d.error || `HTTP ${r.status}`); else setSt(d);
+  };
   const v = open || { payee_id: payeeId, name, bills: [], credits: [], owing: 0, held: 0, net: 0 };
 
   return (
@@ -199,6 +316,7 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
         <span className="split-lines">Positive balance is what you owe; negative is money they hold for you.</span>
       </div>
       <BillSummaryCards s={st.summary} account={{ balance: st.balance, last: rec.last }} />
+      <AccountSettings payeeId={payeeId} st={st} onSaved={(d) => (d ? setSt(d) : load())} />
 
       <div className="vendor-toolbar">
         <span className="seg-toggle" role="group" aria-label="Period">
@@ -218,8 +336,10 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
             <button type="button" className="small-link" onClick={() => window.confirm('Undo the last reconciliation? Its lines go back to unticked.') && post('POST', '/undo')}>Undo</button>
           </span>
         )}
+        <button type="button" className="small-link vendor-delete-link" aria-expanded={removing} onClick={() => setRemoving(!removing)}>Delete vendor…</button>
       </div>
 
+      {removing && <DeleteVendor payeeId={payeeId} name={st.name} others={others} onCancel={() => setRemoving(false)} onDeleted={onDeleted} />}
       {showActions && <VendorDetail v={v} accounts={accounts} categories={categories} call={call} />}
 
       {form && !recOn && (
@@ -260,19 +380,16 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
           <thead>
             <tr>
               <th className="recon-col" aria-label="On the vendor's statement">✓</th>
-              <th>Date</th><th>Item</th><th className="num">Charges</th><th className="num">Payments &amp; credits</th><th className="num">Balance</th>
+              <th>Date</th><th>Item</th><th className="num">GST</th><th className="num">Charges</th><th className="num">Payments &amp; credits</th><th className="num">Balance</th>
             </tr>
           </thead>
           <tbody>
-            {forward != null && (
-              <tr className="entries-group"><td /><td className="nowrap">{nice(from)}</td><td>Balance forward</td><td /><td /><td className="num nowrap">{cents(forward)}</td></tr>
-            )}
-            {shown.length === 0 && <tr><td colSpan={6} className="split-lines">Nothing on the account{from ? ' in the last 12 months' : ''}.</td></tr>}
-            {shown.map((l) => {
+            {shown.length === 0 && <tr><td colSpan={7} className="split-lines">Nothing on the account{from ? ' in the last 12 months' : ''}.</td></tr>}
+            {[...shown].reverse().map((l) => {
               const done = l.cleared?.done;
-              const tickable = recOn && !done && l.date <= rec.open.statement_date;
+              const tickable = recOn && !done && !l.before_opening && l.date <= rec.open.statement_date;
               return (
-                <tr key={l.key} className={`stmt-${l.kind}${l.cleared && !done ? ' ticked' : ''}`}>
+                <tr key={l.key} className={`stmt-${l.kind}${l.cleared && !done ? ' ticked' : ''}${l.before_opening ? ' before-open' : ''}`}>
                   <td className="recon-col">
                     {done ? <span title="Reconciled" aria-label="Reconciled" className="recon-done">✓</span>
                       : tickable ? <input type="checkbox" aria-label={`On the statement: ${l.label}`} checked={!!l.cleared}
@@ -282,20 +399,40 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
                   <td className="nowrap">{nice(l.date)}</td>
                   <td>
                     <span className="stmt-kind">{KIND_LABEL[l.kind]}</span>{' '}
-                    {l.transaction_id && (l.kind === 'payment' || l.kind === 'refund' || l.kind === 'deposit')
+                    {l.transaction_id && ['payment', 'refund', 'deposit', 'spot', 'onaccount'].includes(l.kind)
                       ? <a href={`/ledgers?edit=${l.transaction_id}`}>{l.label}</a> : l.label}
+                    {(l.kind === 'spot' || l.kind === 'onaccount') && !l.before_opening && (
+                      <button type="button" className="small-link stmt-toggle" onClick={() => setOnAccount(l.transaction_id, l.kind === 'spot')}
+                        title={l.kind === 'spot' ? 'It paid down what you owed (or, money in, the vendor paid you back on the account)' : 'It was paid when bought — no effect on the balance'}>
+                        {l.kind === 'spot' ? 'Paid on account?' : 'Paid at purchase?'}
+                      </button>
+                    )}
+                    {l.before_opening && <span className="tag">before the opening balance</span>}
                     {l.kind === 'bill' && l.due_date && <span className="tag">due {nice(l.due_date)}</span>}
                     {l.awaiting && <span className="tag">Unconfirmed until statement</span>}
                     {l.pays && l.pays.length > 1 && <div className="split-lines">Paid {l.pays.length} bills: {l.pays.join(', ')}</div>}
                     {l.account && <div className="split-lines">{l.account}</div>}
                     {l.cleared?.changed && <div className="review-error" style={{ margin: 0 }}>Changed since ticked (was {cents(l.cleared.amount)})</div>}
                   </td>
-                  <td className="num nowrap">{l.amount > 0 ? cents(l.amount) : ''}</td>
-                  <td className="num nowrap pos">{l.amount < 0 ? cents(-l.amount) : ''}</td>
-                  <td className="num nowrap stmt-bal">{cents(l.balance)}</td>
+                  <td className="num nowrap stmt-gst">{l.gst != null ? cents(l.gst) : l.kind === 'bill' || l.kind === 'payment' ? <span className="split-lines">none</span> : ''}</td>
+                  {l.kind === 'spot' ? (
+                    <>
+                      <td className="num nowrap stmt-spot">{cents(Math.abs(l.spot))}</td>
+                      <td className="num nowrap stmt-spot">{cents(Math.abs(l.spot))}</td>
+                    </>
+                  ) : (
+                    <>
+                      <td className="num nowrap">{l.amount > 0 ? cents(l.amount) : ''}</td>
+                      <td className="num nowrap pos">{l.amount < 0 ? cents(-l.amount) : ''}</td>
+                    </>
+                  )}
+                  <td className="num nowrap stmt-bal">{l.balance == null ? '—' : cents(l.balance)}</td>
                 </tr>
               );
             })}
+            {forward != null && (
+              <tr className="entries-group"><td /><td className="nowrap">{nice(from)}</td><td>Balance forward</td><td /><td /><td /><td className="num nowrap">{cents(forward)}</td></tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -308,6 +445,70 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Delete a vendor: merge it into another (duplicates — its bills, entries,
+ * deposits and reconciliations move across), or just remove it (bills and
+ * entries keep everything but the vendor; not allowed while it holds deposits).
+ */
+function DeleteVendor({ payeeId, name, others, onCancel, onDeleted }) {
+  const [u, setU] = useState(null);
+  const [mode, setMode] = useState('remove');
+  const [into, setInto] = useState('');
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    fetch(`/api/payees/${payeeId}/usage`).then((r) => r.json()).then((d) => { setU(d); if (d.deposits) setMode('merge'); });
+  }, [payeeId]);
+  if (!u) return <div className="vendor-delete"><span className="split-lines">Checking what {name} is used on…</span></div>;
+  const parts = [
+    u.unpaid_bills && `${u.unpaid_bills} unpaid bill${u.unpaid_bills === 1 ? '' : 's'}`,
+    u.paid_bills && `${u.paid_bills} paid bill${u.paid_bills === 1 ? '' : 's'}`,
+    u.entries && `${u.entries} ledger entr${u.entries === 1 ? 'y' : 'ies'}`,
+    u.deposits && `${u.deposits} deposit${u.deposits === 1 ? '' : 's'}`,
+    u.reconciliations && `${u.reconciliations} reconciliation${u.reconciliations === 1 ? '' : 's'}`,
+  ].filter(Boolean);
+  const go = async () => {
+    setErr(null); setBusy(true);
+    const r = await fetch(`/api/payees/${payeeId}${mode === 'merge' ? `?merge_into=${into}` : ''}`, { method: 'DELETE' });
+    const d = await r.json().catch(() => ({}));
+    setBusy(false);
+    if (!r.ok) { setErr(d.error || `Couldn't delete it (HTTP ${r.status}).`); return; }
+    onDeleted();
+  };
+  return (
+    <div className="vendor-delete" role="group" aria-label={`Delete ${name}`}>
+      <p className="vendor-delete-what"><strong>Delete {name}?</strong> {parts.length ? `It's on ${parts.join(', ')}.` : 'Nothing uses it.'}</p>
+      {parts.length > 0 && (
+        <div className="vendor-delete-options">
+          <label>
+            <input type="radio" name="vd-mode" checked={mode === 'merge'} onChange={() => setMode('merge')} />
+            <span>Merge into
+              <select aria-label="Vendor to merge into" value={into} onChange={(e) => { setInto(e.target.value); setMode('merge'); }}>
+                <option value="">pick a vendor…</option>
+                {others.map((o) => <option key={o.payee_id} value={o.payee_id}>{o.name}</option>)}
+              </select>
+              <em>Everything moves to that vendor — for a duplicate.</em>
+            </span>
+          </label>
+          <label className={u.deposits ? 'off' : ''}>
+            <input type="radio" name="vd-mode" disabled={!!u.deposits} checked={mode === 'remove'} onChange={() => setMode('remove')} />
+            <span>Just delete it
+              <em>{u.deposits ? 'Not while it holds deposits — merge it instead.' : 'Bills and entries keep their details, with no vendor.'}</em>
+            </span>
+          </label>
+        </div>
+      )}
+      {err && <p className="review-error" style={{ margin: 0 }}>{err}</p>}
+      <div className="vendor-delete-actions">
+        <button type="button" className="small danger" disabled={busy || (mode === 'merge' && !into)} onClick={go}>
+          {mode === 'merge' && parts.length ? 'Merge and delete' : 'Delete vendor'}
+        </button>
+        <button type="button" className="small secondary" onClick={onCancel}>Cancel</button>
+      </div>
     </div>
   );
 }

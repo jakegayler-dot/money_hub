@@ -72,7 +72,8 @@ function monthlyInterest(b, base, start, end, total, keyPrefix) {
 
 /** The bill's charge lines up to `end`: the invoice, any vendor-statement adjustment, and monthly interest. Sums to rawOwing(b, end). */
 function chargeLines(b, end) {
-  const lines = [{ key: `bill:${b.id}`, date: billDate(b), kind: 'bill', amount: round2(b.amount), bill_id: b.id, label: b.name, due_date: toISODate(b.due_date) }];
+  const lines = [{ key: `bill:${b.id}`, date: billDate(b), kind: 'bill', amount: round2(b.amount), bill_id: b.id, label: b.name, due_date: toISODate(b.due_date),
+    gst: b.has_gst ? round2(b.gst_amount || 0) : null }];
   if (!b.is_financed) return lines;
   const total = round2(rawOwing(b, end) - Number(b.amount));
   if (b.balance_as_of && b.balance_amount != null) {
@@ -95,7 +96,7 @@ function chargeLines(b, end) {
   return lines;
 }
 
-const ORDER = { bill: 0, adjust: 1, interest: 2, deposit: 3, payment: 4, diff: 5, marked: 5, refund: 6, kept: 7 };
+const ORDER = { opening: -1, spot: 4, onaccount: 4, bill: 0, adjust: 1, interest: 2, deposit: 3, payment: 4, diff: 5, marked: 5, refund: 6, kept: 7 };
 
 /**
  * The vendor's account: every line with its running balance, plus bills
@@ -104,7 +105,7 @@ const ORDER = { bill: 0, adjust: 1, interest: 2, deposit: 3, payment: 4, diff: 5
 export async function vendorStatement(db, payeeId, today = todayISO()) {
   const { rows: bills } = await db.query(
     `SELECT b.*, COALESCE((SELECT SUM(amount) FROM credit_applications WHERE bill_id = b.id), 0) AS applied,
-            t.date AS tx_date, t.amount AS tx_amount, t.description AS tx_description, t.awaiting_statement AS tx_awaiting,
+            t.date AS tx_date, t.amount AS tx_amount, t.description AS tx_description, t.awaiting_statement AS tx_awaiting, t.gst_amount AS tx_gst,
             COALESCE(a.name, cc.name) AS tx_account
      FROM bills b
      LEFT JOIN transactions t ON t.id = b.linked_transaction_id
@@ -113,13 +114,37 @@ export async function vendorStatement(db, payeeId, today = todayISO()) {
      WHERE b.payee_id = $1 ORDER BY b.id`, [payeeId]);
   const { rows: credits } = await db.query(
     `SELECT vc.*, vc.amount - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE credit_id = vc.id), 0) AS remaining,
-            rt.date AS refund_date, rt.amount AS refund_amount
+            rt.date AS refund_date, rt.amount AS refund_amount, dt.gst_amount AS tx_gst
      FROM vendor_credits vc LEFT JOIN transactions rt ON rt.id = vc.refund_transaction_id
+     LEFT JOIN transactions dt ON dt.id = vc.transaction_id
      WHERE vc.payee_id = $1 ORDER BY vc.id`, [payeeId]);
+
+  const { rows: [payee] } = await db.query('SELECT opening_balance, opening_date FROM payees WHERE id = $1', [payeeId]);
+  // Every other entry paid to (or received from) this vendor: no bill behind it.
+  const { rows: loose } = await db.query(
+    `SELECT t.id, t.date, t.amount, t.description, t.gst_amount, t.awaiting_statement, COALESCE(a.name, cc.name) AS account,
+            EXISTS (SELECT 1 FROM vendor_on_account o WHERE o.transaction_id = t.id) AS on_account
+     FROM transactions t
+     LEFT JOIN accounts a ON a.id = t.account_id
+     LEFT JOIN credit_cards cc ON cc.id = t.credit_card_id
+     WHERE t.payee_id = $1 AND NOT t.is_transfer
+       AND NOT EXISTS (SELECT 1 FROM bills x WHERE x.linked_transaction_id = t.id)
+       AND NOT EXISTS (SELECT 1 FROM vendor_credits x WHERE x.transaction_id = t.id OR x.refund_transaction_id = t.id)
+       AND NOT EXISTS (SELECT 1 FROM loan_payments x WHERE x.linked_transaction_id = t.id)
+       AND NOT EXISTS (SELECT 1 FROM contract_payments x WHERE x.transaction_id = t.id)
+     ORDER BY t.date, t.id`, [payeeId]);
 
   const lines = [];
   const upcoming = [];
   const byTx = new Map();
+  const opening = payee?.opening_date ? { amount: round2(payee.opening_balance || 0), date: toISODate(payee.opening_date) } : null;
+  if (opening) lines.push({ key: 'open', date: opening.date, kind: 'opening', amount: opening.amount, label: 'Opening balance' });
+  for (const t of loose) {
+    const base = { date: toISODate(t.date), transaction_id: t.id, label: t.description || 'Entry', account: t.account,
+      gst: t.gst_amount == null ? null : round2(t.gst_amount), awaiting: !!t.awaiting_statement };
+    if (t.on_account) lines.push({ ...base, key: `acct:${t.id}`, kind: 'onaccount', amount: round2(t.amount) });
+    else lines.push({ ...base, key: `spot:${t.id}`, kind: 'spot', amount: 0, spot: round2(t.amount) });
+  }
   for (const b of bills) {
     const applied = Number(b.applied);
     if (b.status === 'unpaid') {
@@ -149,6 +174,7 @@ export async function vendorStatement(db, payeeId, today = todayISO()) {
     const paid = round2(-Number(g.b.tx_amount));
     lines.push({
       key: `pay:${txId}`, date: toISODate(g.b.tx_date), kind: 'payment', amount: -paid, transaction_id: txId,
+      gst: g.b.tx_gst == null ? null : round2(g.b.tx_gst),
       label: g.b.tx_description || 'Payment', account: g.b.tx_account, awaiting: !!g.b.tx_awaiting,
       pays: g.names,
     });
@@ -162,7 +188,8 @@ export async function vendorStatement(db, payeeId, today = todayISO()) {
   }
   for (const c of credits) {
     const kind = c.kind === 'refundable' ? 'refundable deposit' : 'prepayment';
-    lines.push({ key: `dep:${c.id}`, date: toISODate(c.date), kind: 'deposit', amount: -round2(c.amount), credit_id: c.id, transaction_id: c.transaction_id, label: `Deposit paid — ${kind}` });
+    lines.push({ key: `dep:${c.id}`, date: toISODate(c.date), kind: 'deposit', amount: -round2(c.amount), credit_id: c.id, transaction_id: c.transaction_id, label: `Deposit paid — ${kind}`,
+      gst: c.tx_gst == null ? null : round2(c.tx_gst) });
     if (c.status === 'refunded' && c.refund_date) {
       lines.push({ key: `ref:${c.id}`, date: toISODate(c.refund_date), kind: 'refund', amount: round2(c.refund_amount), credit_id: c.id, transaction_id: c.refund_transaction_id, label: 'Deposit refunded to you' });
     }
@@ -172,10 +199,15 @@ export async function vendorStatement(db, payeeId, today = todayISO()) {
   }
 
   lines.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : (ORDER[a.kind] - ORDER[b.kind]) || a.key.localeCompare(b.key)));
+  // With an opening balance, it replaces everything before its date.
   let bal = 0;
-  for (const l of lines) { bal = round2(bal + l.amount); l.balance = bal; }
+  for (const l of lines) {
+    if (opening && l.date < opening.date) { l.before_opening = true; l.balance = null; continue; }
+    bal = round2(bal + l.amount);
+    l.balance = bal;
+  }
   upcoming.sort((a, b) => (a.date < b.date ? -1 : 1));
-  return { lines, upcoming, balance: bal, bills, credits };
+  return { lines, upcoming, balance: bal, bills, credits, opening };
 }
 
 /**

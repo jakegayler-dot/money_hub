@@ -21,10 +21,11 @@ import creditCardsRoute from './routes/credit-cards.js';
 import statementsRoute from './routes/statements.js';
 import payeesRoute from './routes/payees.js';
 import booksRoute from './routes/books.js';
+import forecastRoute from './routes/forecast.js';
 import taxRoute from './routes/tax.js';
 import receiptsRoute, { receiptUpload } from './routes/receipts.js';
 import { readPending, matchPending } from './lib/receipts.js';
-import { pairAllCardPayments, splitAllLoanPayments } from './lib/postings.js';
+import { pairAllCardPayments, splitAllLoanPayments, syncLoanPieceOwners } from './lib/postings.js';
 import { withTransaction } from './db.js';
 import { authRouter, requireSignIn, authEnabled } from './lib/appAuth.js';
 
@@ -63,6 +64,7 @@ app.use('/api/statements', statementsRoute);
 app.use('/api/payees', payeesRoute);
 app.use('/api/books', booksRoute);
 app.use('/api/tax', taxRoute);
+app.use('/api/forecast', forecastRoute);
 app.use('/api/receipts', receiptsRoute);
 
 // In production, this is the only Railway service — it serves the built
@@ -104,7 +106,7 @@ app.listen(port, () => {
     .then((n) => n && console.log(`Folded ${n} card-side payment line(s) into their bank-side payments.`))
     .catch((e) => console.error('Card payment pairing failed:', e.message)), 2000);
   // Loan payments recorded before interest/principal were split out.
-  setTimeout(() => withTransaction((c) => splitAllLoanPayments(c))
+  setTimeout(() => withTransaction(async (c) => { const n = await splitAllLoanPayments(c); await syncLoanPieceOwners(c); return n; })
     .then((n) => n && console.log(`Split ${n} loan payment(s) into interest and principal.`))
     .catch((e) => console.error('Loan payment split failed:', e.message)), 2500);
 });

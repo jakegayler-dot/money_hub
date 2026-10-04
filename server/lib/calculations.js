@@ -4,7 +4,7 @@ import { forecastEstimates } from './inventoryForecast.js';
 import { ownerWeights, businessShare } from './segments.js';
 import { monthIndex, todayISO, toISODate, addMonths, addDays } from './dates.js';
 import { LATEST_STATEMENTS_SQL } from './cardLedger.js';
-import { farmIncomeTax } from './tax.js';
+import { loadForecast, evaluate, buildTaxFlows, taxesFor, baseNetByYear, requiredFloorFor, scopeShare } from './forecast.js';
 
 const MONTHS = 12;
 
@@ -30,28 +30,9 @@ export async function monthlyAccountFees(year) {
   return byMonth;
 }
 
-const BILL_STEP_MONTHS = { monthly: 1, quarterly: 3 };
+import { billDates } from './billDates.js';
 
-/**
- * Dates an unpaid bill will be owed before `toExclusive`: the bill itself
- * (even if overdue — it still hasn't been paid) plus, for a recurring bill,
- * the later instances the app creates as each one is paid. Only one
- * instance of a recurring bill exists at a time, so without this a monthly
- * bill would count once in a 12-month forecast instead of every month.
- * Later instances are counted only from tomorrow on.
- */
-export function billDates(bill, todayStr, toExclusive) {
-  const first = toISODate(bill.due_date);
-  const out = first < toExclusive ? [first] : [];
-  const step = BILL_STEP_MONTHS[bill.frequency];
-  if (!step || !out.length) return out;
-  for (let k = 1; k < 600; k++) {
-    const d = addMonths(first, k * step);
-    if (d >= toExclusive) break;
-    if (d > todayStr) out.push(d);
-  }
-  return out;
-}
+export { billDates };
 
 /**
  * TERM DEBT COVERAGE RATIO — the repayment-capacity test ag lenders
@@ -248,186 +229,43 @@ export function coverageWithAddedDebt(coverage, addedAnnualService) {
 
 
 /**
- * Liquidity floor: ROLLING 12-month projection of business cash, starting
- * from the live operating balance TODAY and walking forward from the
- * current month. Only future known flows enter it — unsettled contract
- * inflows, unpaid bills, unpaid scheduled debt service, recurring account
- * fees — because everything already booked is already inside today's
- * balance (replaying past months on top of a live balance would count the
- * same dollars twice). Anything overdue-but-unpaid lands in the current
- * month: past its due date or not, it still hasn't moved. The floor is the
- * lowest point in the projection, not the current balance.
+ * Liquidity floor: a ROLLING projection of cash (12 months by default),
+ * starting from the live balances TODAY and walking forward from the
+ * current month. Only future known flows enter it — contracts still to
+ * come, inventory and estimated sales, unpaid bills, scheduled loan
+ * payments, card statements, account fees, GST refunds and payments and
+ * (by default) income tax — because everything already booked is already
+ * inside today's balance. Anything overdue-but-unpaid lands in the current
+ * month. The floor is the lowest point in the projection.
+ *
+ * scope: 'everything' (farm and household — a sole proprietorship's one
+ * pot), 'farm' (Grain + Cattle shares only) or 'personal'. `accounts`
+ * limits the starting cash to those account ids. With scope 'farm', the
+ * Everything line comes back too as `reserve` — what the farm could draw on.
  */
-export async function liquidityFloor() {
-  const bufferPct = Number(await getSetting('liquidity_buffer_pct', 0.15));
-
-  // Everything: a sole proprietorship's farm and household money is one
-  // pot, so the forecast starts from every account and carries every
-  // owner's bills, contracts, loans, cards and estimates.
-  const accounts = await allAccountBalances();
-  const startingBalance = accounts.reduce((s, a) => s + a.balance, 0);
-
-  const now = new Date();
-  const y0 = now.getFullYear();
-  const m0 = now.getMonth(); // 0-based
-  const monthsMeta = Array.from({ length: MONTHS }, (_, i) => {
-    const d = new Date(y0, m0 + i, 1);
-    return { year: d.getFullYear(), month: d.getMonth() + 1 };
-  });
-  const windowEnd = new Date(y0, m0 + MONTHS, 1); // exclusive
-  const endStr = `${windowEnd.getFullYear()}-${String(windowEnd.getMonth() + 1).padStart(2, '0')}-01`;
-
-  // Bucket a due date into the window; anything overdue clamps to month 0.
-  const idxFor = (d) => Math.max(0, monthIndex(d, y0, m0));
-
-  const [billRows, debtRows, contractRows, fees, cardRows] = await Promise.all([
-    pool.query(
-      // Every unpaid bill, in full (financed bills at what they'll owe on the due date).
-      `SELECT id, name, due_date, bill_owing(bills, due_date) AS amount, frequency, ledger, segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_jake_pct, segment_ashley_pct FROM bills
-       WHERE status = 'unpaid' AND due_date < $1`,
-      [endStr]
-    ),
-    // Every scheduled loan payment, farm and personal (a home mortgage included).
-    pool.query(
-      `SELECT lp.due_date, lp.principal_amount + lp.interest_amount AS amount, lp.interest_amount, COALESCE(l.name, l.lender) AS loan
-       FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
-       WHERE lp.paid = false AND lp.due_date < $1`,
-      [endStr]
-    ),
-    pool.query(
-      `SELECT id, commodity, counterparty, expected_payment_date AS due_date, GREATEST(total_value - received_amount, 0) AS amount
-       FROM sale_contracts
-       WHERE status IN ('open', 'delivered') AND expected_payment_date < $1`,
-      [endStr]
-    ),
-    monthlyAccountFees(y0), // same value every month (monthly fees + annual/12)
-    // What's left unpaid on each card's latest statement — a scheduled
-    // outflow at its due date, same treatment as an unpaid bill.
-    // Every active card.
-    pool.query(
-      `SELECT s.due_date, GREATEST(s.statement_balance - COALESCE(s.paid_amount, 0), 0) AS amount, cc.name AS card
-       FROM (${LATEST_STATEMENTS_SQL}) s JOIN credit_cards cc ON cc.id = s.credit_card_id
-       WHERE s.paid = false AND cc.status = 'active' AND s.due_date < $1`,
-      [endStr]
-    ),
-  ]);
-  const feesPerMonth = fees[0] || 0;
-
-  // Estimates: every active estimate, at each occurrence from today through
-  // the window. Past occurrences never count — see lib/estimates.js.
-  // Every flow, itemized by month — what the Cash Flow page lists when a
-  // month is opened. kind: contract / estimate_in / bill / loan / card /
-  // fee / tax / estimate_out. amount is signed (money in positive).
-  const items = Array.from({ length: MONTHS }, () => []);
-  const put = (i, it) => items[Math.min(Math.max(i, 0), MONTHS - 1)].push({ ...it, amount: Math.round(it.amount * 100) / 100 });
-  const estInBy = Array(MONTHS).fill(0);
-  const estOutBy = Array(MONTHS).fill(0);
-  for (const est of await forecastEstimates()) {
-    for (const d of occurrences(est, todayISO(), endStr)) {
-      const amt = signedAmount(est);
-      put(idxFor(d), {
-        kind: amt >= 0 ? 'estimate_in' : 'estimate_out', label: est.name || est.commodity || 'Estimate',
-        date: toISODate(d), amount: amt, estimate: true,
-      });
-      const i = Math.min(idxFor(d), MONTHS - 1);
-      if (amt >= 0) estInBy[i] += amt; else estOutBy[i] += -amt;
-    }
-  }
-
-  const billsBy = Array(MONTHS).fill(0);
-  for (const r of billRows.rows) {
-    for (const d of billDates(r, todayISO(), endStr)) {
-      billsBy[Math.min(idxFor(d), MONTHS - 1)] += Number(r.amount);
-      put(idxFor(d), { kind: 'bill', label: r.name, date: toISODate(d), amount: -Number(r.amount), id: r.id,
-        overdue: toISODate(d) < todayISO() });
-    }
-  }
-  // The farm's Dec 31 income tax instalment (personal tax, paid from the same pot).
-  const taxBy = Array(MONTHS).fill(0);
-  try {
-    const tax = await farmIncomeTax(y0);
-    const due = tax.instalment.due;
-    if (tax.instalment.amount > 0 && !tax.instalment.paid && due >= todayISO() && due < endStr) {
-      taxBy[Math.min(idxFor(due), MONTHS - 1)] += tax.instalment.amount;
-      put(idxFor(due), { kind: 'tax', label: 'Income tax instalment (farm)', date: due, amount: -tax.instalment.amount, estimate: true });
-    }
-  } catch (e) { console.error('Tax instalment skipped in cash flow:', e.message); }
-  const debtBy = Array(MONTHS).fill(0);
-  for (const r of debtRows.rows) {
-    debtBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
-    put(idxFor(r.due_date), { kind: 'loan', label: r.loan, date: toISODate(r.due_date), amount: -Number(r.amount),
-      interest: Number(r.interest_amount) });
-  }
-  const contractsBy = Array(MONTHS).fill(0);
-  for (const r of contractRows.rows) {
-    contractsBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
-    put(idxFor(r.due_date), { kind: 'contract', label: [r.commodity, r.counterparty].filter(Boolean).join(' — '),
-      date: toISODate(r.due_date), amount: Number(r.amount), id: r.id, overdue: toISODate(r.due_date) < todayISO() });
-  }
-  const cardsBy = Array(MONTHS).fill(0);
-  for (const r of cardRows.rows) {
-    cardsBy[Math.min(idxFor(r.due_date), MONTHS - 1)] += Number(r.amount);
-    put(idxFor(r.due_date), { kind: 'card', label: `${r.card} statement`, date: toISODate(r.due_date), amount: -Number(r.amount) });
-  }
-  if (feesPerMonth) for (let i = 0; i < MONTHS; i++) put(i, { kind: 'fee', label: 'Account fees', amount: -feesPerMonth });
-
-  // Two projections from the same starting balance. COMMITTED uses only
-  // documented flows (contracts, bills, loan schedules, fees). WITH
-  // ESTIMATES adds the operator's own estimated inflows/outflows — and is
-  // the default everywhere, including the purchase gate, because this
-  // operation's cash arrives in large lumps between long dry stretches: a
-  // big balance today is not spendable if months of estimated costs with
-  // no committed income follow it.
-  let committedRunning = startingBalance;
-  let running = startingBalance;
-  const trajectory = monthsMeta.map((meta, i) => {
-    const committedNet = contractsBy[i] - billsBy[i] - debtBy[i] - feesPerMonth - cardsBy[i];
-    committedRunning += committedNet;
-    running += committedNet + estInBy[i] - estOutBy[i] - taxBy[i];
-    return {
-      year: meta.year,
-      month: meta.month,
-      balance: running,
-      committedBalance: committedRunning,
-      contractInflows: contractsBy[i],
-      unpaidBillsDue: billsBy[i],
-      debtServiceDue: debtBy[i],
-      accountFees: feesPerMonth,
-      creditCardDue: cardsBy[i],
-      estimatedInflows: estInBy[i],
-      estimatedOutflows: estOutBy[i],
-      taxInstalment: taxBy[i],
-      items: items[i].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount)),
-    };
-  });
-
-  const floorMonth = trajectory.reduce((a, b) => (b.balance < a.balance ? b : a));
+export async function liquidityFloor({ months = 12, scope = 'everything', accounts = null, includeTax = true } = {}) {
+  const ctx = await loadForecast({ months });
+  const taxes = ctx.tax.available ? taxesFor(baseNetByYear(ctx)) : null;
+  const flows = [...ctx.flows, ...(includeTax && taxes ? buildTaxFlows(ctx, taxes) : [])];
+  const ev = evaluate(flows, ctx, { scope, accountIds: accounts });
+  const requiredFloor = await requiredFloorFor(ctx.bufferPct);
+  const trajectory = ev.trajectory;
+  const floorMonth = trajectory[ev.lowIdx];
   const committedFloor = trajectory.reduce((a, b) => (b.committedBalance < a.committedBalance ? b : a));
-
-  // Buffer benchmark: average monthly outflow (farm and household) over
-  // the trailing 12 months of actuals (not the calendar year to date).
-  const avgMonthlyExpense =
-    (await pool.query(
-      `SELECT COALESCE(AVG(monthly_outflow), 0) AS avg FROM (
-         SELECT date_trunc('month', date) AS m, SUM(-amount) AS monthly_outflow
-         FROM transaction_lines
-         WHERE amount < 0 AND is_transfer = false
-           AND date >= CURRENT_DATE - INTERVAL '12 months'
-         GROUP BY m
-       ) sub`
-    )).rows[0].avg;
-
-  const requiredFloor = Number(avgMonthlyExpense) * bufferPct;
-
+  const reserve = scope === 'farm' ? evaluate(flows, ctx, { scope: 'everything' }) : null;
+  const pick = accounts ? new Set(accounts.map(Number)) : null;
   return {
-    startingBalance,
-    accounts,
+    scope, months, includeTax,
+    startingBalance: ev.opening,
+    accounts: ctx.accounts.map((a) => ({ ...a, included: !pick || pick.has(a.id), counted: (!pick || pick.has(a.id)) ? a.balance * scopeShare(scope, a.farm) : 0 })),
     trajectory,
     floorMonth,
     committedFloorMonth: { year: committedFloor.year, month: committedFloor.month, balance: committedFloor.committedBalance },
-    bufferPct,
+    bufferPct: ctx.bufferPct,
     requiredFloor,
     passes: floorMonth.balance >= requiredFloor,
+    reserve: reserve ? { startingBalance: reserve.opening, balances: reserve.trajectory.map((t) => t.balance) } : null,
+    tax: ctx.tax.available ? { y0: ctx.win.y0, net: ctx.tax.netY0, total: ctx.tax.taxY0, instalment: ctx.tax.instalmentY0 } : null,
   };
 }
 

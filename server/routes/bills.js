@@ -4,7 +4,7 @@ import { ah } from '../lib/asyncHandler.js';
 import { validateSegment, segmentValues, SEGMENT_COLUMNS } from '../lib/segments.js';
 import {
   payBill, removeTransaction, linkBillToTransaction, expenseCategoryFor, linkBillsToTransaction, payBills,
-  recordVendorDeposit, applyVendorCredit, unapplyVendorCredit, refundVendorCredit, keepVendorCredit, removeVendorCredit, payeeId,
+  applyVendorOwnerToBill, recordVendorDeposit, applyVendorCredit, unapplyVendorCredit, refundVendorCredit, keepVendorCredit, removeVendorCredit, payeeId,
 } from '../lib/postings.js';
 
 // "JS & CL Gayler — Inv. 0588652" → "JS & CL Gayler" (same rule as the schema backfill).
@@ -159,6 +159,11 @@ router.post('/', ah(async (req, res) => {
   // The vendor: picked, or taken from the name ("Nutrien — Inv 4471" → Nutrien).
   const vendor = req.body.payee_id ? Number(req.body.payee_id) : await payeeId(pool, vendorFromName(name));
   await pool.query('UPDATE bills SET payee_id = $2 WHERE id = $1', [rows[0].id, vendor]);
+  // The vendor's owner split, when the caller didn't choose an owner (an
+  // agent), or the vendor came from the name and the owner was left at the default.
+  const noOwner = req.body.segment === undefined && req.body.is_segment_split === undefined;
+  const defaultOwner = !req.body.is_segment_split && (req.body.segment || 'grain') === 'grain';
+  if (noOwner || (!req.body.payee_id && defaultOwner)) await applyVendorOwnerToBill(pool, rows[0].id);
   autoLinkBillsSoon(); // already paid? find the payment
   res.status(201).json({ ...rows[0], ...fin });
 }));
@@ -372,7 +377,6 @@ router.get('/vendors/:payeeId/payments', ah(async (req, res) => {
 // Headline figures across every vendor, and the vendors to pick from (any
 // with a bill or deposit on file, paid or not).
 router.get('/summary', ah(async (req, res) => {
-  try { await autoLinkBills(); } catch (e) { console.error('Bill auto-link failed:', e.message); }
   const { rows: bills } = await pool.query(
     `SELECT b.*, COALESCE((SELECT SUM(amount) FROM credit_applications WHERE bill_id = b.id), 0) AS applied
      FROM bills b WHERE b.status = 'unpaid'`);
@@ -384,6 +388,7 @@ router.get('/summary', ah(async (req, res) => {
             (SELECT max(statement_date) FROM vendor_reconciliations r WHERE r.payee_id = p.id AND r.status = 'done') AS reconciled_to
      FROM payees p
      WHERE EXISTS (SELECT 1 FROM bills b WHERE b.payee_id = p.id) OR EXISTS (SELECT 1 FROM vendor_credits c WHERE c.payee_id = p.id)
+        OR EXISTS (SELECT 1 FROM transactions t WHERE t.payee_id = p.id AND t.amount < 0) OR p.segment IS NOT NULL OR p.is_segment_split
      ORDER BY lower(p.name)`);
   res.json({
     summary: billSummary(bills, credits),
@@ -395,7 +400,7 @@ router.get('/summary', ah(async (req, res) => {
 // One vendor's account: running balance, what's scheduled, its headline
 // figures, and the reconciliation against the vendor's statement.
 async function statementFor(payeeId) {
-  const { rows: [p] } = await pool.query('SELECT id, name FROM payees WHERE id = $1', [payeeId]);
+  const { rows: [p] } = await pool.query(`SELECT id, name, ${SEG_COLS} FROM payees WHERE id = $1`, [payeeId]);
   if (!p) return null;
   const st = await vendorStatement(pool, payeeId);
   const rec = await reconState(pool, payeeId);
@@ -409,15 +414,44 @@ async function statementFor(payeeId) {
   const credits = st.credits.map((c) => ({ ...c, remaining: Number(c.remaining) }));
   return {
     payee_id: p.id, name: p.name, lines, upcoming: st.upcoming, balance: st.balance,
+    owner_rule: p.segment || p.is_segment_split ? Object.fromEntries(SEGMENT_COLUMNS.map((c) => [c, p[c]])) : null,
+    opening: st.opening,
     summary: billSummary(st.bills, credits),
     reconciliation: { open: rec.open || null, last: rec.last || null, cleared_total: rec.cleared_total, difference: rec.difference, missing },
   };
 }
 router.get('/vendors/:payeeId/statement', ah(async (req, res) => {
-  try { await autoLinkBills(); } catch (e) { console.error('Bill auto-link failed:', e.message); }
   const out = await statementFor(Number(req.params.payeeId));
   if (!out) return res.status(404).json({ error: 'Vendor not found.' });
   res.json(out);
+}));
+
+// The account's opening balance: { amount, date } (amount positive = you
+// owed them, negative = they held a credit), or { clear: true }.
+router.put('/vendors/:payeeId/opening', ah(async (req, res) => {
+  const payeeId = Number(req.params.payeeId);
+  const { amount, date, clear } = req.body || {};
+  if (clear) {
+    await pool.query('UPDATE payees SET opening_balance = NULL, opening_date = NULL WHERE id = $1', [payeeId]);
+  } else {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) return res.status(400).json({ error: 'Enter the date the opening balance is as of.' });
+    if (amount === '' || amount == null || !Number.isFinite(Number(amount))) return res.status(400).json({ error: 'Enter the opening balance (negative if they owed you).' });
+    await pool.query('UPDATE payees SET opening_balance = $2, opening_date = $3 WHERE id = $1', [payeeId, Number(amount), date]);
+  }
+  const out = await statementFor(payeeId);
+  if (!out) return res.status(404).json({ error: 'Vendor not found.' });
+  res.json(out);
+}));
+
+// An entry with no bill: paid at purchase (default) or paid on account.
+router.post('/vendors/:payeeId/on-account', ah(async (req, res) => {
+  const payeeId = Number(req.params.payeeId);
+  const txId = Number(req.body?.transaction_id);
+  const { rows: [t] } = await pool.query('SELECT id FROM transactions WHERE id = $1 AND payee_id = $2', [txId, payeeId]);
+  if (!t) return res.status(404).json({ error: 'That entry isn’t this vendor’s.' });
+  if (req.body?.on) await pool.query('INSERT INTO vendor_on_account (transaction_id) VALUES ($1) ON CONFLICT DO NOTHING', [txId]);
+  else await pool.query('DELETE FROM vendor_on_account WHERE transaction_id = $1', [txId]);
+  res.json(await statementFor(payeeId));
 }));
 
 // Start (or change) a reconciliation: the vendor statement's date and closing balance.

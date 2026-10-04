@@ -1161,12 +1161,19 @@ ALTER TABLE receipts ADD COLUMN IF NOT EXISTS contract_id INTEGER REFERENCES sal
 -- Existing bills take the vendor from their name ("JS & CL Gayler — Inv.
 -- 0588652" → JS & CL Gayler).
 ALTER TABLE bills ADD COLUMN IF NOT EXISTS payee_id INTEGER REFERENCES payees(id) ON DELETE SET NULL;
-INSERT INTO payees (name)
-SELECT DISTINCT trim(regexp_replace(name, '\s+(—|–|-|#|inv\.?\s|invoice\s).*$', '', 'i'))
-FROM bills WHERE payee_id IS NULL AND trim(regexp_replace(name, '\s+(—|–|-|#|inv\.?\s|invoice\s).*$', '', 'i')) <> ''
-ON CONFLICT ((lower(name))) DO NOTHING;
-UPDATE bills b SET payee_id = p.id FROM payees p
-WHERE b.payee_id IS NULL AND lower(p.name) = lower(trim(regexp_replace(b.name, '\s+(—|–|-|#|inv\.?\s|invoice\s).*$', '', 'i')));
+-- Runs once: after that, a bill left without a vendor (its vendor deleted)
+-- stays that way instead of having the vendor re-created from its name.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM settings WHERE key = 'bill_vendor_backfill_done') THEN
+    INSERT INTO payees (name)
+    SELECT DISTINCT trim(regexp_replace(name, '\s+(—|–|-|#|inv\.?\s|invoice\s).*$', '', 'i'))
+    FROM bills WHERE payee_id IS NULL AND trim(regexp_replace(name, '\s+(—|–|-|#|inv\.?\s|invoice\s).*$', '', 'i')) <> ''
+    ON CONFLICT ((lower(name))) DO NOTHING;
+    UPDATE bills b SET payee_id = p.id FROM payees p
+    WHERE b.payee_id IS NULL AND lower(p.name) = lower(trim(regexp_replace(b.name, '\s+(—|–|-|#|inv\.?\s|invoice\s).*$', '', 'i')));
+    INSERT INTO settings (key, value) VALUES ('bill_vendor_backfill_done', 'true') ON CONFLICT (key) DO NOTHING;
+  END IF;
+END $$;
 
 -- Money a vendor is holding for you: a deposit paid ahead. 'prepayment'
 -- is applied to later bills; 'refundable' (a bin or container deposit) is
@@ -1226,4 +1233,47 @@ CREATE TABLE IF NOT EXISTS vendor_cleared (
   amount            NUMERIC(14,2) NOT NULL,
   label             TEXT,
   PRIMARY KEY (payee_id, line_key)
+);
+
+-- Loans split between owners (a yard-site mortgage that's part farm, part
+-- house). Interest is deductible by what the borrowed money was used for,
+-- so a loan payment's interest and principal pieces take the LOAN's owner
+-- split, not whatever the payment entry was tagged; the tax estimate and
+-- the cash forecast read the same split.
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS is_segment_split BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS segment_grain_pct NUMERIC(5,2);
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS segment_livestock_pct NUMERIC(5,2);
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS segment_jake_pct NUMERIC(5,2);
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS segment_ashley_pct NUMERIC(5,2);
+
+-- Saved what-if scenarios (the levers as JSON; results are re-run live).
+CREATE TABLE IF NOT EXISTS forecast_scenarios (
+  id          SERIAL PRIMARY KEY,
+  name        TEXT NOT NULL,
+  data        JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- A vendor's owner split (SaskPower always Grain 33 / Cattle 33 / Jake 34):
+-- new bills and ledger entries for that vendor come in split this way —
+-- statement lines and invoices read by the agents always; hand entries
+-- start from it and can be changed. No owner set = no rule.
+ALTER TABLE payees ADD COLUMN IF NOT EXISTS segment enterprise_segment;
+ALTER TABLE payees ADD COLUMN IF NOT EXISTS is_segment_split BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE payees ADD COLUMN IF NOT EXISTS segment_grain_pct NUMERIC(5,2);
+ALTER TABLE payees ADD COLUMN IF NOT EXISTS segment_livestock_pct NUMERIC(5,2);
+ALTER TABLE payees ADD COLUMN IF NOT EXISTS segment_jake_pct NUMERIC(5,2);
+ALTER TABLE payees ADD COLUMN IF NOT EXISTS segment_ashley_pct NUMERIC(5,2);
+
+-- A vendor account's opening balance (what you owed them, or the credit
+-- they held, on a date): activity before that date is shown but not
+-- counted. Entries paid to a vendor without a bill count as paid at
+-- purchase (no effect on the balance) unless marked here as paid on
+-- account — then they pay down (or, money in, raise) the balance.
+ALTER TABLE payees ADD COLUMN IF NOT EXISTS opening_balance NUMERIC(14,2);
+ALTER TABLE payees ADD COLUMN IF NOT EXISTS opening_date DATE;
+CREATE TABLE IF NOT EXISTS vendor_on_account (
+  transaction_id INTEGER PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );

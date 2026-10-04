@@ -8,7 +8,7 @@ import { businessShare } from './segments.js';
 import { toISODate, todayISO, addMonths } from './dates.js';
 import { occurrences, signedAmount } from './estimates.js';
 import { forecastEstimates } from './inventoryForecast.js';
-import { billDates } from './calculations.js';
+import { billDates } from './billDates.js';
 import { assetValueAt } from './balanceSheet.js';
 import { personalTax } from './taxRates.js';
 
@@ -116,10 +116,13 @@ export async function farmIncomeTax(year, whatIf = {}) {
     pool.query(
       `SELECT l.amount, l.split_id, l.is_capex, l.is_debt_service, l.ledger, l.segment, l.is_segment_split,
               l.segment_grain_pct, l.segment_livestock_pct, l.segment_jake_pct, l.segment_ashley_pct,
-              t.amount AS tx_amount, t.gst_amount, lp.interest_amount, t.amount AS paid_amount
+              t.amount AS tx_amount, t.gst_amount, lp.interest_amount, t.amount AS paid_amount,
+              ln.segment AS loan_segment, ln.is_segment_split AS loan_split, ln.segment_grain_pct AS loan_g,
+              ln.segment_livestock_pct AS loan_l, ln.segment_jake_pct AS loan_j, ln.segment_ashley_pct AS loan_a
        FROM transaction_lines l
        JOIN transactions t ON t.id = l.transaction_id
        LEFT JOIN loan_payments lp ON lp.linked_transaction_id = l.transaction_id
+       LEFT JOIN loans ln ON ln.id = lp.loan_id
        WHERE NOT l.is_transfer AND l.date >= $1 AND l.date <= $2`,
       [yStart, asOf]
     ),
@@ -135,7 +138,9 @@ export async function farmIncomeTax(year, whatIf = {}) {
       [yEndExcl]
     ),
     pool.query(
-      `SELECT lp.due_date, lp.interest_amount, l.segment FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
+      `SELECT lp.due_date, lp.interest_amount, l.segment, l.is_segment_split, l.segment_grain_pct, l.segment_livestock_pct,
+              l.segment_jake_pct, l.segment_ashley_pct
+       FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
        WHERE NOT lp.paid AND NOT lp.is_adjustment AND lp.due_date < $1`,
       [yEndExcl]
     ),
@@ -150,8 +155,14 @@ export async function farmIncomeTax(year, whatIf = {}) {
 
   // ---- Actual, Jan 1 to today ----
   const actual = { revenue: 0, expenses: 0, interest: 0, capex: 0 };
+  // An unsplit loan payment's interest follows its loan's owner split when
+  // the loan has one (split pieces already carry it).
+  const loanShare = (l) => (l.loan_split || l.loan_segment
+    ? businessShare({ segment: l.loan_segment, is_segment_split: l.loan_split, segment_grain_pct: l.loan_g,
+      segment_livestock_pct: l.loan_l, segment_jake_pct: l.loan_j, segment_ashley_pct: l.loan_a })
+    : null);
   for (const l of lines) {
-    const share = businessShare(l);
+    const share = l.is_debt_service && l.split_id == null && loanShare(l) != null ? loanShare(l) : businessShare(l);
     if (!share) continue;
     const amt = Number(l.amount);
     if (l.is_capex) { actual.capex += -amt * share; continue; }
@@ -196,7 +207,7 @@ export async function farmIncomeTax(year, whatIf = {}) {
   }
   addFc('Unpaid bills due by Dec 31 (before GST)', billsOut);
   let interest = 0;
-  for (const p of loanPays) interest += Number(p.interest_amount) * businessShare({ segment: p.segment });
+  for (const p of loanPays) interest += Number(p.interest_amount) * businessShare(p);
   if (interest) { fc.interest += interest; fc.items.push({ label: 'Loan interest due by Dec 31', amount: r2(-interest) }); }
   const monthsLeft = today >= yEnd ? 0 : 12 - Number(today.slice(5, 7));
   let fees = 0;
@@ -259,8 +270,19 @@ export async function farmIncomeTax(year, whatIf = {}) {
     paid: paid || null,
   };
 
+  // Farm purchases with no GST recorded: if GST was paid on some of them,
+  // it's sitting in expenses — while the refund that returns it is a
+  // transfer — so net income is understated by up to this much.
+  let gstGap = null;
+  try {
+    const g = await gstReport(year);
+    const n = g.periods.reduce((a, p) => a + p.purchases_no_gst, 0);
+    const amt = g.periods.reduce((a, p) => a + p.purchases_no_gst_amount, 0);
+    if (n) gstGap = { purchases: n, amount: r2(amt), up_to: r2(amt * 5 / 105) };
+  } catch { /* GST report unavailable: no note */ }
+
   return {
-    year, as_of: asOf,
+    year, as_of: asOf, gst_gap: gstGap,
     actual: { ...actualOnly, capex: r2(actual.capex) },
     forecast: { revenue: r2(fc.revenue), expenses: r2(fc.expenses + fc.interest), items: fc.items },
     cca: { amount: r2(cca), estimate: r2(ccaEstimate), override: ccaOverride != null ? Number(ccaOverride) : null, assets: ccaAssets },

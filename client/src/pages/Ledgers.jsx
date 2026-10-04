@@ -3,7 +3,7 @@ import { uploadBody } from './Receipts.jsx';
 
 const DOC_LABEL = { receipt: 'Receipt', invoice: 'Invoice', sales_ticket: 'Ticket', contract: 'Contract' };
 import { money } from '../format.js';
-import { OwnerFields, ownerPayload, ownerSummary, emptyOwnerFields, ownerFieldsFrom, OWNER_LABELS } from '../owners.jsx';
+import { OwnerFields, ownerPayload, ownerSummary, emptyOwnerFields, ownerFieldsFrom, OWNER_LABELS, ruleOf } from '../owners.jsx';
 import SplitEditor, { cents, newPiece, piecesPayload } from '../components/SplitEditor.jsx';
 import CategorySelect from '../components/CategorySelect.jsx';
 import PayeeSelect, { usePayees } from '../components/PayeeSelect.jsx';
@@ -228,10 +228,20 @@ export default function Ledgers() {
       setError(b.error || `Could not save (${r.status}).`);
       return;
     }
+    await saveRule();
     cancelEdit();
     load();
     loadLinkOptions();
     window.dispatchEvent(new Event('review-changed'));
+  };
+
+  // "Always split this vendor this way": becomes the vendor's owner rule.
+  const saveRule = async () => {
+    if (!form.save_rule || !form.payee_id) return;
+    await fetch(`/api/payees/${form.payee_id}/owner`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ownerPayload(form)),
+    });
+    window.dispatchEvent(new Event('payees-changed'));
   };
 
   const submit = async (e) => {
@@ -265,6 +275,7 @@ export default function Ledgers() {
       setError(body.error || `Could not save (${r.status}).`);
       return;
     }
+    await saveRule();
     setForm(emptyForm);
     setPieces([newPiece(), newPiece()]);
     load();
@@ -366,7 +377,11 @@ export default function Ledgers() {
           {!form.is_transfer && (
             <div className="field">
               <label>{amt > 0 ? 'Received from' : 'Paid to'}</label>
-              <PayeeSelect payees={payees} value={form.payee_id} onChange={(v) => setForm((f) => ({ ...f, payee_id: v }))} />
+              <PayeeSelect payees={payees} value={form.payee_id} onChange={(v) => {
+                // A vendor with an owner split brings it along (change it below if this one's different).
+                const rule = ruleOf(payees.find((x) => String(x.id) === String(v)));
+                setForm((f) => ({ ...f, payee_id: v, ...(rule || {}) }));
+              }} />
             </div>
           )}
           {!onCard && (
@@ -467,6 +482,22 @@ export default function Ledgers() {
                 </div>
               )}
               {!pairedTransfer && <OwnerFields state={form} setState={setForm} />}
+              {!pairedTransfer && form.payee_id && (() => {
+                const py = payees.find((x) => String(x.id) === String(form.payee_id));
+                if (!py) return null;
+                const rule = ruleOf(py);
+                const same = rule && JSON.stringify(ownerPayload(rule)) === JSON.stringify(ownerPayload(form));
+                return (
+                  <div className="field owner-rule-field">
+                    {same ? <span className="split-lines">{py.name}’s usual split</span> : (
+                      <label className="split-lines">
+                        <input type="checkbox" checked={!!form.save_rule} onChange={(e) => setForm({ ...form, save_rule: e.target.checked })} />
+                        {' '}Always split {py.name} this way
+                      </label>
+                    )}
+                  </div>
+                );
+              })()}
             </>
           )}
           {!(pairedTransfer && !editing) && <div className="field">

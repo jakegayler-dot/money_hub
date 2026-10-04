@@ -4,6 +4,7 @@ import { ah } from '../lib/asyncHandler.js';
 import { gstReport, gstPeriods, farmIncomeTax } from '../lib/tax.js';
 import { assertOpen } from '../lib/periods.js';
 import { toISODate, addDays } from '../lib/dates.js';
+import { CRA_GST_SQL } from '../lib/gstMatch.js';
 
 const router = Router();
 const yearOf = (q) => Number(q) || new Date().getFullYear();
@@ -54,21 +55,38 @@ router.post('/gst/unfile', ah(async (req, res) => {
   res.json({ ok: true });
 }));
 
-// Deposits (refund) or payments that could settle a filed return: after
-// the period ends, closest to the filed amount first.
+// Deposits (refund) or payments that could settle a filed return: within
+// 400 days after the period ends, closest to the filed amount first. One
+// CRA deposit often pays out several quarters, so a deposit already linked
+// to another return is offered too (`settles` names those quarters).
 router.get('/gst/candidates', ah(async (req, res) => {
   const { rows: [ret] } = await pool.query('SELECT * FROM gst_returns WHERE period_start = $1', [req.query.period_start]);
   if (!ret) return res.status(404).json({ error: 'File the return first.' });
   const net = Number(ret.net_amount);
   const { rows } = await pool.query(
-    `SELECT t.id, t.date, t.amount, t.description, a.name AS account_name
+    `SELECT t.id, t.date, t.amount, t.description, a.name AS account_name,
+            (SELECT string_agg(to_char(g.period_start, 'YYYY-MM-DD'), ', ' ORDER BY g.period_start)
+             FROM gst_returns g WHERE g.settlement_transaction_id = t.id) AS settles
      FROM transactions t JOIN accounts a ON a.id = t.account_id
-     WHERE t.date > $1 AND t.date <= $2 AND NOT t.is_transfer
+     WHERE t.date > $1 AND t.date <= $2
+       AND (NOT t.is_transfer OR EXISTS (SELECT 1 FROM gst_returns g WHERE g.settlement_transaction_id = t.id))
        AND ${net <= 0 ? 't.amount > 0' : 't.amount < 0'}
-       AND NOT EXISTS (SELECT 1 FROM gst_returns g WHERE g.settlement_transaction_id = t.id)
+       AND t.id IS DISTINCT FROM $4
      ORDER BY abs(abs(t.amount) - $3), t.date LIMIT 15`,
-    [toISODate(ret.period_end), addDays(toISODate(ret.period_end), 180), Math.abs(net)]
+    [toISODate(ret.period_end), addDays(toISODate(ret.period_end), 400), Math.abs(net), ret.settlement_transaction_id]
   );
+  res.json(rows.map((r) => ({ ...r, date: toISODate(r.date), amount: Number(r.amount) })));
+}));
+
+// Money to or from CRA that looks like GST/HST but isn't linked to a
+// quarter — it's counting as income or spending until it is.
+router.get('/gst/unlinked', ah(async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT t.id, t.date, t.amount, t.description, a.name AS account_name, t.is_transfer
+     FROM transactions t JOIN accounts a ON a.id = t.account_id LEFT JOIN payees p ON p.id = t.payee_id
+     WHERE t.date >= CURRENT_DATE - 550 AND ${CRA_GST_SQL}
+       AND NOT EXISTS (SELECT 1 FROM gst_returns g WHERE g.settlement_transaction_id = t.id)
+     ORDER BY t.date DESC LIMIT 30`);
   res.json(rows.map((r) => ({ ...r, date: toISODate(r.date), amount: Number(r.amount) })));
 }));
 
@@ -100,11 +118,13 @@ router.post('/gst/unsettle', ah(async (req, res) => {
     const { rows: [ret] } = await client.query('SELECT * FROM gst_returns WHERE period_start = $1 FOR UPDATE', [req.body?.period_start]);
     if (!ret?.settlement_transaction_id) return { status: 404, body: { error: 'Nothing linked.' } };
     const { rows: [tx] } = await client.query('SELECT * FROM transactions WHERE id = $1', [ret.settlement_transaction_id]);
-    if (tx) {
+    await client.query('UPDATE gst_returns SET settlement_transaction_id = NULL WHERE period_start = $1', [req.body.period_start]);
+    // Still settling another quarter? Then it stays a transfer.
+    const { rows: [other] } = await client.query('SELECT 1 FROM gst_returns WHERE settlement_transaction_id = $1 LIMIT 1', [ret.settlement_transaction_id]);
+    if (tx && !other) {
       await assertOpen(client, tx.date);
       await client.query('UPDATE transactions SET is_transfer = false WHERE id = $1', [tx.id]);
     }
-    await client.query('UPDATE gst_returns SET settlement_transaction_id = NULL WHERE period_start = $1', [req.body.period_start]);
     return { status: 200, body: { ok: true } };
   });
   res.status(out.status).json(out.body);

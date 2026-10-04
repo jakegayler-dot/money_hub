@@ -1,12 +1,12 @@
 import { Fragment, useEffect, useState } from 'react';
 import { money } from '../format.js';
-import { OWNER_LABELS } from '../owners.jsx';
+import { OWNER_LABELS, OwnerFields, ownerPayload, ownerFieldsFrom, ownerSummary, emptyOwnerFields } from '../owners.jsx';
 
 const emptyForm = {
   name: '', lender: '', purpose: 'term', linked_asset: '', principal: '',
   interest_rate_pct: '', rate_type: 'fixed', term_months: '', start_date: '',
   covenant_notes: '', covenant_date: '', asset_id: '',
-  segment: 'grain', payment_frequency: 'monthly', first_payment_date: '',
+  ...emptyOwnerFields, payment_frequency: 'monthly', first_payment_date: '',
 };
 
 // Payment frequencies offered by typical ag lenders — annual and
@@ -82,6 +82,7 @@ export default function Loans() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...form,
+        ...ownerPayload(form),
         principal: Number(form.principal),
         interest_rate_pct: Number(form.interest_rate_pct),
         term_months: Number(form.term_months),
@@ -125,7 +126,7 @@ export default function Loans() {
     setEditingId(l.id);
     setEditForm({
       name: l.name || '', lender: l.lender, purpose: l.purpose,
-      linked_asset: l.linked_asset || '', segment: l.segment || 'grain',
+      linked_asset: l.linked_asset || '', ...ownerFieldsFrom(l),
       principal: l.principal, interest_rate_pct: l.interest_rate_pct,
       rate_type: l.rate_type, term_months: l.term_months,
       start_date: l.start_date?.slice(0, 10) || '',
@@ -144,6 +145,7 @@ export default function Loans() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...editForm,
+        ...ownerPayload(editForm),
         principal: Number(editForm.principal),
         interest_rate_pct: Number(editForm.interest_rate_pct),
         term_months: Number(editForm.term_months),
@@ -327,12 +329,7 @@ export default function Loans() {
               {Object.entries(PURPOSE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
             </select>
           </div>
-          <div className="field">
-            <label>Owner (whose payments these are)</label>
-            <select value={form.segment} onChange={(e) => setForm({ ...form, segment: e.target.value })}>
-              {Object.entries(SEGMENT_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-            </select>
-          </div>
+          <OwnerFields state={form} setState={setForm} label="Owner — what the borrowed money is used for" />
           {(form.purpose === 'capital_asset' || form.purpose === 'mortgage') && (
             <div className="field">
               <label>{form.purpose === 'mortgage' ? 'Property description' : 'Linked asset'}</label>
@@ -420,7 +417,7 @@ export default function Loans() {
                   <tr>
                     <td>
                       {l.name || l.lender}
-                      <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>{l.name && l.lender ? `${l.lender} · ` : ''}{PURPOSE_LABELS[l.purpose] || l.purpose} · {SEGMENT_LABELS[l.segment] || 'Unassigned'}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>{l.name && l.lender ? `${l.lender} · ` : ''}{PURPOSE_LABELS[l.purpose] || l.purpose} · {ownerSummary(l)}</div>
                     </td>
                     <td>
                       {money(Number(l.outstanding_balance))}
@@ -541,10 +538,7 @@ export default function Loans() {
                               <select value={editForm.purpose} onChange={(e) => setEditForm({ ...editForm, purpose: e.target.value })}>
                                 {Object.entries(PURPOSE_LABELS).map(([v, lab]) => <option key={v} value={v}>{lab}</option>)}
                               </select></div>
-                            <div className="field"><label>Owner</label>
-                              <select value={editForm.segment} onChange={(e) => setEditForm({ ...editForm, segment: e.target.value })}>
-                                {Object.entries(SEGMENT_LABELS).map(([v, lab]) => <option key={v} value={v}>{lab}</option>)}
-                              </select></div>
+                            <OwnerFields state={editForm} setState={setEditForm} label="Owner — what the money is used for" />
                             <div className="field"><label>Linked asset / property</label>
                               <input value={editForm.linked_asset} onChange={(e) => setEditForm({ ...editForm, linked_asset: e.target.value })} /></div>
                             <div className="field"><label>Outstanding balance / principal</label>

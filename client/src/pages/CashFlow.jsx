@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import CashFlowTerminal from '../components/CashFlowTerminal.jsx';
+import WhatIf from '../components/WhatIf.jsx';
 import { money } from '../format.js';
 import { OwnerFields, ownerPayload, ownerSummary, emptyOwnerFields } from '../owners.jsx';
 
@@ -174,36 +175,124 @@ function Estimates({ onChange }) {
   );
 }
 
+const SCOPES = [['everything', 'Everything'], ['farm', 'Farm'], ['personal', 'Personal']];
+const SCOPE_META = { everything: 'All money, farm and personal', farm: 'Farm money — Grain and Cattle', personal: 'Personal money — Jake and Ashley' };
+const readPref = (k, d) => { try { const v = window.localStorage.getItem(`moneyhub.cf.${k}`); return v == null ? d : JSON.parse(v); } catch { return d; } };
+const writePref = (k, v) => { try { window.localStorage.setItem(`moneyhub.cf.${k}`, JSON.stringify(v)); } catch { /* private mode */ } };
+
+/** Which accounts count toward the starting cash. */
+function AccountPicker({ accounts, chosen, setChosen }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+  const all = accounts.map((a) => a.id);
+  const on = chosen || all;
+  const toggle = (id) => {
+    const next = on.includes(id) ? on.filter((x) => x !== id) : [...on, id];
+    setChosen(next.length === all.length ? null : next);
+  };
+  return (
+    <div className="cf-accounts" ref={ref}>
+      <button type="button" className="small secondary" aria-expanded={open} onClick={() => setOpen(!open)}>
+        Accounts · {on.length === all.length ? 'all' : `${on.length} of ${all.length}`}
+      </button>
+      {open && (
+        <div className="cf-accounts-pop" role="dialog" aria-label="Accounts in the starting cash">
+          {accounts.map((a) => (
+            <label key={a.id} className="cf-acct">
+              <input type="checkbox" checked={on.includes(a.id)} onChange={() => toggle(a.id)} />
+              <span>{a.name}<em>{a.farm >= 0.995 ? 'Farm' : a.farm <= 0.005 ? 'Personal' : `${Math.round(a.farm * 100)}% farm`}</em></span>
+              <b>{money(a.balance)}</b>
+            </label>
+          ))}
+          {chosen && <button type="button" className="small-link" onClick={() => setChosen(null)}>Use every account</button>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CashFlow() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [refresh, setRefresh] = useState(0);
+  const [scope, setScope] = useState(() => readPref('scope', 'everything'));
+  const [months, setMonths] = useState(() => readPref('months', 12));
+  const [includeTax, setIncludeTax] = useState(() => readPref('tax', true));
+  const [chosen, setChosen] = useState(() => readPref('accounts', null));
+  const [whatIf, setWhatIf] = useState(() => readPref('whatif', null)); // { scenario, name, id } shown on the chart
+  const [whatIfResult, setWhatIfResult] = useState(null);
+  const [editing, setEditing] = useState(false);
 
+  useEffect(() => { writePref('scope', scope); writePref('months', months); writePref('tax', includeTax); writePref('accounts', chosen); writePref('whatif', whatIf); },
+    [scope, months, includeTax, chosen, whatIf]);
+
+  const query = () => {
+    const q = new URLSearchParams({ scope, months: String(months), tax: includeTax ? '1' : '0' });
+    if (chosen) q.set('accounts', chosen.join(','));
+    return q;
+  };
   useEffect(() => {
-    fetch('/api/dashboard')
+    fetch(`/api/forecast?${query()}`)
       .then(async (r) => {
         const body = await r.json().catch(() => null);
-        if (!r.ok || !body || !body.liquidity) throw new Error((body && body.error) || `Server returned ${r.status}`);
+        if (!r.ok || !body || !body.trajectory) throw new Error((body && body.error) || `Server returned ${r.status}`);
         return body;
       })
-      .then(setData)
+      .then((d) => { setData(d); setError(null); })
       .catch((e) => setError(e.message));
-  }, [refresh]);
+  }, [refresh, scope, months, includeTax, (chosen || []).join(',')]);
+
+  // The what-if on the chart, re-run for the current view.
+  useEffect(() => {
+    if (!whatIf) { setWhatIfResult(null); return; }
+    fetch('/api/forecast/scenario', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scenario: whatIf.scenario, months, scope, accounts: chosen, tax: includeTax ? 1 : 0 }),
+    }).then((r) => r.json()).then((d) => setWhatIfResult(d.error ? null : d)).catch(() => setWhatIfResult(null));
+  }, [whatIf, refresh, scope, months, includeTax, (chosen || []).join(',')]);
 
   if (error) return <div className="empty-state">Could not load forecast: {error}</div>;
   if (!data) return <div className="empty-state">Loading…</div>;
 
-  const { trajectory, floorMonth, requiredFloor, startingBalance, passes, accounts = [] } = data.liquidity;
+  const { trajectory, floorMonth, requiredFloor, startingBalance, passes, accounts = [] } = data;
   const end = trajectory[trajectory.length - 1];
+  const options = { months, scope, accounts: chosen, includeTax };
 
   return (
     <>
       <div className="page-header">
         <h1 className="page-title">Cash Flow</h1>
-        <span className="page-meta">All accounts, farm and personal · rolling 12 months, {monthLabelFull(trajectory[0])} – {monthLabelFull(end)}</span>
+        <span className="page-meta">{SCOPE_META[scope]} · {monthLabelFull(trajectory[0])} – {monthLabelFull(end)}</span>
       </div>
 
-      <CashFlowTerminal liquidity={data.liquidity} />
+      <div className="cf-controls">
+        <span className="seg-toggle" role="group" aria-label="Whose money">
+          {SCOPES.map(([k, l]) => <button key={k} type="button" aria-pressed={scope === k} className={scope === k ? 'on' : ''} onClick={() => setScope(k)}>{l}</button>)}
+        </span>
+        <span className="seg-toggle" role="group" aria-label="Months ahead">
+          {[12, 18, 24].map((m) => <button key={m} type="button" aria-pressed={months === m} className={months === m ? 'on' : ''} onClick={() => setMonths(m)}>{m} months</button>)}
+        </span>
+        <label className="cf-switch">
+          <input type="checkbox" checked={includeTax} onChange={(e) => setIncludeTax(e.target.checked)} />
+          <span>Income tax</span>
+        </label>
+        <AccountPicker accounts={accounts} chosen={chosen} setChosen={setChosen} />
+        <button type="button" className="cf-whatif-btn" onClick={() => setEditing(true)}>What-if analysis</button>
+      </div>
+
+      <CashFlowTerminal liquidity={data} scenario={whatIfResult} scenarioName={whatIf?.name}
+        onOpenWhatIf={() => setEditing(true)} onClearScenario={() => setWhatIf(null)} />
+
+      {editing && (
+        <WhatIf options={options} initial={whatIf} onClose={() => setEditing(false)}
+          onShow={(w) => { setWhatIf(w); setEditing(false); }} />
+      )}
 
       <div className="panel">
         <div className="panel-header">Month by month</div>
@@ -211,14 +300,14 @@ export default function CashFlow() {
           <table>
             <thead>
               <tr>
-                <th>Month</th><th>Contracts</th><th>Est. in</th><th>Bills</th><th>Debt service</th><th>Cards</th><th>Fees</th><th>Tax</th><th>Est. out</th>
+                <th>Month</th><th>Contracts</th><th>Est. in</th><th>Bills</th><th>Debt service</th><th>Cards</th><th>Fees</th><th>GST</th><th>Tax</th><th>Est. out</th>
                 <th>Committed bal.</th><th>With estimates</th>
               </tr>
             </thead>
             <tbody>
               {trajectory.map((t) => {
                 const isFloor = t.month === floorMonth.month && t.year === floorMonth.year;
-                const v = (n, sign) => (n ? `${sign}${money(Math.round(n))}` : '—');
+                const v = (num, sign) => (num ? `${sign}${money(Math.round(num))}` : '—');
                 return (
                   <tr key={`${t.year}-${t.month}`} style={isFloor ? { background: 'var(--panel-hover)' } : undefined}>
                     <td>{monthLabelFull(t)}{isFloor && <> <span className={`badge ${passes ? 'warn' : 'fail'}`}>FLOOR</span></>}</td>
@@ -228,6 +317,7 @@ export default function CashFlow() {
                     <td>{v(t.debtServiceDue, '−')}</td>
                     <td>{v(t.creditCardDue, '−')}</td>
                     <td>{v(t.accountFees, '−')}</td>
+                    <td>{t.gst ? `${t.gst > 0 ? '+' : '−'}${money(Math.abs(Math.round(t.gst)))}` : '—'}</td>
                     <td>{v(t.taxInstalment, '−')}</td>
                     <td style={{ color: 'var(--text-muted)' }}>{v(t.estimatedOutflows, '−')}</td>
                     <td style={t.committedBalance < requiredFloor ? { color: 'var(--negative)' } : undefined}>{money(Math.round(t.committedBalance))}</td>
@@ -241,24 +331,24 @@ export default function CashFlow() {
       </div>
 
       <div className="panel">
-        <div className="panel-header">Accounts in the starting balance</div>
+        <div className="panel-header">Cash the forecast starts from</div>
         <table>
-          <thead><tr><th>Account</th><th>Ledger</th><th>Type</th><th>Balance today</th></tr></thead>
+          <thead><tr><th>Account</th><th>Owner</th><th>Balance today</th><th>Counted</th></tr></thead>
           <tbody>
             {accounts.map((a) => (
-              <tr key={a.id}>
-                <td>{a.name}</td>
-                <td>{a.ledger}</td>
-                <td>{a.type}</td>
+              <tr key={a.id} style={!a.included ? { opacity: 0.45 } : undefined}>
+                <td>{a.name}<div className="split-lines">{a.type}</div></td>
+                <td>{a.farm >= 0.995 ? 'Farm' : a.farm <= 0.005 ? 'Personal' : `${Math.round(a.farm * 100)}% farm`}</td>
                 <td className="nowrap" style={a.balance < 0 ? { color: 'var(--negative)' } : undefined}>{money(a.balance)}</td>
+                <td className="nowrap">{a.included ? money(a.counted) : 'left out'}</td>
               </tr>
             ))}
-            <tr><td colSpan={3} style={{ fontWeight: 600 }}>Total</td><td className="nowrap" style={{ fontWeight: 600 }}>{money(startingBalance)}</td></tr>
+            <tr><td colSpan={3} style={{ fontWeight: 600 }}>Starting cash</td><td className="nowrap" style={{ fontWeight: 600 }}>{money(startingBalance)}</td></tr>
           </tbody>
         </table>
       </div>
 
-      <Estimates onChange={() => setRefresh((n) => n + 1)} />
+      <Estimates onChange={() => setRefresh((x) => x + 1)} />
     </>
   );
 }

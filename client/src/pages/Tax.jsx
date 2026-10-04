@@ -112,6 +112,13 @@ function IncomeTax({ inc, year, whatIf, setWhatIf, reload, send }) {
             {' '}Capital purchases this year ({money(inc.actual.capex)}) aren't expenses — they come off through CCA.
           </p>
         )}
+        {inc.gst_gap && (
+          <p className="split-lines" style={{ margin: '0 16px 12px' }}>
+            {inc.gst_gap.purchases} farm purchase{inc.gst_gap.purchases === 1 ? '' : 's'} ({money(inc.gst_gap.amount)}) {inc.gst_gap.purchases === 1 ? 'has' : 'have'} no GST recorded,
+            so {inc.gst_gap.purchases === 1 ? 'it counts' : 'they count'} in full as expense. Zero-rated inputs (fertilizer, seed, chemical, feed) are right as they are;
+            for the rest, the GST paid is in expenses while its refund is a transfer — net income is understated by up to {money(inc.gst_gap.up_to)}.
+          </p>
+        )}
       </div>
 
       <div className="panel">
@@ -173,6 +180,8 @@ function IncomeTax({ inc, year, whatIf, setWhatIf, reload, send }) {
 function Gst({ gst, reload, send }) {
   const [filing, setFiling] = useState(null);   // { start, filed_on, net_amount }
   const [linking, setLinking] = useState(null); // { start, candidates }
+  const [unlinked, setUnlinked] = useState([]);
+  useEffect(() => { fetch('/api/tax/gst/unlinked').then((r) => r.json()).then((d) => setUnlinked(Array.isArray(d) ? d : [])).catch(() => {}); }, [gst]);
   const totals = gst.periods.reduce((a, p) => ({ collected: a.collected + p.collected, itc: a.itc + p.itc, missing: a.missing + p.purchases_no_gst }), { collected: 0, itc: 0, missing: 0 });
 
   return (
@@ -190,6 +199,19 @@ function Gst({ gst, reload, send }) {
         deposit so it isn't counted as income.
         {totals.missing > 0 && <strong> {totals.missing} farm purchase{totals.missing === 1 ? '' : 's'} this year {totals.missing === 1 ? 'has' : 'have'} no GST recorded — fine for zero-rated inputs (fertilizer, seed, chemical, feed); for anything else the credit is being missed.</strong>}
       </p>
+      {unlinked.length > 0 && (
+        <div className="gst-unlinked" role="status">
+          <strong>{unlinked.length === 1 ? 'This looks' : 'These look'} like GST with CRA but {unlinked.length === 1 ? "isn't" : "aren't"} linked to a quarter</strong>
+          {' '}— until {unlinked.length === 1 ? 'it is' : 'they are'}, {unlinked.length === 1 ? 'it counts' : 'they count'} as farm income or spending.
+          Pick the year it was for above, mark that quarter filed, then link it. One deposit can settle several quarters.
+          <ul>
+            {unlinked.map((t) => (
+              <li key={t.id}>{t.date} · <span className="nowrap">{cents(t.amount)}</span> · {t.account_name} · {t.description}{' '}
+                <a className="small-link" href={`/ledgers?edit=${t.id}`}>Open</a></li>
+            ))}
+          </ul>
+        </div>
+      )}
       <table>
         <thead><tr><th>Period</th><th>GST collected</th><th>Input tax credits</th><th>Net</th><th>Due</th><th>Status</th><th></th></tr></thead>
         <tbody>
@@ -216,7 +238,7 @@ function Gst({ gst, reload, send }) {
                   <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
                     <select aria-label="Refund or payment transaction" value={linking.pick || ''} onChange={(e) => setLinking({ ...linking, pick: e.target.value })}>
                       <option value="">{linking.candidates.length ? 'Pick the deposit/payment' : 'Nothing found after the period'}</option>
-                      {linking.candidates.map((c) => <option key={c.id} value={c.id}>{c.date} · {cents(c.amount)} · {c.account_name} · {c.description}</option>)}
+                      {linking.candidates.map((c) => <option key={c.id} value={c.id}>{c.date} · {cents(c.amount)} · {c.account_name} · {c.description}{c.settles ? ` — also settles ${c.settles}` : ''}</option>)}
                     </select>
                     <button className="small" disabled={!linking.pick} onClick={async () => { if (await send('POST', '/api/tax/gst/settle', { period_start: p.start, transaction_id: Number(linking.pick) })) { setLinking(null); reload(); } }}>Link</button>
                     <button className="small secondary" onClick={() => setLinking(null)}>Cancel</button>

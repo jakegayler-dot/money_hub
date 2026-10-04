@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { money } from '../format.js';
-import { OwnerFields, ownerPayload, ownerFieldsFrom, ownerSummary, emptyOwnerFields, OWNER_LABELS, OWNER_KEYS } from '../owners.jsx';
+import { OwnerFields, ownerPayload, ownerFieldsFrom, ownerSummary, emptyOwnerFields, OWNER_LABELS, OWNER_KEYS, ruleOf } from '../owners.jsx';
 import CategorySelect from '../components/CategorySelect.jsx';
 import PayeeSelect, { usePayees } from '../components/PayeeSelect.jsx';
 import VendorBills from '../components/VendorBills.jsx';
@@ -495,7 +495,7 @@ export default function Bills() {
                               <div className="field">
                                 <label>Vendor</label>
                                 <PayeeSelect payees={payees} value={editForm.payee_id} emptyLabel="No vendor"
-                                  onChange={(v) => setEditForm({ ...editForm, payee_id: v })} />
+                                  onChange={(v) => setEditForm({ ...editForm, payee_id: v, ...(ruleOf(payees.find((x) => String(x.id) === String(v))) || {}) })} />
                               </div>
                               <div className="field">
                                 <label>Category</label>
@@ -556,7 +556,8 @@ export default function Bills() {
           </div>
           <div className="field">
             <label>Vendor (blank = from the name)</label>
-            <PayeeSelect payees={payees} value={form.payee_id} emptyLabel="From the name" onChange={(v) => setForm({ ...form, payee_id: v })} />
+            <PayeeSelect payees={payees} value={form.payee_id} emptyLabel="From the name"
+              onChange={(v) => setForm({ ...form, payee_id: v, ...(ruleOf(payees.find((x) => String(x.id) === String(v))) || {}) })} />
           </div>
           <div className="field">
             <label>Ledger</label>

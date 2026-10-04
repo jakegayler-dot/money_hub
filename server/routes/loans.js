@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
-import { recordLoanPayment, removeTransaction, unsplitLoanPayment } from '../lib/postings.js';
-import { ledgerForSegment } from '../lib/segments.js';
+import { recordLoanPayment, removeTransaction, unsplitLoanPayment, syncLoanPieceOwners } from '../lib/postings.js';
+import { ledgerForSegment, segmentValues, validateSegment } from '../lib/segments.js';
 import { buildSchedule, scheduleFromTerms, dueDateFor, FREQUENCIES } from '../lib/amortization.js';
 import { toISODate, todayISO } from '../lib/dates.js';
 import { assetValueAt, outstandingAt, loadBalanceSheet } from '../lib/balanceSheet.js';
@@ -373,6 +373,9 @@ router.post('/', ah(async (req, res) => {
     payment_frequency = 'monthly', first_payment_date = null,
   } = req.body;
   checkFrequency(payment_frequency);
+  const ownerErr = validateSegment(req.body);
+  if (ownerErr) return res.status(400).json({ error: ownerErr });
+  const [segVal, isSplit, gPct, lPct, jPct, aPct] = segmentValues({ ...req.body, segment });
   // A blank name falls back to the lender name so two loans at the same
   // lender are never indistinguishable.
   const resolvedName = (name && name.trim()) || lender;
@@ -382,11 +385,12 @@ router.post('/', ah(async (req, res) => {
       `INSERT INTO loans
         (name, lender, purpose, linked_asset, principal, interest_rate_pct, rate_type,
          term_months, start_date, covenant_notes, covenant_date, segment, asset_id,
-         payment_frequency, first_payment_date)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+         payment_frequency, first_payment_date,
+         is_segment_split, segment_grain_pct, segment_livestock_pct, segment_jake_pct, segment_ashley_pct)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,
       [resolvedName, lender, purpose, linked_asset, principal, interest_rate_pct, rate_type,
-       term_months, start_date, covenant_notes, covenant_date, segment, asset_id || null,
-       payment_frequency, first_payment_date || null]
+       term_months, start_date, covenant_notes, covenant_date, segVal, asset_id || null,
+       payment_frequency, first_payment_date || null, isSplit, gPct, lPct, jPct, aPct]
     );
     const created = rows[0];
     // `custom_schedule` lets a loan mirror seasonal income (larger payments
@@ -420,6 +424,13 @@ router.patch('/:id', ah(async (req, res) => {
     if (!currentRows.length) return null;
     const cur = currentRows[0];
     const pick = (k) => (b[k] !== undefined ? b[k] : cur[k]);
+    const ownerSrc = b.is_segment_split !== undefined || b.segment !== undefined
+      ? { ...cur, ...Object.fromEntries(['segment', 'is_segment_split', 'segment_grain_pct', 'segment_livestock_pct', 'segment_jake_pct', 'segment_ashley_pct']
+        .filter((k) => b[k] !== undefined).map((k) => [k, b[k]])) }
+      : cur;
+    const ownerErr = validateSegment(ownerSrc);
+    if (ownerErr) { const e = new Error(ownerErr); e.status = 400; throw e; }
+    const [segVal, isSplit, gPct, lPct, jPct, aPct] = segmentValues(ownerSrc);
     const next = {
       name: pick('name'), lender: pick('lender'), purpose: pick('purpose'), linked_asset: pick('linked_asset'),
       segment: pick('segment'), principal: pick('principal'), interest_rate_pct: pick('interest_rate_pct'),
@@ -437,12 +448,13 @@ router.patch('/:id', ah(async (req, res) => {
          name = $1, lender = $2, purpose = $3, linked_asset = $4, segment = $5,
          principal = $6, interest_rate_pct = $7, rate_type = $8, term_months = $9, start_date = $10,
          covenant_notes = $11, covenant_date = $12, asset_id = $13,
-         payment_frequency = $14, first_payment_date = $15
+         payment_frequency = $14, first_payment_date = $15,
+         is_segment_split = $17, segment_grain_pct = $18, segment_livestock_pct = $19, segment_jake_pct = $20, segment_ashley_pct = $21
        WHERE id = $16 RETURNING *`,
-      [next.name, next.lender, next.purpose, next.linked_asset, next.segment,
+      [next.name, next.lender, next.purpose, next.linked_asset, segVal,
        next.principal, next.interest_rate_pct, next.rate_type, next.term_months, next.start_date,
        next.covenant_notes, next.covenant_date, next.asset_id,
-       next.payment_frequency, next.first_payment_date, req.params.id]
+       next.payment_frequency, next.first_payment_date, req.params.id, isSplit, gPct, lPct, jPct, aPct]
     );
     const updated = updatedRows[0];
 
@@ -463,6 +475,7 @@ router.patch('/:id', ah(async (req, res) => {
         );
       }
     }
+    await syncLoanPieceOwners(client, updated.id); // recorded payments follow the loan's owner split
     return { ...updated, schedule_regenerated: termsChanged };
   });
 

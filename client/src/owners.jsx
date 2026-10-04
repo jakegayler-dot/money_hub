@@ -26,6 +26,12 @@ export function ownerFieldsFrom(row = {}) {
   };
 }
 
+/** A vendor's owner split as form fields, or null when it has none. */
+export function ruleOf(payee) {
+  if (!payee || !(payee.segment || payee.is_segment_split)) return null;
+  return ownerFieldsFrom(payee);
+}
+
 /** Converts form state into the API payload for owner fields. */
 export function ownerPayload(state) {
   const split = !!state.is_segment_split;
@@ -69,7 +75,7 @@ export function OwnerFields({ state, setState, disabled = false, label = 'Belong
       ) : (
         <div className="field">
           <label>Split % (must total 100)</label>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(64px, 1fr))', gap: 6 }}>
             {OWNER_KEYS.map((k) => (
               <input
                 key={k} type="number" step="0.1" disabled={disabled}
