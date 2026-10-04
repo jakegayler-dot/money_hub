@@ -74,6 +74,34 @@ router.post('/payments/:paymentId/unrecord', ah(async (req, res) => {
 // Loan book: outstanding balance (schedule rows marked paid or already due
 // count as paid), the secured asset and its equity (asset value today minus
 // every loan secured by it), current payment, and verification age.
+// Principal still owed on every loan at each month end, from now until the
+// last one is paid off (the schedule's principal, the same rule as the
+// balances in the loan book). Drives the paydown chart.
+router.get('/projection', ah(async (req, res) => {
+  const { rows: loans } = await pool.query('SELECT * FROM loans ORDER BY id');
+  const { rows: pays } = await pool.query('SELECT loan_id, due_date, principal_amount, paid FROM loan_payments ORDER BY due_date');
+  const byLoan = new Map(loans.map((l) => [l.id, []]));
+  for (const p of pays) byLoan.get(p.loan_id)?.push(p);
+  const today = todayISO();
+  const last = pays.filter((p) => !p.paid).map((p) => toISODate(p.due_date)).sort().pop() || today;
+  const monthEnd = (ym) => { const [y, m] = ym.split('-').map(Number); const d = new Date(Date.UTC(y, m, 0)); return d.toISOString().slice(0, 10); };
+  const months = [];
+  let [y, m] = today.split('-').map(Number);
+  for (let i = 0; i < 480; i++) {
+    const ym = `${y}-${String(m).padStart(2, '0')}`;
+    months.push(i === 0 ? today : monthEnd(ym));
+    if (ym >= last.slice(0, 7)) break;
+    m += 1; if (m > 12) { m = 1; y += 1; }
+  }
+  res.json({
+    months,
+    loans: loans.map((l) => ({
+      id: l.id, name: l.name || l.lender,
+      balances: months.map((d) => round2(outstandingAt(l, byLoan.get(l.id) || [], d))),
+    })).filter((l) => l.balances[0] > 0.005),
+  });
+}));
+
 router.get('/', ah(async (req, res) => {
   const { loans, assets } = await loadBalanceSheet();
   const assetById = new Map(assets.map((a) => [a.id, a]));

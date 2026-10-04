@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { money } from '../format.js';
 import { OWNER_LABELS, OwnerFields, ownerPayload, ownerFieldsFrom, ownerSummary, emptyOwnerFields } from '../owners.jsx';
 
@@ -59,7 +59,13 @@ export default function Loans() {
   const [verifyForm, setVerifyForm] = useState(emptyVerify);
   const [verifyResult, setVerifyResult] = useState(null);
 
-  const load = () => { fetch('/api/loans').then((r) => r.json()).then(setLoans); };
+  const [showAdd, setShowAdd] = useState(false);
+  const [showPlanner, setShowPlanner] = useState(false);
+  const [projection, setProjection] = useState(null);
+  const load = () => {
+    fetch('/api/loans').then((r) => r.json()).then(setLoans);
+    fetch('/api/loans/projection').then((r) => r.json()).then((d) => setProjection(d && d.months ? d : null)).catch(() => {});
+  };
   const loadPlanner = () => {
     fetch('/api/loans/payments/upcoming?months=12')
       .then((r) => r.json())
@@ -99,6 +105,7 @@ export default function Loans() {
       return;
     }
     setForm(emptyForm);
+    setShowAdd(false);
     refreshAll();
   };
 
@@ -238,11 +245,14 @@ export default function Loans() {
     <>
       <div className="page-header">
         <h1 className="page-title">Loans</h1>
-        {staleLoans.length > 0 && (
-          <span className="page-meta" style={{ color: 'var(--gold-bright)' }}>
-            {staleLoans.length} loan{staleLoans.length > 1 ? 's' : ''} not verified in {STALE_DAYS} days
-          </span>
-        )}
+        <span style={{ display: 'inline-flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+          {staleLoans.length > 0 && (
+            <span className="page-meta" style={{ color: 'var(--gold-bright)' }}>
+              {staleLoans.length} loan{staleLoans.length > 1 ? 's' : ''} not verified in {STALE_DAYS} days
+            </span>
+          )}
+          <button type="button" className="small" onClick={() => setShowAdd(true)}>Add a loan</button>
+        </span>
       </div>
 
       {error && (
@@ -252,152 +262,8 @@ export default function Loans() {
         </div>
       )}
 
-      <div className="panel">
-        <div className="panel-header">
-          Payment planner — next 12 months · {money(plannerTotal)} scheduled
-        </div>
-        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0 12px' }}>
-          Every upcoming withdrawal, across all loans. These already count against the cash-flow
-          forecast. Recording one moves the money for real: it writes the ledger entry, updates the
-          account balance, and shows up in the enterprise expense totals — then drops off this plan.
-        </p>
-        {planner.length === 0 ? (
-          <div className="empty-state">No scheduled payments coming up.</div>
-        ) : (
-          <table>
-            <thead>
-              <tr><th>Due</th><th>Loan</th><th>Owner</th><th>Principal</th><th>Interest</th><th>Total</th><th></th></tr>
-            </thead>
-            <tbody>
-              {planner.map((p) => {
-                const overdue = new Date(p.due_date) < new Date();
-                return (
-                  <tr key={p.id}>
-                    <td>
-                      {p.due_date?.slice(0, 10)}
-                      {overdue && <> <span className="badge fail">OVERDUE</span></>}
-                    </td>
-                    <td>{p.loan_name}</td>
-                    <td>{SEGMENT_LABELS[p.segment] || '—'}</td>
-                    <td>{money(Number(p.principal_amount))}</td>
-                    <td>{money(Number(p.interest_amount))}</td>
-                    <td>{money(Number(p.principal_amount) + Number(p.interest_amount))}</td>
-                    <td>
-                      {recordingId === p.id ? (
-                        <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
-                          <select value={recordAccountId} onChange={(e) => setRecordAccountId(e.target.value)}>
-                            <option value="">Paid from…</option>
-                            {accounts.map((a) => (
-                              <option key={a.id} value={a.id}>{a.name} ({a.ledger})</option>
-                            ))}
-                          </select>
-                          <label style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-                            <input type="checkbox" checked={recordByCheck} onChange={(e) => setRecordByCheck(e.target.checked)} />
-                            By check
-                          </label>
-                          <button className="small" disabled={!recordAccountId} onClick={() => recordPayment(p.id)}>Confirm</button>
-                          <button className="small secondary" onClick={() => { setRecordingId(null); setRecordAccountId(''); setRecordByCheck(false); }}>Cancel</button>
-                        </span>
-                      ) : (
-                        <button className="small" onClick={() => { setRecordingId(p.id); setRecordAccountId(''); setRecordByCheck(false); }}>
-                          Record payment
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      <div className="panel">
-        <div className="panel-header">Add loan</div>
-        <form className="form-panel" onSubmit={submit}>
-          <div className="field">
-            <label>Name (yours to pick — tells this loan apart from others, even at the same lender)</label>
-            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Home mortgage, 2023 grain truck" />
-          </div>
-          <div className="field">
-            <label>Lender</label>
-            <input required value={form.lender} onChange={(e) => setForm({ ...form, lender: e.target.value })} />
-          </div>
-          <div className="field">
-            <label>Category</label>
-            <select value={form.purpose} onChange={(e) => setForm({ ...form, purpose: e.target.value })}>
-              {Object.entries(PURPOSE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-            </select>
-          </div>
-          <OwnerFields state={form} setState={setForm} label="Owner — what the borrowed money is used for" />
-          {(form.purpose === 'capital_asset' || form.purpose === 'mortgage') && (
-            <div className="field">
-              <label>{form.purpose === 'mortgage' ? 'Property description' : 'Linked asset'}</label>
-              <input value={form.linked_asset} onChange={(e) => setForm({ ...form, linked_asset: e.target.value })} placeholder={form.purpose === 'mortgage' ? 'e.g. Home quarter — SW 12-40-5' : ''} />
-            </div>
-          )}
-
-          <div className="field">
-            <label>{usesCurrentState(form.purpose) ? 'Outstanding balance today' : 'Principal'}</label>
-            <input type="number" step="0.01" required value={form.principal} onChange={(e) => setForm({ ...form, principal: e.target.value })} />
-          </div>
-          <div className="field">
-            <label>Interest rate (%)</label>
-            <input type="number" step="0.001" required value={form.interest_rate_pct} onChange={(e) => setForm({ ...form, interest_rate_pct: e.target.value })} />
-          </div>
-          <div className="field">
-            <label>Rate type</label>
-            <select value={form.rate_type} onChange={(e) => setForm({ ...form, rate_type: e.target.value })}>
-              <option value="fixed">Fixed</option>
-              <option value="variable">Variable</option>
-            </select>
-          </div>
-          <div className="field">
-            <label>{usesCurrentState(form.purpose) ? 'Amortization remaining (months)' : 'Amortization (months — 20 yr = 240)'}</label>
-            <input type="number" required value={form.term_months} onChange={(e) => setForm({ ...form, term_months: e.target.value })} />
-          </div>
-          <div className="field">
-            <label>{usesCurrentState(form.purpose) ? 'As of date' : 'Start (advance) date'}</label>
-            <input type="date" required value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} />
-          </div>
-          <div className="field">
-            <label>Payment frequency</label>
-            <select value={form.payment_frequency} onChange={(e) => setForm({ ...form, payment_frequency: e.target.value })}>
-              {Object.entries(FREQUENCY_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-            </select>
-          </div>
-          <div className="field">
-            <label>First payment date (optional)</label>
-            <input type="date" value={form.first_payment_date} onChange={(e) => setForm({ ...form, first_payment_date: e.target.value })} />
-            <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '4px 0 0' }}>
-              Set this when the first payment isn't one period after the start — e.g. an annual loan advanced in
-              March with its first payment Dec 1. That first payment then carries interest for the actual months
-              elapsed, and every later payment falls on the same calendar day.
-            </p>
-          </div>
-
-          <div className="field">
-            <label>Secured by asset (optional)</label>
-            <select value={form.asset_id} onChange={(e) => setForm({ ...form, asset_id: e.target.value })}>
-              <option value="">— none —</option>
-              {assets.map((a) => <option key={a.id} value={a.id}>{a.name} ({money(a.value_now)})</option>)}
-            </select>
-            <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '4px 0 0' }}>
-              Asset values, appreciation and depreciation live on the Assets tab — add the asset there first.
-            </p>
-          </div>
-
-          <div className="field">
-            <label>Covenant / review date</label>
-            <input type="date" value={form.covenant_date} onChange={(e) => setForm({ ...form, covenant_date: e.target.value })} />
-          </div>
-          <div className="field">
-            <label>Covenant notes</label>
-            <input value={form.covenant_notes} onChange={(e) => setForm({ ...form, covenant_notes: e.target.value })} />
-          </div>
-          <button type="submit">Save loan &amp; generate schedule</button>
-        </form>
-      </div>
+      <LoanMetrics loans={loans} planner={planner} projection={projection} staleCount={staleLoans.length} />
+      {projection && projection.loans.length > 0 && <PaydownChart projection={projection} />}
 
       <div className="panel">
         <div className="panel-header">Loan book</div>
@@ -408,14 +274,16 @@ export default function Loans() {
             <thead>
               <tr>
                 <th>Loan</th><th>Outstanding</th><th>Rate</th><th>Next payment</th>
-                <th>Secured by</th><th>Equity</th><th></th>
+                <th>Secured by</th><th>Equity</th>
               </tr>
             </thead>
             <tbody>
               {loans.map((l) => (
                 <Fragment key={l.id}>
-                  <tr>
+                  <tr className={`loan-row${expandedId === l.id ? ' open' : ''}`} onClick={() => toggleExpand(l)} tabIndex={0}
+                    onKeyDown={(e) => { if (e.key === 'Enter') toggleExpand(l); }} aria-expanded={expandedId === l.id}>
                     <td>
+                      <span className="loan-caret" aria-hidden="true">{expandedId === l.id ? '▾' : '▸'}</span>{' '}
                       {l.name || l.lender}
                       <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>{l.name && l.lender ? `${l.lender} · ` : ''}{PURPOSE_LABELS[l.purpose] || l.purpose} · {ownerSummary(l)}</div>
                     </td>
@@ -438,25 +306,11 @@ export default function Loans() {
                       {l.equity != null ? money(Number(l.equity)) : '—'}
                       {l.asset_loan_count > 1 && <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>after all {l.asset_loan_count} loans</div>}
                     </td>
-                    <td>
-                      <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
-                        <button className="small" onClick={() => (verifyingId === l.id ? setVerifyingId(null) : startVerify(l))}>
-                          {verifyingId === l.id ? 'Close' : 'Verify'}
-                        </button>
-                        <button className="small secondary" onClick={() => toggleExpand(l)}>
-                          {expandedId === l.id ? 'Hide' : 'Details'}
-                        </button>
-                        <button className="small secondary" onClick={() => (editingId === l.id ? setEditingId(null) : startEdit(l))}>
-                          {editingId === l.id ? 'Close' : 'Edit'}
-                        </button>
-                        <button className="small secondary" onClick={() => deleteLoan(l)}>Delete</button>
-                      </span>
-                    </td>
                   </tr>
 
                   {verifyingId === l.id && (
                     <tr>
-                      <td colSpan={7} style={{ background: 'var(--panel-alt)' }}>
+                      <td colSpan={6} style={{ background: 'var(--panel-alt)' }}>
                         <div style={{ padding: '12px 4px' }}>
                           <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 10px' }}>
                             Enter what your statement or lender says. The schedule currently expects{' '}
@@ -521,7 +375,7 @@ export default function Loans() {
 
                   {editingId === l.id && editForm && (
                     <tr>
-                      <td colSpan={7} style={{ background: 'var(--panel-alt, rgba(255,255,255,0.03))' }}>
+                      <td colSpan={6} style={{ background: 'var(--panel-alt, rgba(255,255,255,0.03))' }}>
                         <div style={{ padding: '12px 4px' }}>
                           <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 10px' }}>
                             Changing balance, rate, term, start date, frequency or first payment date regenerates this loan's payment
@@ -582,11 +436,20 @@ export default function Loans() {
 
                   {expandedId === l.id && (
                     <tr>
-                      <td colSpan={7} style={{ background: 'var(--panel-alt, rgba(255,255,255,0.03))' }}>
+                      <td colSpan={6} style={{ background: 'var(--panel-alt, rgba(255,255,255,0.03))' }}>
                         {!schedules[l.id] ? (
                           <div className="empty-state">Loading schedule…</div>
                         ) : (
                           <div style={{ padding: '12px 4px' }}>
+                            <div className="loan-actions">
+                              <button className="small" onClick={() => (verifyingId === l.id ? setVerifyingId(null) : startVerify(l))}>
+                                {verifyingId === l.id ? 'Close verify' : 'Verify against a statement'}
+                              </button>
+                              <button className="small secondary" onClick={() => (editingId === l.id ? setEditingId(null) : startEdit(l))}>
+                                {editingId === l.id ? 'Close edit' : 'Edit loan'}
+                              </button>
+                              <button className="small secondary" onClick={() => deleteLoan(l)}>Delete</button>
+                            </div>
                             {schedules[l.id].asset && (
                               <p style={{ fontSize: 13, margin: '0 0 10px' }}>
                                 <strong>Secured by:</strong> {schedules[l.id].asset.name} — worth {money(schedules[l.id].asset.value_now)} today
@@ -688,6 +551,295 @@ export default function Loans() {
           </table>
         )}
       </div>
+      <div className="panel">
+        <button type="button" className="panel-header loans-planner-toggle" aria-expanded={showPlanner} onClick={() => setShowPlanner(!showPlanner)}>
+          <span>{showPlanner ? '▾' : '▸'} Upcoming payments — next 12 months · {planner.length} payment{planner.length === 1 ? '' : 's'} · {money(plannerTotal)}</span>
+          <span className="split-lines">{showPlanner ? 'Hide' : 'Show and record payments'}</span>
+        </button>
+        {showPlanner && (<>
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0 12px' }}>
+          Every upcoming withdrawal, across all loans. These already count against the cash-flow
+          forecast. Recording one moves the money for real: it writes the ledger entry, updates the
+          account balance, and shows up in the enterprise expense totals — then drops off this plan.
+        </p>
+        {planner.length === 0 ? (
+          <div className="empty-state">No scheduled payments coming up.</div>
+        ) : (
+          <table>
+            <thead>
+              <tr><th>Due</th><th>Loan</th><th>Owner</th><th>Principal</th><th>Interest</th><th>Total</th><th></th></tr>
+            </thead>
+            <tbody>
+              {planner.map((p) => {
+                const overdue = new Date(p.due_date) < new Date();
+                return (
+                  <tr key={p.id}>
+                    <td>
+                      {p.due_date?.slice(0, 10)}
+                      {overdue && <> <span className="badge fail">OVERDUE</span></>}
+                    </td>
+                    <td>{p.loan_name}</td>
+                    <td>{SEGMENT_LABELS[p.segment] || '—'}</td>
+                    <td>{money(Number(p.principal_amount))}</td>
+                    <td>{money(Number(p.interest_amount))}</td>
+                    <td>{money(Number(p.principal_amount) + Number(p.interest_amount))}</td>
+                    <td>
+                      {recordingId === p.id ? (
+                        <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <select value={recordAccountId} onChange={(e) => setRecordAccountId(e.target.value)}>
+                            <option value="">Paid from…</option>
+                            {accounts.map((a) => (
+                              <option key={a.id} value={a.id}>{a.name} ({a.ledger})</option>
+                            ))}
+                          </select>
+                          <label style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                            <input type="checkbox" checked={recordByCheck} onChange={(e) => setRecordByCheck(e.target.checked)} />
+                            By check
+                          </label>
+                          <button className="small" disabled={!recordAccountId} onClick={() => recordPayment(p.id)}>Confirm</button>
+                          <button className="small secondary" onClick={() => { setRecordingId(null); setRecordAccountId(''); setRecordByCheck(false); }}>Cancel</button>
+                        </span>
+                      ) : (
+                        <button className="small" onClick={() => { setRecordingId(p.id); setRecordAccountId(''); setRecordByCheck(false); }}>
+                          Record payment
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+        </>)}
+      </div>
+
+      {showAdd && (
+      <div className="loan-modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowAdd(false); }}>
+      <div className="panel loan-modal" role="dialog" aria-modal="true" aria-label="Add a loan">
+        <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>Add a loan</span>
+          <button type="button" className="wi-close" aria-label="Close" onClick={() => setShowAdd(false)}>×</button>
+        </div>
+        <form className="form-panel" onSubmit={submit}>
+          <div className="field">
+            <label>Name (yours to pick — tells this loan apart from others, even at the same lender)</label>
+            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Home mortgage, 2023 grain truck" />
+          </div>
+          <div className="field">
+            <label>Lender</label>
+            <input required value={form.lender} onChange={(e) => setForm({ ...form, lender: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>Category</label>
+            <select value={form.purpose} onChange={(e) => setForm({ ...form, purpose: e.target.value })}>
+              {Object.entries(PURPOSE_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </div>
+          <OwnerFields state={form} setState={setForm} label="Owner — what the borrowed money is used for" />
+          {(form.purpose === 'capital_asset' || form.purpose === 'mortgage') && (
+            <div className="field">
+              <label>{form.purpose === 'mortgage' ? 'Property description' : 'Linked asset'}</label>
+              <input value={form.linked_asset} onChange={(e) => setForm({ ...form, linked_asset: e.target.value })} placeholder={form.purpose === 'mortgage' ? 'e.g. Home quarter — SW 12-40-5' : ''} />
+            </div>
+          )}
+
+          <div className="field">
+            <label>{usesCurrentState(form.purpose) ? 'Outstanding balance today' : 'Principal'}</label>
+            <input type="number" step="0.01" required value={form.principal} onChange={(e) => setForm({ ...form, principal: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>Interest rate (%)</label>
+            <input type="number" step="0.001" required value={form.interest_rate_pct} onChange={(e) => setForm({ ...form, interest_rate_pct: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>Rate type</label>
+            <select value={form.rate_type} onChange={(e) => setForm({ ...form, rate_type: e.target.value })}>
+              <option value="fixed">Fixed</option>
+              <option value="variable">Variable</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>{usesCurrentState(form.purpose) ? 'Amortization remaining (months)' : 'Amortization (months — 20 yr = 240)'}</label>
+            <input type="number" required value={form.term_months} onChange={(e) => setForm({ ...form, term_months: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>{usesCurrentState(form.purpose) ? 'As of date' : 'Start (advance) date'}</label>
+            <input type="date" required value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>Payment frequency</label>
+            <select value={form.payment_frequency} onChange={(e) => setForm({ ...form, payment_frequency: e.target.value })}>
+              {Object.entries(FREQUENCY_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>First payment date (optional)</label>
+            <input type="date" value={form.first_payment_date} onChange={(e) => setForm({ ...form, first_payment_date: e.target.value })} />
+            <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '4px 0 0' }}>
+              Set this when the first payment isn't one period after the start — e.g. an annual loan advanced in
+              March with its first payment Dec 1. That first payment then carries interest for the actual months
+              elapsed, and every later payment falls on the same calendar day.
+            </p>
+          </div>
+
+          <div className="field">
+            <label>Secured by asset (optional)</label>
+            <select value={form.asset_id} onChange={(e) => setForm({ ...form, asset_id: e.target.value })}>
+              <option value="">— none —</option>
+              {assets.map((a) => <option key={a.id} value={a.id}>{a.name} ({money(a.value_now)})</option>)}
+            </select>
+            <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '4px 0 0' }}>
+              Asset values, appreciation and depreciation live on the Assets tab — add the asset there first.
+            </p>
+          </div>
+
+          <div className="field">
+            <label>Covenant / review date</label>
+            <input type="date" value={form.covenant_date} onChange={(e) => setForm({ ...form, covenant_date: e.target.value })} />
+          </div>
+          <div className="field">
+            <label>Covenant notes</label>
+            <input value={form.covenant_notes} onChange={(e) => setForm({ ...form, covenant_notes: e.target.value })} />
+          </div>
+          <button type="submit">Save loan &amp; generate schedule</button>
+        </form>
+      </div>
+      </div>
+      )}
     </>
+  );
+}
+
+const farmShare = (l) => (l.is_segment_split
+  ? ((Number(l.segment_grain_pct) || 0) + (Number(l.segment_livestock_pct) || 0)) / 100
+  : ['jake', 'ashley', 'personal'].includes(l.segment) ? 0 : 1);
+const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const monthYear = (d) => (d ? `${MONTH_SHORT[Number(d.slice(5, 7)) - 1]} ${d.slice(0, 4)}` : '—');
+
+/** The loan book in five numbers. */
+function LoanMetrics({ loans, planner, projection, staleCount }) {
+  const total = loans.reduce((s, l) => s + Number(l.outstanding_balance || 0), 0);
+  const rate = total ? loans.reduce((s, l) => s + Number(l.outstanding_balance || 0) * Number(l.interest_rate_pct || 0), 0) / total : 0;
+  const farm = loans.reduce((s, l) => s + Number(l.outstanding_balance || 0) * farmShare(l), 0);
+  const principal = planner.reduce((s, p) => s + Number(p.principal_amount), 0);
+  const interest = planner.reduce((s, p) => s + Number(p.interest_amount), 0);
+  const overdue = loans.reduce((s, l) => s + (l.overdue_unrecorded || 0), 0);
+  const freeDate = projection ? projection.months[projection.months.length - 1] : null;
+  return (
+    <div className="grid loan-metrics">
+      <div className="metric-card">
+        <div className="metric-label">Owed on all loans</div>
+        <div className="metric-value">{money(total)}</div>
+        <div className="metric-sub">{loans.length} loan{loans.length === 1 ? '' : 's'} · farm {money(farm)} · personal {money(total - farm)}</div>
+      </div>
+      <div className="metric-card">
+        <div className="metric-label">Next 12 months</div>
+        <div className="metric-value">{money(principal + interest)}</div>
+        <div className="metric-sub">{money(principal)} principal · {money(interest)} interest</div>
+      </div>
+      <div className="metric-card">
+        <div className="metric-label">Average rate</div>
+        <div className="metric-value">{rate.toFixed(2)}%</div>
+        <div className="metric-sub">Weighted by what's owed</div>
+      </div>
+      <div className="metric-card">
+        <div className="metric-label">Debt-free</div>
+        <div className="metric-value">{monthYear(freeDate)}</div>
+        <div className="metric-sub">On the current schedules</div>
+      </div>
+      <div className="metric-card">
+        <div className="metric-label">Needs attention</div>
+        <div className={`metric-value${overdue || staleCount ? ' negative' : ''}`}>{overdue + staleCount || 'None'}</div>
+        <div className="metric-sub">{overdue} past payment{overdue === 1 ? '' : 's'} unrecorded · {staleCount} not verified in {STALE_DAYS} days</div>
+      </div>
+    </div>
+  );
+}
+
+const SERIES = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#9085e9'];
+
+/** Principal still owed by month, stacked by loan, until the last one is paid off. */
+function PaydownChart({ projection }) {
+  const boxRef = useRef(null);
+  const [W, setW] = useState(900);
+  const [hover, setHover] = useState(null);
+  useEffect(() => {
+    if (!boxRef.current || typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(([e]) => setW(Math.max(300, Math.round(e.contentRect.width))));
+    ro.observe(boxRef.current);
+    return () => ro.disconnect();
+  }, []);
+  const { months } = projection;
+  // Biggest loans get their own colour; the rest fold into "Other".
+  const sorted = [...projection.loans].sort((a, b) => b.balances[0] - a.balances[0]);
+  const series = sorted.slice(0, SERIES.length).map((l, i) => ({ ...l, color: SERIES[i] }));
+  if (sorted.length > SERIES.length) {
+    const rest = sorted.slice(SERIES.length);
+    series.push({ id: 'other', name: `Other (${rest.length})`, color: '#6b7280', balances: months.map((_, i) => rest.reduce((s, l) => s + l.balances[i], 0)) });
+  }
+  const n = months.length;
+  const H = W < 560 ? 220 : 280;
+  const pad = { t: 14, r: 14, b: 26, l: W < 560 ? 48 : 64 };
+  const iw = W - pad.l - pad.r; const ih = H - pad.t - pad.b;
+  const totals = months.map((_, i) => series.reduce((s, x) => s + x.balances[i], 0));
+  const max = Math.max(1, ...totals);
+  const rough = max / 4; const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+  const step = [1, 2, 2.5, 5, 10].map((k) => k * mag).find((v) => v >= rough);
+  const top = Math.ceil(max / step) * step;
+  const x = (i) => pad.l + (n > 1 ? (i / (n - 1)) * iw : 0);
+  const y = (v) => pad.t + (1 - v / top) * ih;
+  const kf = (v) => (v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : `$${Math.round(v / 1000)}k`);
+  // Stack: each loan's band sits on the ones before it.
+  let base = months.map(() => 0);
+  const bands = series.map((s) => {
+    const lo = base; const hi = base.map((b, i) => b + s.balances[i]); base = hi;
+    const d = `${hi.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')} ${lo.map((v, i) => [i, v]).reverse().map(([i, v]) => `L${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')} Z`;
+    return { ...s, d };
+  });
+  const years = [];
+  months.forEach((d, i) => { if (i > 0 && d.slice(5, 7) === '12') years.push({ i, label: String(Number(d.slice(0, 4)) + 1) }); });
+  const every = Math.max(1, Math.ceil(years.length / (W < 560 ? 5 : 10)));
+  const grid = []; for (let v = 0; v <= top + 1; v += step) grid.push(v);
+  const svgRef = useRef(null);
+  const move = (e) => {
+    const r = svgRef.current.getBoundingClientRect();
+    const px = ((e.clientX - r.left) / r.width) * W;
+    setHover(Math.max(0, Math.min(n - 1, Math.round(((px - pad.l) / iw) * (n - 1)))));
+  };
+  const at = hover;
+  return (
+    <div className="panel">
+      <div className="panel-header">Principal paydown</div>
+      <div className="loan-chart" ref={boxRef}>
+        <div className="loan-legend">
+          {series.map((s) => <span key={s.id}><i style={{ background: s.color }} />{s.name}</span>)}
+        </div>
+        <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width={W} height={H} className="loan-svg" role="img"
+          aria-label={`Principal owed, ${kf(totals[0])} today, paid off by ${monthYear(months[n - 1])}.`}
+          onPointerMove={move} onPointerLeave={() => setHover(null)}>
+          {grid.map((v) => (
+            <g key={v}>
+              <line x1={pad.l} x2={pad.l + iw} y1={y(v)} y2={y(v)} stroke="var(--border)" />
+              <text x={pad.l - 8} y={y(v) + 4} textAnchor="end" className="cft-axis">{kf(v)}</text>
+            </g>
+          ))}
+          {bands.map((b) => <path key={b.id} d={b.d} fill={b.color} fillOpacity="0.75" stroke="var(--panel)" strokeWidth="1" />)}
+          {years.filter((_, k) => k % every === 0).map((yv) => (
+            <text key={yv.i} x={x(yv.i)} y={H - 6} textAnchor="middle" className="cft-axis">{yv.label}</text>
+          ))}
+          {at != null && <line x1={x(at)} x2={x(at)} y1={pad.t} y2={pad.t + ih} stroke="var(--text-faint)" strokeDasharray="3 3" />}
+        </svg>
+        <div className="loan-readout" aria-live="polite">
+          {at != null ? (
+            <>
+              <strong>{monthYear(months[at])}</strong>
+              <span>Total <b>{money(totals[at])}</b></span>
+              {series.filter((s) => s.balances[at] > 0.5).map((s) => <span key={s.id}><i style={{ background: s.color }} />{s.name} <b>{money(s.balances[at])}</b></span>)}
+            </>
+          ) : <span className="split-lines">Point at the chart to see what's owed on each loan.</span>}
+        </div>
+      </div>
+    </div>
   );
 }
