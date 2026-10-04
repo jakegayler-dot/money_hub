@@ -26,6 +26,9 @@ function sortRows(rows, { key, dir }) {
     const y = get(b);
     const c = typeof x === 'number' ? x - y : String(x).localeCompare(String(y));
     if (c) return c * sign;
+    // Same day: entry order (the order the running balance is worked in),
+    // flipped with the date so the balance column reads straight down.
+    if (key === 'date') return (a.id - b.id) * sign;
     return String(b.date).localeCompare(String(a.date)) || b.id - a.id;
   });
 }
