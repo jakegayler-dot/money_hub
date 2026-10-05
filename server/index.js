@@ -29,6 +29,8 @@ import { pairAllCardPayments, splitAllLoanPayments, syncLoanPieceOwners } from '
 import { withTransaction } from './db.js';
 import { authRouter, requireSignIn, authEnabled } from './lib/appAuth.js';
 import sentinelReadRoute from './routes/sentinelRead.js';
+import sentinelRoute from './routes/sentinel.js';
+import { sentinelWriteTrigger, startSentinelSync } from './lib/sentinel.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -40,11 +42,18 @@ app.use(cors());
 app.use('/api/receipts/upload', receiptUpload);
 app.use(express.json());
 
+// Any successful write under /api (including statement ingest paying bills)
+// schedules a debounced Sentinel sync. Fires after the response is sent, so
+// it can never slow down or fail the request itself.
+app.use('/api', sentinelWriteTrigger);
+
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 // Sentinel's read-only data API: its own key (SENTINEL_ACTION_KEY), so
 // it's mounted before the sign-in guard below and is the only path exempt.
 app.use('/api/sentinel/read', sentinelReadRoute);
+// The sync preview (GET /api/sentinel/preview) has its own key too (X-Api-Key = INGEST_API_KEY).
+app.use('/api/sentinel', sentinelRoute);
 
 // Everything under /api below this needs a signed-in browser or the API key.
 app.use('/api/auth', authRouter);
@@ -103,6 +112,7 @@ process.on('unhandledRejection', (reason) => {
 const port = process.env.PORT || 4000;
 app.listen(port, () => {
   console.log(`Money Hub listening on :${port}`);
+  startSentinelSync(); // bills, loan and card payments, contracts → Sentinel's calendar; Money tile summary
   // Receipts that arrived before the API key was set, or while the server was down.
   setTimeout(() => readPending().then(matchPending).catch((e) => console.error('Receipt catch-up failed:', e.message)), 3000);
   // Card payments seen on both the bank and the card statement count once

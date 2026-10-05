@@ -98,3 +98,25 @@ LIQUIDITY_BUFFER_PCT=0.15
 DSCR_THRESHOLD=1.25
 RESERVE_TARGET_MONTHS=2
 ```
+
+### Sentinel sync (optional)
+
+Money Hub pushes its calendar-shaped data to Sentinel (Jake's calendar/task
+hub) as one full snapshot: bills (plus projected future occurrences of
+unpaid monthly/quarterly bills), loan payments, credit card statements, loan
+covenant dates and expected contract payments, plus the Money tile summary.
+Sent ~30 s after boot, ~60 s after any successful write under `/api`, and
+every 6 hours; failures retry with backoff (1 → 60 min). Code:
+`server/lib/sentinel.js` (push + scheduling) and `server/lib/sentinelSnapshot.js`
+(pure builder, tested by `npm test`). Wired up in `server/index.js`.
+
+```
+SENTINEL_URL=https://sentinel.example.com   # base URL; posts to /v1/sources/money_hub/snapshot
+SENTINEL_API_KEY=...                         # Sentinel's key for the money_hub source
+APP_URL=https://money-hub.example.com        # optional: deep links to the Bills/Loans/Credit cards/Contracts pages
+SENTINEL_ACTION_KEY=...                      # Sentinel's key for the read-only /api/sentinel/read API
+```
+
+Nothing is sent unless both `SENTINEL_URL` and `SENTINEL_API_KEY` are set.
+`GET /api/sentinel/preview` (header `X-Api-Key: <INGEST_API_KEY>`) returns
+the exact bodies that would be sent, without sending them.

@@ -89,8 +89,8 @@ export async function loadSummaryInputs(now = new Date(), snapshotRows = null) {
   const d12 = addMonths(today, -12);
   const ytdFrom = `${today.slice(0, 4)}-01-01`;
   const [liquidity, coverage, sheet, accounts, flows, t12Service, cardDue, rows] = await Promise.all([
-    liquidityFloor(today),
-    termDebtCoverage(today),
+    liquidityFloor(),
+    termDebtCoverage(),
     loadBalanceSheet(today),
     pool.query(`SELECT ledger, opening_balance AS balance FROM accounts`),
     pool.query(
