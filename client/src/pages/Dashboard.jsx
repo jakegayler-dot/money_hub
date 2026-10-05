@@ -1,6 +1,17 @@
 import { useEffect, useState } from 'react';
 import MetricCard from '../components/MetricCard.jsx';
-import { money, ratio, pct } from '../format.js';
+import { money, ratio, pct, localToday } from '../format.js';
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+/** "7 bills, 9 loan payments and 2 card statements" — the same words as Sentinel's Money tile. */
+function overdueLabel(o) {
+  const parts = [
+    o.bills ? plural(o.bills, 'bill', 'bills') : null,
+    o.loan_payments ? plural(o.loan_payments, 'loan payment', 'loan payments') : null,
+    o.card_statements ? plural(o.card_statements, 'card statement', 'card statements') : null,
+  ].filter(Boolean);
+  return parts.length <= 1 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+}
 
 export default function Dashboard() {
   const [data, setData] = useState(null);
@@ -22,7 +33,7 @@ export default function Dashboard() {
   if (error) return <div className="empty-state">Could not load dashboard: {error}. Try refreshing — if it persists, check the server's deploy logs.</div>;
   if (!data) return <div className="empty-state">Loading…</div>;
 
-  const { coverage, liquidity, reserve, upcomingDebtService, ownerDrawYTD, bills, annualAccountFees, outstandingChecks, contractedInflows, creditCards, netWorth, year } = data;
+  const { coverage, liquidity, reserve, upcomingDebtService, ownerDrawYTD, bills, overdue, annualAccountFees, outstandingChecks, contractedInflows, creditCards, netWorth, year } = data;
 
   return (
     <>
@@ -61,9 +72,17 @@ export default function Dashboard() {
         <MetricCard
           label="Unpaid bills"
           value={money(bills.totalUnpaid)}
-          sub={bills.overdueCount > 0 ? `${bills.overdueCount} overdue` : 'None overdue'}
+          sub={bills.overdueCount > 0 ? `${plural(bills.overdueCount, 'bill', 'bills')} overdue` : 'None overdue'}
           tone={bills.overdueCount > 0 ? 'negative' : undefined}
         />
+        {overdue && (
+          <MetricCard
+            label="Overdue"
+            value={overdue.count ? money(overdue.total) : 'Nothing'}
+            sub={overdue.count ? overdueLabel(overdue) : 'Bills, loan payments and card statements all current'}
+            tone={overdue.count ? 'negative' : 'positive'}
+          />
+        )}
         <MetricCard
           label="Owner draw YTD"
           value={money(ownerDrawYTD)}
@@ -157,14 +176,14 @@ export default function Dashboard() {
             </thead>
             <tbody>
               {bills.upcoming.map((b) => {
-                const overdue = new Date(b.due_date) < new Date();
+                const late = String(b.due_date).slice(0, 10) < localToday();
                 return (
                   <tr key={b.id}>
                     <td>{b.due_date?.slice(0, 10)}</td>
                     <td>{b.name}</td>
                     <td>{b.category || '—'}</td>
                     <td>{money(Number(b.amount))}</td>
-                    <td>{overdue ? <span className="badge fail">OVERDUE</span> : <span className="badge warn">DUE</span>}</td>
+                    <td>{late ? <span className="badge fail">OVERDUE</span> : <span className="badge warn">DUE</span>}</td>
                   </tr>
                 );
               })}

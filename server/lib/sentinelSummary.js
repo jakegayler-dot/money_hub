@@ -113,23 +113,39 @@ export function businessAssetsCents(bal) {
 }
 
 // ---- Overdue obligations ----------------------------------------------------
+// One definition, used by the Money tile, the dashboard and the Bills page:
+// unpaid bills past due, scheduled loan payments past due and not recorded,
+// and each card's CURRENT statement past due with money still owing. Card
+// statements are cumulative, so an older unpaid statement is superseded by
+// the newer one (cardStatements here is already latest-per-card).
 export function overdueSummary(o = {}, today) {
-  let count = 0;
-  let total = 0;
+  const out = { count: 0, total_cents: 0, bills: 0, loan_payments: 0, card_statements: 0 };
   const due = (d) => { const s = toISODate(d); return s != null && s < today; };
   for (const b of o.bills || []) {
     if (b.status === 'paid' || !due(b.due_date)) continue;
-    count++; total += cents(b.amount);
+    out.bills++; out.total_cents += cents(b.amount);
   }
   for (const p of o.loanPayments || []) {
     if (p.paid || p.is_adjustment || !due(p.due_date)) continue;
-    count++; total += cents(p.principal_amount) + cents(p.interest_amount);
+    out.loan_payments++; out.total_cents += cents(p.principal_amount) + cents(p.interest_amount);
   }
-  for (const s of o.cardStatements || []) { // latest unpaid statement per card, amount still owed
+  for (const s of o.cardStatements || []) {
     if (!due(s.due_date) || cents(s.amount) <= 0) continue;
-    count++; total += cents(s.amount);
+    out.card_statements++; out.total_cents += cents(s.amount);
   }
-  return { count, total_cents: total };
+  out.count = out.bills + out.loan_payments + out.card_statements;
+  return out;
+}
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+/** "7 bills, 9 loan payments and 2 card statements" — each kind named for what it is. */
+export function overdueLabel(o) {
+  const parts = [
+    o.bills ? plural(o.bills, 'bill', 'bills') : null,
+    o.loan_payments ? plural(o.loan_payments, 'loan payment', 'loan payments') : null,
+    o.card_statements ? plural(o.card_statements, 'card statement', 'card statements') : null,
+  ].filter(Boolean);
+  return parts.length <= 1 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
 }
 
 /**
@@ -230,7 +246,7 @@ export function buildSummary(inputs, { now = new Date() } = {}) {
   const overdue = overdueSummary(inputs.overdue, today);
   let status_line = 'Nothing needs attention';
   if (overdue.count > 0) {
-    status_line = `${overdue.count} bill${overdue.count === 1 ? '' : 's'} overdue (${fmtDollars(overdue.total_cents)})`;
+    status_line = `${overdueLabel(overdue)} overdue (${fmtDollars(overdue.total_cents)})`;
   } else if (floorBreach12) {
     // The Money Hub dashboard's own check: any month-end in its rolling
     // 12-month forecast below the required floor (liquidityFloor().passes).

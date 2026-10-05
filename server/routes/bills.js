@@ -378,11 +378,11 @@ router.get('/vendors/:payeeId/payments', ah(async (req, res) => {
 // with a bill or deposit on file, paid or not).
 router.get('/summary', ah(async (req, res) => {
   const { rows: bills } = await pool.query(
-    `SELECT b.*, COALESCE((SELECT SUM(amount) FROM credit_applications WHERE bill_id = b.id), 0) AS applied
-     FROM bills b WHERE b.status = 'unpaid'`);
+    `SELECT b.*, p.name AS payee_name, COALESCE((SELECT SUM(amount) FROM credit_applications WHERE bill_id = b.id), 0) AS applied
+     FROM bills b LEFT JOIN payees p ON p.id = b.payee_id WHERE b.status = 'unpaid'`);
   const { rows: credits } = await pool.query(
-    `SELECT vc.*, vc.amount - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE credit_id = vc.id), 0) AS remaining
-     FROM vendor_credits vc WHERE vc.status = 'open'`);
+    `SELECT vc.*, p.name AS payee_name, vc.amount - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE credit_id = vc.id), 0) AS remaining
+     FROM vendor_credits vc LEFT JOIN payees p ON p.id = vc.payee_id WHERE vc.status = 'open'`);
   const { rows: vendors } = await pool.query(
     `SELECT p.id AS payee_id, p.name,
             (SELECT max(statement_date) FROM vendor_reconciliations r WHERE r.payee_id = p.id AND r.status = 'done') AS reconciled_to

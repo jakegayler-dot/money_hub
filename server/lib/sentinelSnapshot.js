@@ -68,13 +68,30 @@ export const billCategory = (bill) => (bill.ledger === 'personal' ? 'house' : 'f
  * statement so overdue obligations stay in scope (and aren't deleted in
  * Sentinel just because they've aged out of the 30 days).
  */
+/**
+ * Each card's current statement: the newest by statement date (then due
+ * date, then id) — the same order as LATEST_STATEMENTS_SQL. Statements are
+ * cumulative, so an older one left unpaid is superseded by it, not owed again.
+ */
+export function currentStatementIds(statements = []) {
+  const best = new Map();
+  const key = (s) => [toISODate(s.statement_date || s.due_date) || '', toISODate(s.due_date) || '', String(s.id).padStart(12, '0')].join('|');
+  for (const s of statements) {
+    const b = best.get(s.credit_card_id);
+    if (!b || key(s) > key(b)) best.set(s.credit_card_id, s);
+  }
+  return new Set([...best.values()].map((s) => s.id));
+}
+/** An unpaid statement that a newer one has replaced. */
+const superseded = (s, current) => !s.paid && !current.has(s.id);
+
 export function computeWindow(rows, today) {
   let from = addDays(today, -WINDOW_PAST_DAYS);
   const to = addDays(today, WINDOW_FUTURE_DAYS);
   const unpaidDates = [
     ...(rows.bills || []).filter((b) => b.status !== 'paid').map((b) => b.due_date),
     ...(rows.loanPayments || []).filter((p) => !p.paid && !p.is_adjustment).map((p) => p.due_date),
-    ...(rows.statements || []).filter((s) => !s.paid).map((s) => s.due_date),
+    ...(() => { const cur = currentStatementIds(rows.statements); return (rows.statements || []).filter((s) => !s.paid && !superseded(s, cur)); })().map((s) => s.due_date),
   ].map(toISODate).filter(Boolean);
   for (const d of unpaidDates) if (d < from) from = d;
   return { from, to };
@@ -176,8 +193,10 @@ export function loanPaymentItems(payments, { from, to, appUrl }) {
  */
 export function statementItems(statements, { from, to, appUrl }) {
   const items = [];
+  const current = currentStatementIds(statements);
   for (const s of statements) {
     if (!s.due_date) continue;
+    if (superseded(s, current)) continue; // the newer statement carries what's owed
     const due = toISODate(s.due_date);
     if (s.paid && !inWindow(due, from, to)) continue;
     const balance = toCents(s.statement_balance) || 0;

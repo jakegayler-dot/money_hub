@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSummary, forecastSummary, equitySummary, businessAssetsCents, overdueSummary, fmtDollars } from '../lib/sentinelSummary.js';
+import { buildSummary, forecastSummary, equitySummary, businessAssetsCents, overdueSummary, overdueLabel, fmtDollars } from '../lib/sentinelSummary.js';
 
 // 18:00 UTC = noon in Regina, Sep 30 2026.
 const NOON = new Date('2026-09-30T18:00:00Z');
@@ -111,9 +111,11 @@ test('overdue bills, loan payments and card statements outrank a floor breach', 
     },
   });
   const s = buildSummary(inputs, { now: NOON }).summary;
-  assert.equal(s.status_line, '2 bills overdue ($1,240)');
+  // Named for what they are: a loan payment is not a bill.
+  assert.equal(s.status_line, '1 bill and 1 loan payment overdue ($1,240)');
   assert.deepEqual(overdueSummary({ cardStatements: [{ due_date: '2026-09-29', amount: '12.50' }] }, TODAY),
-    { count: 1, total_cents: 1250 });
+    { count: 1, total_cents: 1250, bills: 0, loan_payments: 0, card_statements: 1 });
+  assert.equal(overdueLabel({ bills: 7, loan_payments: 9, card_statements: 2 }), '7 bills, 9 loan payments and 2 card statements');
   assert.equal(buildSummary(baseInputs({ overdue: { bills: [{ status: 'unpaid', due_date: '2026-09-01', amount: '5' }] } }),
     { now: NOON }).summary.status_line, '1 bill overdue ($5)');
 });

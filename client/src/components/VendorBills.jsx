@@ -98,7 +98,7 @@ export default function VendorBills({ accounts, categories, onChanged }) {
           onDeleted={() => { pick(null); load(); onChanged?.(); }} />
       ) : (
         <>
-          {all.summary && <BillSummaryCards s={all.summary} />}
+          {all.summary && <BillSummaryCards s={all.summary} onPickVendor={pick} />}
           {all.no_vendor > 0 && <p className="split-lines" style={{ margin: '0 16px 8px' }}>{all.no_vendor} unpaid bill{all.no_vendor === 1 ? ' has' : 's have'} no vendor set — edit {all.no_vendor === 1 ? 'it' : 'them'} under By bill to put {all.no_vendor === 1 ? 'it' : 'them'} on an account.</p>}
           {!rows.length ? <div className="empty-state">{q ? 'No vendor matches.' : 'No unpaid bills or deposits.'}</div> : (
             <table>
@@ -244,26 +244,81 @@ function LineEditor({ line: l, save, onClose }) {
   );
 }
 
-/** Headline figures: one vendor's (with its account balance and reconciliation) or every vendor's. */
-function BillSummaryCards({ s, account }) {
+/** Headline figures: one vendor's (with its account balance and reconciliation) or every vendor's. Click one to list the bills behind it. */
+function BillSummaryCards({ s, account, onPickVendor, onShowLine, onShowAccount }) {
+  const [open, setOpen] = useState(null);
+  const items = s.items || {};
+  const toggle = (k) => () => setOpen(open === k ? null : k);
+  const card = (k, props) => (
+    <MetricCard {...props} onClick={(items[k] || []).length ? toggle(k) : undefined} active={open === k} />
+  );
+  const TITLE = {
+    owing: 'Owing on bills', overdue: 'Overdue', due_30: 'Due in the next 30 days', held: 'Deposits held',
+    financed: 'Financed bills — running interest', scheduled: 'Scheduled — recurring, not billed yet', free_ending: 'Interest-free ending soon',
+  };
+  const list = open ? items[open] || [] : [];
+  const total = list.reduce((a, i) => a + i.amount, 0);
+  const go = (i) => {
+    if (onShowLine && i.bill_id) onShowLine(`bill:${i.bill_id}`);
+    else if (onShowLine && i.credit_id) onShowLine(`dep:${i.credit_id}`);
+    else if (onPickVendor && i.payee_id) onPickVendor(i.payee_id);
+  };
+  const clickable = (i) => (onShowLine && (i.bill_id || i.credit_id)) || (onPickVendor && i.payee_id);
   return (
-    <div className="grid vendor-summary">
-      {account && (
-        <MetricCard label="Account balance" value={money(account.balance)} tone={account.balance < -0.005 ? 'positive' : undefined}
-          sub={account.balance < -0.005 ? 'They hold your money' : account.last ? `Reconciled to ${nice(account.last.statement_date)}` : 'Not reconciled yet'} />
+    <>
+      <div className="grid vendor-summary">
+        {account && (
+          <MetricCard label="Account balance" value={money(account.balance)} tone={account.balance < -0.005 ? 'positive' : undefined}
+            onClick={onShowAccount}
+            sub={account.balance < -0.005 ? 'They hold your money' : account.last ? `Reconciled to ${nice(account.last.statement_date)}` : 'Not reconciled yet'} />
+        )}
+        {card('owing', { label: 'Owing on bills', value: money(s.owing), sub: s.bills ? `${s.bills} bill${s.bills === 1 ? '' : 's'}${s.oldest_due ? ` · oldest due ${nice(s.oldest_due)}` : ''}` : 'Nothing owing' })}
+        {card('overdue', { label: 'Overdue', value: money(s.overdue), tone: s.overdue > 0 ? 'negative' : undefined, sub: s.overdue_count ? `${s.overdue_count} bill${s.overdue_count === 1 ? '' : 's'} past due` : 'None' })}
+        {card('due_30', { label: 'Due in 30 days', value: money(s.due_30), sub: s.due_30_count ? `${s.due_30_count} bill${s.due_30_count === 1 ? '' : 's'}` : 'None' })}
+        {card('held', { label: 'Deposits held', value: money(s.held), sub: s.held ? 'For later bills or refund' : 'None' })}
+        {(s.financed > 0 || s.interest_month > 0) && card('financed', {
+          label: 'Interest running', value: `${money(s.interest_month)}/mo`, tone: s.interest_month > 0 ? 'negative' : undefined,
+          sub: s.free_ending_count ? `${money(s.free_ending)} goes interest-bearing ${nice(s.free_ending_first)}` : `On ${money(s.financed)} financed`,
+        })}
+        {s.scheduled_count > 0 && card('scheduled', { label: 'Scheduled', value: money(s.scheduled), sub: `${s.scheduled_count} recurring, not billed yet` })}
+      </div>
+      {open && (
+        <div className="summary-list" role="region" aria-label={TITLE[open]}>
+          <div className="summary-list-head">
+            <b>{TITLE[open]}</b>
+            <span className="split-lines">{list.length} · {cents(total)}</span>
+            <button type="button" className="small-link" onClick={() => setOpen(null)}>Close</button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>{open === 'held' ? 'Paid' : 'Due'}</th>
+                {!account && <th>Vendor</th>}
+                <th>{open === 'held' ? 'Deposit' : 'Bill'}</th>
+                {open === 'financed' && <th>Terms</th>}
+                <th className="num">{open === 'held' ? 'Left' : 'Owing'}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((i) => {
+                const overdue = i.due_date && i.due_date < today();
+                return (
+                  <tr key={i.bill_id ? `b${i.bill_id}` : `c${i.credit_id}`} className={clickable(i) ? 'summary-row' : ''}
+                    tabIndex={clickable(i) ? 0 : undefined} onClick={() => clickable(i) && go(i)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && clickable(i)) go(i); }}>
+                    <td className="nowrap">{nice(i.due_date || i.date)}{overdue && open !== 'held' && <span className="badge fail" style={{ marginLeft: 6 }}>OVERDUE</span>}</td>
+                    {!account && <td>{i.vendor || <span className="split-lines">No vendor</span>}</td>}
+                    <td>{i.name}</td>
+                    {open === 'financed' && <td className="split-lines">{i.rate}%{i.interest_free_until ? ` · interest-free to ${nice(i.interest_free_until)}` : ''}</td>}
+                    <td className="num nowrap">{cents(i.amount)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
-      <MetricCard label="Owing on bills" value={money(s.owing)} sub={s.bills ? `${s.bills} bill${s.bills === 1 ? '' : 's'}${s.oldest_due ? ` · oldest due ${nice(s.oldest_due)}` : ''}` : 'Nothing owing'} />
-      <MetricCard label="Overdue" value={money(s.overdue)} tone={s.overdue > 0 ? 'negative' : undefined} sub={s.overdue_count ? `${s.overdue_count} bill${s.overdue_count === 1 ? '' : 's'} past due` : 'None'} />
-      <MetricCard label="Due in 30 days" value={money(s.due_30)} sub={s.due_30_count ? `${s.due_30_count} bill${s.due_30_count === 1 ? '' : 's'}` : 'None'} />
-      <MetricCard label="Deposits held" value={money(s.held)} sub={s.held ? 'For later bills or refund' : 'None'} />
-      {(s.financed > 0 || s.interest_month > 0) && (
-        <MetricCard label="Interest running" value={`${money(s.interest_month)}/mo`} tone={s.interest_month > 0 ? 'negative' : undefined}
-          sub={s.free_ending_count ? `${money(s.free_ending)} goes interest-bearing ${nice(s.free_ending_first)}` : `On ${money(s.financed)} financed`} />
-      )}
-      {s.scheduled_count > 0 && (
-        <MetricCard label="Scheduled" value={money(s.scheduled)} sub={`${s.scheduled_count} recurring, not billed yet`} />
-      )}
-    </div>
+    </>
   );
 }
 
@@ -387,6 +442,7 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
   const [busy, setBusy] = useState(null);
   const [adding, setAdding] = useState(null); // 'charge' | 'payment'
   const [editKey, setEditKey] = useState(null); // the line being edited in place
+  const [flash, setFlash] = useState(null); // a line picked from a summary card
 
   const load = () => fetch(`/api/bills/vendors/${payeeId}/statement`).then((r) => r.json()).then(setSt);
   useEffect(() => { load(); }, [payeeId, reload]);
@@ -447,6 +503,15 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
     onChanged?.();
     return d;
   };
+  // A bill picked from a summary card: show its line on the account (all history if it's older) and flash it.
+  const showLine = (key) => {
+    const l = st.lines.find((x) => x.key === key);
+    if (l && from && l.date < from) setRange('all');
+    setFlash(key);
+    if (!l) { document.getElementById('vendor-upcoming')?.scrollIntoView({ block: 'center', behavior: 'smooth' }); return; }
+    setTimeout(() => document.getElementById(`line-${key}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }), 50);
+    setTimeout(() => setFlash(null), 2200);
+  };
   const editable = (l) => !l.before_opening && (l.kind === 'bill' || ['payment', 'spot', 'received', 'onaccount'].includes(l.kind));
   const v = open || { payee_id: payeeId, name, bills: [], credits: [], owing: 0, held: 0, net: 0 };
 
@@ -456,7 +521,8 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
         <h2>{st.name}</h2>
         <span className="split-lines">Positive balance is what you owe; negative is money they hold for you.</span>
       </div>
-      <BillSummaryCards s={st.summary} account={{ balance: st.balance, last: rec.last }} />
+      <BillSummaryCards s={st.summary} account={{ balance: st.balance, last: rec.last }} onShowLine={showLine}
+        onShowAccount={() => document.querySelector('.vendor-statement')?.scrollIntoView({ block: 'start', behavior: 'smooth' })} />
       <AccountSettings payeeId={payeeId} st={st} onSaved={(d) => (d ? setSt(d) : load())} />
 
       <div className="vendor-toolbar">
@@ -539,7 +605,7 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
               const tickable = recOn && !done && !l.before_opening && l.date <= rec.open.statement_date;
               return (
                 <Fragment key={l.key}>
-                <tr className={`stmt-${l.kind}${l.cleared && !done ? ' ticked' : ''}${l.before_opening ? ' before-open' : ''}`}>
+                <tr id={`line-${l.key}`} className={`${flash === l.key ? 'flash ' : ''}stmt-${l.kind}${l.cleared && !done ? ' ticked' : ''}${l.before_opening ? ' before-open' : ''}`}>
                   <td className="recon-col">
                     {done ? <span title="Reconciled" aria-label="Reconciled" className="recon-done">✓</span>
                       : tickable ? <input type="checkbox" aria-label={`On the statement: ${l.label}`} checked={!!l.cleared}
@@ -618,7 +684,7 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
       </div>
 
       {st.upcoming.length > 0 && (
-        <div className="vendor-block" style={{ padding: '10px 16px' }}>
+        <div className="vendor-block" id="vendor-upcoming" style={{ padding: '10px 16px' }}>
           <div className="split-lines" style={{ fontWeight: 600 }}>Scheduled — not on the balance until billed</div>
           {st.upcoming.map((u) => (
             <div key={u.bill_id} className="split-lines">{nice(u.date)} · {u.name} · <span className="nowrap">{cents(u.amount)}</span></div>

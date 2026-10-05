@@ -56,7 +56,7 @@ export async function loadSnapshotRows() {
                            lp.paid, lp.paid_date, lp.is_adjustment, l.name AS loan_name, l.lender
                     FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
                     WHERE lp.is_adjustment = false`),
-      client.query(`SELECT s.id, s.credit_card_id, s.due_date, s.statement_balance, s.minimum_payment,
+      client.query(`SELECT s.id, s.credit_card_id, s.statement_date, s.due_date, s.statement_balance, s.minimum_payment,
                            s.paid, s.paid_date, s.paid_amount, s.notes, c.name AS card_name
                     FROM credit_card_statements s JOIN credit_cards c ON c.id = s.credit_card_id`),
       client.query(`SELECT id, name, lender, covenant_date, covenant_notes FROM loans

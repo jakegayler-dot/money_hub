@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSnapshot, toCents, reginaToday, computeWindow } from '../lib/sentinelSnapshot.js';
+import { buildSnapshot, toCents, reginaToday, computeWindow, statementItems } from '../lib/sentinelSnapshot.js';
 
 // 18:00 UTC = noon in Regina, Sep 30 2026.
 const NOON = new Date('2026-09-30T18:00:00Z');
@@ -196,3 +196,15 @@ test('node-pg Date objects for DATE columns map to the stored calendar date', ()
   assert.equal(item.starts_at, '2026-10-15');
   assert.equal(item.source_id, 'bill:1:2026-10-15');
 });
+
+test('a card statement replaced by a newer one is not pushed, and does not stretch the window', () => {
+  const today = '2026-10-05';
+  const statements = [
+    { id: 30, credit_card_id: 4, card_name: 'Capital One', statement_date: '2026-08-10', due_date: '2026-09-05', statement_balance: '900.00', paid: false },
+    { id: 31, credit_card_id: 4, card_name: 'Capital One', statement_date: '2026-09-10', due_date: '2026-10-05', statement_balance: '1400.00', paid: false },
+  ];
+  const ids = statementItems(statements, { from: '2026-01-01', to: '2027-12-31' }).map((i) => i.source_id);
+  assert.deepEqual(ids, ['card-statement:31']);
+  assert.equal(computeWindow({ statements }, today).from, computeWindow({}, today).from);
+});
+

@@ -1141,3 +1141,21 @@ tr.ledger-edit-row .form-panel { border: 1px solid rgba(201, 162, 39, 0.35); bor
 .vendor-statement tr.stmt-edit-row > td { background: var(--panel-alt); padding: 4px 0 12px; border-top: 0; }
 .stmt-delete { color: var(--negative); margin-left: auto; }
 @media (max-width: 600px) { .stmt-form label { flex: 1 1 140px; } .stmt-form label input[type=number] { width: 100%; } }
+
+/* Summary cards that open the bills behind them */
+button.metric-card-button { all: unset; box-sizing: border-box; display: block; cursor: pointer; text-align: left;
+  background: linear-gradient(160deg, var(--panel-raised), var(--panel)); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 10px 14px; transition: border-color var(--ease), transform var(--ease), box-shadow var(--ease); }
+button.metric-card-button:hover { border-color: var(--border-strong); transform: translateY(-1px); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
+button.metric-card-button:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+button.metric-card-button.active { border-color: rgba(201, 162, 39, 0.55); background: linear-gradient(160deg, var(--panel-raised), var(--gold-soft)); }
+.summary-list { margin: -4px 16px 14px; border: 1px solid rgba(201, 162, 39, 0.35); border-radius: var(--radius-sm); background: var(--panel-alt); }
+.summary-list-head { display: flex; align-items: baseline; gap: 12px; padding: 10px 12px 6px; }
+.summary-list-head .small-link { margin-left: auto; }
+.summary-list table { width: 100%; }
+.summary-list td.num, .summary-list th.num { text-align: right; font-family: var(--font-mono); }
+.summary-list tr.summary-row { cursor: pointer; }
+.summary-list tr.summary-row:hover td, .summary-list tr.summary-row:focus-visible td { background: var(--panel-hover); }
+.vendor-statement tr.flash td { animation: line-flash 2s ease-out; }
+@keyframes line-flash { from { background: rgba(201, 162, 39, 0.28); } to { background: transparent; } }
+@media (prefers-reduced-motion: reduce) { .vendor-statement tr.flash td { animation: none; background: var(--gold-soft); } }

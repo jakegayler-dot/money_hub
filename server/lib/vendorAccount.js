@@ -249,25 +249,37 @@ export function billSummary(bills, credits, today = todayISO()) {
     interest_month: 0, financed: 0, free_ending: 0, free_ending_count: 0, free_ending_first: null,
     scheduled: 0, scheduled_count: 0, oldest_due: null,
   };
+  // The bills (and deposits) behind each figure, so a card can list them.
+  const items = { owing: [], overdue: [], due_30: [], scheduled: [], financed: [], free_ending: [], held: [] };
   for (const b of bills) {
     if (b.status !== 'unpaid') continue;
     const due = toISODate(b.due_date);
     const owing = Math.max(0, rawOwing(b, today) - Number(b.applied || 0));
-    if (billDate(b) > today) { s.scheduled += owing; s.scheduled_count += 1; }
-    else { s.owing += owing; s.bills += 1; if (!s.oldest_due || due < s.oldest_due) s.oldest_due = due; }
-    if (due < today) { s.overdue += owing; s.overdue_count += 1; }
-    else if (due <= soon) { s.due_30 += owing; s.due_30_count += 1; }
+    const item = { bill_id: b.id, payee_id: b.payee_id ?? null, vendor: b.payee_name || null, name: b.name, date: billDate(b), due_date: due, amount: round2(owing),
+      interest_free_until: b.is_financed ? toISODate(b.interest_free_until) : null, rate: b.is_financed ? Number(b.finance_rate_pct || 0) : null };
+    if (billDate(b) > today) { s.scheduled += owing; s.scheduled_count += 1; items.scheduled.push(item); }
+    else { s.owing += owing; s.bills += 1; items.owing.push(item); if (!s.oldest_due || due < s.oldest_due) s.oldest_due = due; }
+    if (due < today) { s.overdue += owing; s.overdue_count += 1; items.overdue.push(item); }
+    else if (due <= soon) { s.due_30 += owing; s.due_30_count += 1; items.due_30.push(item); }
     if (b.is_financed) {
       s.financed += owing;
+      items.financed.push(item);
       const free = toISODate(b.interest_free_until);
       if (!free || free <= today) s.interest_month += Number(b.balance_amount ?? b.amount) * Number(b.finance_rate_pct || 0) / 100 / 12;
       else if (free <= soon) {
-        s.free_ending += owing; s.free_ending_count += 1;
+        s.free_ending += owing; s.free_ending_count += 1; items.free_ending.push(item);
         if (!s.free_ending_first || free < s.free_ending_first) s.free_ending_first = free;
       }
     }
   }
-  for (const c of credits) if (c.status === 'open') s.held += Number(c.remaining);
+  for (const c of credits) {
+    if (c.status !== 'open') continue;
+    s.held += Number(c.remaining);
+    items.held.push({ credit_id: c.id, payee_id: c.payee_id ?? null, vendor: c.payee_name || null, name: c.kind === 'refundable' ? 'Refundable deposit' : 'Prepayment',
+      date: toISODate(c.date), amount: round2(c.remaining) });
+  }
+  for (const list of Object.values(items)) list.sort((a, b) => ((a.due_date || a.date) < (b.due_date || b.date) ? -1 : 1));
+  s.items = items;
   for (const k of ['owing', 'overdue', 'due_30', 'held', 'interest_month', 'financed', 'free_ending', 'scheduled']) s[k] = round2(s[k]);
   s.net = round2(s.owing - s.held);
   return s;
