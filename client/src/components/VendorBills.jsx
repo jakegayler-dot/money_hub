@@ -131,6 +131,24 @@ export default function VendorBills({ accounts, categories, onChanged }) {
   );
 }
 
+// 14px line icons for the statement rows: quiet until you point at them.
+const ICON_PATHS = {
+  clip: 'M10.5 4.5 5.4 9.6a1.9 1.9 0 0 0 2.7 2.7l5.4-5.4a3.2 3.2 0 0 0-4.5-4.5L3.4 8a4.4 4.4 0 0 0 6.3 6.3l4.1-4.1',
+  pencil: 'M10.6 2.9a1.5 1.5 0 0 1 2.1 2.1L5.4 12.3 2.5 13l.7-2.9 7.4-7.2Z',
+  doc: 'M4 1.8h5l3 3v9.4H4V1.8Zm5 0v3h3',
+  image: 'M2.3 3h11.4v10H2.3V3Zm0 7.6 3.2-3.1 2.6 2.5 1.8-1.7 3.8 3.5M10.4 6.2h.01',
+  close: 'm4 4 8 8m0-8-8 8',
+  busy: 'M8 2a6 6 0 1 0 6 6',
+};
+function Icon({ name }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+      className={name === 'busy' ? 'spin' : undefined}>
+      <path d={ICON_PATHS[name]} />
+    </svg>
+  );
+}
+
 const nice = (d) => {
   if (!d) return '';
   const [y, m, dd] = d.split('-').map(Number);
@@ -250,7 +268,7 @@ function BillSummaryCards({ s, account, onPickVendor, onShowLine, onShowAccount 
   const items = s.items || {};
   const toggle = (k) => () => setOpen(open === k ? null : k);
   const card = (k, props) => (
-    <MetricCard {...props} onClick={(items[k] || []).length ? toggle(k) : undefined} active={open === k} />
+    <MetricCard {...props} onClick={toggle(k)} active={open === k} />
   );
   const TITLE = {
     owing: 'Owing on bills', overdue: 'Overdue', due_30: 'Due in the next 30 days', held: 'Deposits held',
@@ -289,7 +307,9 @@ function BillSummaryCards({ s, account, onPickVendor, onShowLine, onShowAccount 
             <span className="split-lines">{list.length} · {cents(total)}</span>
             <button type="button" className="small-link" onClick={() => setOpen(null)}>Close</button>
           </div>
-          <table>
+          {!s.items && <p className="split-lines summary-list-empty">The list behind this figure didn't load — refresh the page.</p>}
+          {s.items && list.length === 0 && <p className="split-lines summary-list-empty">{open === 'held' ? 'No deposits held.' : 'No bills here.'}</p>}
+          {list.length > 0 && <table>
             <thead>
               <tr>
                 <th>{open === 'held' ? 'Paid' : 'Due'}</th>
@@ -315,7 +335,7 @@ function BillSummaryCards({ s, account, onPickVendor, onShowLine, onShowAccount 
                 );
               })}
             </tbody>
-          </table>
+          </table>}
         </div>
       )}
     </>
@@ -614,6 +634,30 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
                   </td>
                   <td className="nowrap">{nice(l.date)}</td>
                   <td>
+                    {(l.docs || editable(l)) && (
+                      <span className="stmt-icons">
+                        {(l.docs || []).map((d, i) => (
+                          <a key={d.id} href={`/api/receipts/${d.id}/image`} target="_blank" rel="noreferrer" className="stmt-icon has-doc"
+                            title={`Open ${d.mime === 'application/pdf' ? 'PDF' : 'photo'}${l.docs.length > 1 ? ` ${i + 1}` : ''}`}
+                            aria-label={`Open ${d.mime === 'application/pdf' ? 'PDF' : 'photo'}${l.docs.length > 1 ? ` ${i + 1}` : ''} for ${l.label}`}>
+                            <Icon name={d.mime === 'application/pdf' ? 'doc' : 'image'} />
+                          </a>
+                        ))}
+                        {l.docs && (
+                          <button type="button" className="stmt-icon" disabled={busy === l.key} onClick={() => pickFor(l)}
+                            title={busy === l.key ? 'Attaching…' : 'Attach a PDF or photo'} aria-label={`Attach a PDF or photo to ${l.label}`}>
+                            <Icon name={busy === l.key ? 'busy' : 'clip'} />
+                          </button>
+                        )}
+                        {editable(l) && (
+                          <button type="button" className={`stmt-icon${editKey === l.key ? ' on' : ''}`} aria-expanded={editKey === l.key}
+                            title={editKey === l.key ? 'Close' : 'Edit'} aria-label={`${editKey === l.key ? 'Close editing' : 'Edit'} ${l.label}`}
+                            onClick={() => setEditKey(editKey === l.key ? null : l.key)}>
+                            <Icon name={editKey === l.key ? 'close' : 'pencil'} />
+                          </button>
+                        )}
+                      </span>
+                    )}
                     <span className="stmt-kind">{KIND_LABEL[l.kind]}</span>{' '}
                     {l.transaction_id && ['payment', 'refund', 'deposit', 'spot', 'received', 'onaccount'].includes(l.kind)
                       ? <a href={`/ledgers?edit=${l.transaction_id}`}>{l.label}</a> : l.label}
@@ -630,25 +674,6 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
                     {l.pays && l.pays.length > 1 && <div className="split-lines">Paid {l.pays.length} bills: {l.pays.join(', ')}</div>}
                     {l.account && <div className="split-lines">{l.account}</div>}
                     {l.cleared?.changed && <div className="review-error" style={{ margin: 0 }}>Changed since ticked (was {cents(l.cleared.amount)})</div>}
-                    {(l.docs || editable(l)) && (
-                      <div className="stmt-docs">
-                        {(l.docs || []).map((d, i) => (
-                          <a key={d.id} href={`/api/receipts/${d.id}/image`} target="_blank" rel="noreferrer" className="stmt-doc">
-                            {d.mime === 'application/pdf' ? 'PDF' : 'Photo'}{l.docs.length > 1 ? ` ${i + 1}` : ''}
-                          </a>
-                        ))}
-                        {l.docs && (
-                          <button type="button" className="small-link stmt-attach" disabled={busy === l.key} onClick={() => pickFor(l)}
-                            aria-label={`Attach a PDF or photo to ${l.label}`}>
-                            {busy === l.key ? 'Attaching…' : l.docs.length ? 'Add another' : 'Attach PDF or photo'}
-                          </button>
-                        )}
-                        {editable(l) && (
-                          <button type="button" className="small-link stmt-attach" aria-expanded={editKey === l.key}
-                            onClick={() => setEditKey(editKey === l.key ? null : l.key)}>{editKey === l.key ? 'Close' : 'Edit'}</button>
-                        )}
-                      </div>
-                    )}
                   </td>
                   <td className="num nowrap stmt-gst">{l.gst != null ? cents(l.gst) : l.kind === 'bill' || l.kind === 'payment' ? <span className="split-lines">none</span> : ''}</td>
                   {l.kind === 'spot' ? (

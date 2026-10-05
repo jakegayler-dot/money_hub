@@ -1097,11 +1097,6 @@ button.danger:hover { filter: brightness(1.08); }
 .vendor-statement .stmt-spot { color: var(--text-faint); }
 .stmt-toggle { margin-left: 8px; color: var(--text-faint); }
 .vendor-statement .stmt-received { color: var(--text-muted); text-align: center; }
-.stmt-docs { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; margin-top: 3px; font-size: 12px; }
-.stmt-doc { padding: 0 6px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--gold); text-decoration: none; line-height: 18px; }
-.stmt-doc:hover, .stmt-doc:focus-visible { border-color: var(--gold); }
-.stmt-attach { color: var(--text-faint); font-size: 12px; }
-.stmt-attach:hover, .stmt-attach:focus-visible { color: var(--gold); }
 .owner-rule-field { align-self: end; }
 
 /* Ledger: an entry edited in place, under its own row */
@@ -1159,3 +1154,18 @@ button.metric-card-button.active { border-color: rgba(201, 162, 39, 0.55); backg
 .vendor-statement tr.flash td { animation: line-flash 2s ease-out; }
 @keyframes line-flash { from { background: rgba(201, 162, 39, 0.28); } to { background: transparent; } }
 @media (prefers-reduced-motion: reduce) { .vendor-statement tr.flash td { animation: none; background: var(--gold-soft); } }
+
+/* Statement row actions: small icons tucked into the item cell's top-right corner */
+.stmt-icons { float: right; display: inline-flex; gap: 2px; margin: -2px -4px 0 8px; }
+.stmt-icon { all: unset; box-sizing: border-box; display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 4px;
+  color: var(--text-faint); cursor: pointer; opacity: 0.55; transition: opacity var(--ease), color var(--ease), background var(--ease); }
+.vendor-statement tr:hover .stmt-icon, .stmt-icon:focus-visible, .stmt-icon.on, .stmt-icon.has-doc { opacity: 1; }
+.stmt-icon.has-doc { color: var(--gold); }
+.stmt-icon:hover { color: var(--gold-bright); background: var(--gold-soft); }
+.stmt-icon:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+.stmt-icon:disabled { cursor: progress; }
+.stmt-icon svg.spin { animation: stmt-spin 0.8s linear infinite; }
+@keyframes stmt-spin { to { transform: rotate(360deg); } }
+@media (hover: none) { .stmt-icon { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .stmt-icon svg.spin { animation: none; } }
+.summary-list-empty { margin: 0; padding: 4px 12px 12px; }
