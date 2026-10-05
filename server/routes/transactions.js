@@ -10,6 +10,18 @@ import { toISODate } from '../lib/dates.js';
 import { assertOpen, CONFIRMED_SQL, PASSED_SQL } from '../lib/periods.js';
 import { matchPending } from '../lib/receipts.js';
 import { autoLinkBillsSoon } from '../lib/billMatch.js';
+import { settleVendorAccount } from '../lib/postings.js';
+
+/** Vendors whose account a payment sits on (as a payment on account). */
+const creditVendors = async (txId) => (await pool.query(
+  `SELECT DISTINCT payee_id FROM vendor_credits WHERE transaction_id = $1 OR refund_transaction_id = $1
+   UNION SELECT t.payee_id FROM vendor_on_account o JOIN transactions t ON t.id = o.transaction_id WHERE o.transaction_id = $1 AND t.payee_id IS NOT NULL`,
+  [txId])).rows.map((r) => r.payee_id);
+const resettle = async (payees) => {
+  for (const p of new Set(payees)) {
+    await withTransaction((c) => settleVendorAccount(c, p)).catch((e) => console.error('Vendor settle failed', p, e.message));
+  }
+};
 import { cardBalances } from '../lib/cardLedger.js';
 
 const router = Router();
@@ -421,6 +433,7 @@ router.patch('/:id', ah(async (req, res) => {
     }
     return { status: 200, body: up[0] };
   });
+  if (result.status < 300) await resettle(await creditVendors(req.params.id)); // a payment on account changed
   res.status(result.status).json(result.body);
 }));
 
@@ -454,6 +467,7 @@ router.post('/:id/unclear', ah(async (req, res) => {
 // so neither account is left with half a move. (Sides that came from bank
 // statements are left alone — each belongs to its own statement.)
 router.delete('/:id', ah(async (req, res) => {
+  const vendors = await creditVendors(req.params.id);
   const tx = await withTransaction(async (client) => {
     const { rows } = await client.query('SELECT transfer_peer_id, source FROM transactions WHERE id = $1', [req.params.id]);
     const peerId = rows[0]?.transfer_peer_id;
@@ -465,6 +479,7 @@ router.delete('/:id', ah(async (req, res) => {
     return removed;
   });
   if (!tx) return res.status(404).json({ error: 'not found' });
+  await resettle(vendors); // what it paid goes back to owing
   res.status(204).end();
 }));
 

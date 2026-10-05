@@ -6,7 +6,7 @@
 
 import { SEGMENT_COLUMNS, segmentValues, validateSegment, ledgerForSegment } from './segments.js';
 import { toISODate, addMonths } from './dates.js';
-import { getSetting } from '../db.js';
+import { getSetting, pool } from '../db.js';
 
 const SEG_COLS = SEGMENT_COLUMNS.join(', ');
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
@@ -429,7 +429,7 @@ async function rebuildCreditSplits(client, creditId) {
   const { rows: apps } = await client.query(
     `SELECT b.*, ca.amount AS applied FROM credit_applications ca JOIN bills b ON b.id = ca.bill_id WHERE ca.credit_id = $1 ORDER BY ca.id`, [c.id]);
   const pieces = apps.map((a) => ({
-    amount: -Number(a.applied), category_id: a.category_id || null, memo: `Deposit applied: ${a.name}`,
+    amount: -Number(a.applied), category_id: a.category_id || null, memo: `${c.note === ON_ACCOUNT_NOTE ? 'Paid' : 'Deposit applied'}: ${a.name}`,
     owner: ownerOf(a), ledger: a.ledger, is_transfer: false,
   }));
   const left = round2(-Number(tx.amount) - apps.reduce((s, a) => s + Number(a.applied), 0));
@@ -437,7 +437,7 @@ async function rebuildCreditSplits(client, creditId) {
     const kept = c.status === 'kept';
     pieces.push({
       amount: -left, category_id: kept ? c.kept_category_id : null,
-      memo: kept ? `Deposit kept by ${c.vendor}` : `Deposit held by ${c.vendor}`,
+      memo: kept ? `Deposit kept by ${c.vendor}` : c.note === ON_ACCOUNT_NOTE ? `Credit with ${c.vendor} for the next bill` : `Deposit held by ${c.vendor}`,
       owner: ownerOf(tx), ledger: tx.ledger, is_transfer: !kept,
     });
   }
@@ -480,29 +480,120 @@ export async function recordVendorDeposit(client, { payee_id, kind, transaction_
  * Uses a deposit against a bill: up to what the bill still owes. A bill
  * fully covered is marked paid; the applied part becomes its expense.
  */
-export async function applyVendorCredit(client, creditId, billId) {
+export async function applyVendorCredit(client, creditId, billId, { on = null, rebuild = true } = {}) {
   const { rows: [c] } = await client.query('SELECT * FROM vendor_credits WHERE id = $1 FOR UPDATE', [creditId]);
   if (!c || c.status !== 'open') throw new PostingError('That deposit isn\'t available to apply.');
   const { rows: [bill] } = await client.query('SELECT * FROM bills WHERE id = $1 FOR UPDATE', [billId]);
   if (!bill || bill.status !== 'unpaid') throw new PostingError('That bill isn\'t unpaid.');
-  const use = Math.min(await creditRemaining(client, c.id), await billOwing(client, bill.id, toISODate(new Date())));
+  const at = on || toISODate(new Date()); // the day it's settled: what a financed bill owes then
+  const use = Math.min(await creditRemaining(client, c.id), await billOwing(client, bill.id, at));
   if (use <= 0.005) throw new PostingError('Nothing to apply.');
   await client.query('INSERT INTO credit_applications (credit_id, bill_id, amount) VALUES ($1, $2, $3)', [c.id, bill.id, round2(use)]);
   if (await creditRemaining(client, c.id) <= 0.005) await client.query(`UPDATE vendor_credits SET status = 'used' WHERE id = $1`, [c.id]);
-  if (await billOwing(client, bill.id, toISODate(new Date())) <= 0.005) {
-    await client.query(`UPDATE bills SET status = 'paid', paid_date = CURRENT_DATE, linked_transaction_id = NULL, linked_existing = false WHERE id = $1`, [bill.id]);
+  if (await billOwing(client, bill.id, at) <= 0.005) {
+    await client.query(`UPDATE bills SET status = 'paid', paid_date = $2, linked_transaction_id = NULL, linked_existing = false WHERE id = $1`, [bill.id, at]);
     await rollBillForward(client, bill);
   }
-  await rebuildCreditSplits(client, c.id);
+  if (rebuild) await rebuildCreditSplits(client, c.id);
   return { applied: round2(use) };
 }
 
+/**
+ * A vendor's account settles oldest first, the way the vendor's own
+ * statement does. Payments marked "paid on account" are held as credit
+ * with the vendor, and every open credit (those, and prepaid deposits) pays
+ * the unpaid bills already billed, oldest first; a bill only partly
+ * covered keeps owing the rest, and what's left over waits for the next
+ * bill. A bill someone took a credit off by hand is left alone. Safe to
+ * run any time — it only ever applies what's open to what's unpaid.
+ */
+export async function settleVendorAccount(client, payeeId, today = toISODate(new Date())) {
+  // A payment on account that was edited or deleted since: redo it from the payment as it is now.
+  const { rows: stale } = await client.query(
+    `SELECT vc.id, vc.transaction_id, t.id AS still FROM vendor_credits vc LEFT JOIN transactions t ON t.id = vc.transaction_id
+     WHERE vc.payee_id = $1 AND vc.note = $2
+       AND (t.id IS NULL OR t.payee_id IS DISTINCT FROM vc.payee_id OR abs(vc.amount + t.amount) > 0.005 OR t.date <> vc.date)`,
+    [payeeId, ON_ACCOUNT_NOTE]);
+  for (const c of stale) {
+    await removeVendorCredit(client, c.id);
+    if (c.still) await client.query('INSERT INTO vendor_on_account (transaction_id) VALUES ($1) ON CONFLICT DO NOTHING', [c.still]);
+  }
+  // Payments marked on account → credit held with the vendor.
+  const { rows: onAccount } = await client.query(
+    `SELECT t.id FROM vendor_on_account o JOIN transactions t ON t.id = o.transaction_id
+     WHERE t.payee_id = $1 AND t.amount < 0 AND NOT t.is_transfer ORDER BY t.date, t.id`, [payeeId]);
+  for (const t of onAccount) {
+    try {
+      await recordVendorDeposit(client, { payee_id: payeeId, kind: 'prepayment', transaction_id: t.id, note: ON_ACCOUNT_NOTE });
+      await client.query('DELETE FROM vendor_on_account WHERE transaction_id = $1', [t.id]);
+    } catch (e) {
+      if (!(e instanceof PostingError)) throw e; // closed month, or already paying something: stays as it is
+    }
+  }
+  // A deleted bill gives back what was applied to it.
+  await client.query(
+    `UPDATE vendor_credits vc SET status = 'open' WHERE vc.payee_id = $1 AND vc.status = 'used'
+       AND vc.amount - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE credit_id = vc.id), 0) > 0.005`, [payeeId]);
+  const { rows: credits } = await client.query(
+    `SELECT id, date FROM vendor_credits WHERE payee_id = $1 AND kind = 'prepayment' AND status = 'open' ORDER BY date, id`, [payeeId]);
+  if (!credits.length) return { applied: 0 };
+  const { rows: bills } = await client.query(
+    `SELECT id, received_date, due_date, created_at, frequency, status, paid_date FROM bills
+     WHERE payee_id = $1 AND status = 'unpaid' AND NOT COALESCE(no_auto_settle, false)`, [payeeId]);
+  const billed = bills.map((b) => ({ ...b, on: billLandsOn(b) })).filter((b) => b.on <= today)
+    .sort((a, b) => (a.on < b.on ? -1 : a.on > b.on ? 1 : a.id - b.id));
+  const touched = new Set();
+  let applied = 0;
+  for (const b of billed) {
+    for (const c of credits) {
+      if (c.done) continue;
+      try {
+        // Settled on the later of the bill and the payment: interest stops then.
+        const on = [b.on, toISODate(c.date)].sort().pop();
+        const r = await applyVendorCredit(client, c.id, b.id, { on: on > today ? today : on, rebuild: false });
+        applied += r.applied;
+        touched.add(c.id);
+      } catch (e) {
+        if (!(e instanceof PostingError)) throw e;
+      }
+      const { rows: [st] } = await client.query('SELECT status FROM vendor_credits WHERE id = $1', [c.id]);
+      if (st.status !== 'open') c.done = true;
+      const { rows: [bs] } = await client.query('SELECT status FROM bills WHERE id = $1', [b.id]);
+      if (bs.status === 'paid') break;
+    }
+    if (credits.every((c) => c.done)) break;
+  }
+  for (const id of touched) await rebuildCreditSplits(client, id);
+  return { applied: round2(applied) };
+}
+export const ON_ACCOUNT_NOTE = 'Paid on account';
+
+/** The day a bill lands on the vendor's account — billDate() in vendorAccount.js. */
+function billLandsOn(b) {
+  if (b.received_date) return toISODate(b.received_date);
+  if (b.frequency && b.frequency !== 'one_time') return toISODate(b.due_date);
+  const made = toISODate(b.created_at) || toISODate(b.due_date);
+  return made < toISODate(b.due_date) ? made : toISODate(b.due_date);
+}
+
+/** Every vendor with credit to apply or payments marked on account. */
+export async function settleAllVendorAccounts(withTx) {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT payee_id FROM vendor_credits WHERE kind = 'prepayment' AND status IN ('open', 'used')
+     UNION SELECT DISTINCT t.payee_id FROM vendor_on_account o JOIN transactions t ON t.id = o.transaction_id WHERE t.payee_id IS NOT NULL`);
+  for (const r of rows) {
+    try { await withTx((client) => settleVendorAccount(client, r.payee_id)); } catch (e) { console.error('Vendor settle failed', r.payee_id, e.message); }
+  }
+}
+
 /** Takes a deposit back off a bill (the bill reopens if the deposit had paid it). */
-export async function unapplyVendorCredit(client, applicationId) {
+export async function unapplyVendorCredit(client, applicationId, opts = {}) {
   const { rows: [a] } = await client.query('SELECT * FROM credit_applications WHERE id = $1', [applicationId]);
   if (!a) throw new PostingError('Not found.');
   await client.query('DELETE FROM credit_applications WHERE id = $1', [a.id]);
   await client.query(`UPDATE vendor_credits SET status = 'open' WHERE id = $1 AND status = 'used'`, [a.credit_id]);
+  // Taken off by hand: the account's oldest-first settling leaves this bill alone from now on.
+  if (!opts.auto) await client.query('UPDATE bills SET no_auto_settle = true WHERE id = $1', [a.bill_id]);
   await client.query(
     `UPDATE bills SET status = 'unpaid', paid_date = NULL WHERE id = $1 AND status = 'paid' AND linked_transaction_id IS NULL`, [a.bill_id]);
   await rebuildCreditSplits(client, a.credit_id);
@@ -530,7 +621,7 @@ export async function removeVendorCredit(client, creditId) {
   const { rows: [c] } = await client.query('SELECT * FROM vendor_credits WHERE id = $1 FOR UPDATE', [creditId]);
   if (!c) return;
   const { rows: apps } = await client.query('SELECT id FROM credit_applications WHERE credit_id = $1', [c.id]);
-  for (const a of apps) await unapplyVendorCredit(client, a.id);
+  for (const a of apps) await unapplyVendorCredit(client, a.id, { auto: true });
   if (c.refund_transaction_id) await client.query('UPDATE transactions SET is_transfer = false WHERE id = $1', [c.refund_transaction_id]);
   await client.query('DELETE FROM vendor_credits WHERE id = $1', [c.id]);
   if (c.transaction_id) {

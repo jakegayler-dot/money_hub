@@ -114,9 +114,13 @@ export async function vendorStatement(db, payeeId, today = todayISO()) {
      WHERE b.payee_id = $1 ORDER BY b.id`, [payeeId]);
   const { rows: credits } = await db.query(
     `SELECT vc.*, vc.amount - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE credit_id = vc.id), 0) AS remaining,
-            rt.date AS refund_date, rt.amount AS refund_amount, dt.gst_amount AS tx_gst
+            rt.date AS refund_date, rt.amount AS refund_amount, dt.gst_amount AS tx_gst, dt.description AS tx_description,
+            dt.awaiting_statement AS tx_awaiting, COALESCE(da.name, dc.name) AS tx_account,
+            (SELECT json_agg(b.name ORDER BY ca.id) FROM credit_applications ca JOIN bills b ON b.id = ca.bill_id WHERE ca.credit_id = vc.id) AS applied_to
      FROM vendor_credits vc LEFT JOIN transactions rt ON rt.id = vc.refund_transaction_id
      LEFT JOIN transactions dt ON dt.id = vc.transaction_id
+     LEFT JOIN accounts da ON da.id = dt.account_id
+     LEFT JOIN credit_cards dc ON dc.id = dt.credit_card_id
      WHERE vc.payee_id = $1 ORDER BY vc.id`, [payeeId]);
 
   const { rows: [payee] } = await db.query('SELECT opening_balance, opening_date FROM payees WHERE id = $1', [payeeId]);
@@ -191,8 +195,17 @@ export async function vendorStatement(db, payeeId, today = todayISO()) {
   }
   for (const c of credits) {
     const kind = c.kind === 'refundable' ? 'refundable deposit' : 'prepayment';
-    lines.push({ key: `dep:${c.id}`, date: toISODate(c.date), kind: 'deposit', amount: -round2(c.amount), credit_id: c.id, transaction_id: c.transaction_id, label: `Deposit paid — ${kind}`,
-      gst: c.tx_gst == null ? null : round2(c.tx_gst) });
+    const left = round2(Number(c.remaining ?? 0));
+    const applies = Array.isArray(c.applied_to) ? c.applied_to : [];
+    if (c.note === 'Paid on account') {
+      // A payment on account: it pays the oldest bills; any rest is credit for the next one.
+      lines.push({ key: c.transaction_id ? `acct:${c.transaction_id}` : `dep:${c.id}`, date: toISODate(c.date), kind: 'onaccount', amount: -round2(c.amount), credit_id: c.id, transaction_id: c.transaction_id,
+        label: c.tx_description || 'Payment', account: c.tx_account, awaiting: !!c.tx_awaiting, gst: c.tx_gst == null ? null : round2(c.tx_gst),
+        applies, credit_left: c.status === 'open' && left > 0.005 ? left : 0 });
+    } else {
+      lines.push({ key: `dep:${c.id}`, date: toISODate(c.date), kind: 'deposit', amount: -round2(c.amount), credit_id: c.id, transaction_id: c.transaction_id, label: `Deposit paid — ${kind}`,
+        gst: c.tx_gst == null ? null : round2(c.tx_gst), applies, credit_left: c.status === 'open' && left > 0.005 ? left : 0 });
+    }
     if (c.status === 'refunded' && c.refund_date) {
       lines.push({ key: `ref:${c.id}`, date: toISODate(c.refund_date), kind: 'refund', amount: round2(c.refund_amount), credit_id: c.id, transaction_id: c.refund_transaction_id, label: 'Deposit refunded to you' });
     }
@@ -275,7 +288,7 @@ export function billSummary(bills, credits, today = todayISO()) {
   for (const c of credits) {
     if (c.status !== 'open') continue;
     s.held += Number(c.remaining);
-    items.held.push({ credit_id: c.id, payee_id: c.payee_id ?? null, vendor: c.payee_name || null, name: c.kind === 'refundable' ? 'Refundable deposit' : 'Prepayment',
+    items.held.push({ credit_id: c.id, payee_id: c.payee_id ?? null, vendor: c.payee_name || null, name: c.kind === 'refundable' ? 'Refundable deposit' : c.note === 'Paid on account' ? 'Paid on account — not used yet' : 'Prepayment',
       date: toISODate(c.date), amount: round2(c.remaining) });
   }
   for (const list of Object.values(items)) list.sort((a, b) => ((a.due_date || a.date) < (b.due_date || b.date) ? -1 : 1));

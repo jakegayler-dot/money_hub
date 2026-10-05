@@ -103,7 +103,7 @@ export default function VendorBills({ accounts, categories, onChanged }) {
           {!rows.length ? <div className="empty-state">{q ? 'No vendor matches.' : 'No unpaid bills or deposits.'}</div> : (
             <table>
               <thead>
-                <tr><th>Vendor</th><th>Open bills</th><th>Oldest due</th><th>Owing</th><th>Deposits held</th><th>Balance</th></tr>
+                <tr><th>Vendor</th><th>Open bills</th><th>Oldest due</th><th>Owing</th><th>Credit held</th><th>Balance</th></tr>
               </thead>
               <tbody>
                 {rows.map((v) => {
@@ -210,7 +210,7 @@ function AddEntry({ kind, payeeId, accounts, categories, save, onCancel, onDone 
 }
 
 /** One line changed or deleted in place: a bill, or the ledger entry behind a payment. */
-function LineEditor({ line: l, save, onClose }) {
+function LineEditor({ line: l, save, onClose, payeeId }) {
   const isBill = l.kind === 'bill';
   const txAmount = isBill ? null : l.kind === 'spot' ? l.spot : l.kind === 'received' ? l.received : l.amount;
   const start = isBill
@@ -237,11 +237,18 @@ function LineEditor({ line: l, save, onClose }) {
     if (changed('date')) body.date = f.date;
     if (changed('amount')) body.amount = Math.sign(txAmount || -1) * Math.abs(Number(f.amount));
     if (!Object.keys(body).length) return onClose();
-    if (await save('PATCH', `/api/transactions/${l.transaction_id}`, body)) onClose();
+    // A payment on account is split across the bills it paid: take it off them, change it, put it back.
+    const held = l.kind === 'onaccount' && l.credit_id;
+    if (held && !(await save('POST', `/api/bills/vendors/${payeeId}/on-account`, { transaction_id: l.transaction_id, on: false }))) return;
+    const ok = await save('PATCH', `/api/transactions/${l.transaction_id}`, body);
+    if (held) await save('POST', `/api/bills/vendors/${payeeId}/on-account`, { transaction_id: l.transaction_id, on: true });
+    if (ok) onClose();
   };
   const remove = async () => {
     const what = isBill ? `the charge "${f.name}"` : `the ledger entry "${l.label}" (it comes off the ledger too)`;
     if (!window.confirm(`Delete ${what}?`)) return;
+    if (!isBill && l.kind === 'onaccount' && l.credit_id
+      && !(await save('POST', `/api/bills/vendors/${payeeId}/on-account`, { transaction_id: l.transaction_id, on: false }))) return;
     if (await save('DELETE', isBill ? `/api/bills/${l.bill_id}` : `/api/transactions/${l.transaction_id}`)) onClose();
   };
   return (
@@ -271,7 +278,7 @@ function BillSummaryCards({ s, account, onPickVendor, onShowLine, onShowAccount 
     <MetricCard {...props} onClick={toggle(k)} active={open === k} />
   );
   const TITLE = {
-    owing: 'Owing on bills', overdue: 'Overdue', due_30: 'Due in the next 30 days', held: 'Deposits held',
+    owing: 'Owing on bills', overdue: 'Overdue', due_30: 'Due in the next 30 days', held: 'Credit held — deposits and overpayments',
     financed: 'Financed bills — running interest', scheduled: 'Scheduled — recurring, not billed yet', free_ending: 'Interest-free ending soon',
   };
   const list = open ? items[open] || [] : [];
@@ -293,7 +300,7 @@ function BillSummaryCards({ s, account, onPickVendor, onShowLine, onShowAccount 
         {card('owing', { label: 'Owing on bills', value: money(s.owing), sub: s.bills ? `${s.bills} bill${s.bills === 1 ? '' : 's'}${s.oldest_due ? ` · oldest due ${nice(s.oldest_due)}` : ''}` : 'Nothing owing' })}
         {card('overdue', { label: 'Overdue', value: money(s.overdue), tone: s.overdue > 0 ? 'negative' : undefined, sub: s.overdue_count ? `${s.overdue_count} bill${s.overdue_count === 1 ? '' : 's'} past due` : 'None' })}
         {card('due_30', { label: 'Due in 30 days', value: money(s.due_30), sub: s.due_30_count ? `${s.due_30_count} bill${s.due_30_count === 1 ? '' : 's'}` : 'None' })}
-        {card('held', { label: 'Deposits held', value: money(s.held), sub: s.held ? 'For later bills or refund' : 'None' })}
+        {card('held', { label: 'Credit held', value: money(s.held), sub: s.held ? 'Deposits and overpayments' : 'None' })}
         {(s.financed > 0 || s.interest_month > 0) && card('financed', {
           label: 'Interest running', value: `${money(s.interest_month)}/mo`, tone: s.interest_month > 0 ? 'negative' : undefined,
           sub: s.free_ending_count ? `${money(s.free_ending)} goes interest-bearing ${nice(s.free_ending_first)}` : `On ${money(s.financed)} financed`,
@@ -663,7 +670,7 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
                       ? <a href={`/ledgers?edit=${l.transaction_id}`}>{l.label}</a> : l.label}
                     {['spot', 'onaccount'].includes(l.kind) && !l.before_opening && (
                       <button type="button" className="small-link stmt-toggle" onClick={() => setOnAccount(l.transaction_id, l.kind === 'spot')}
-                        title={l.kind === 'spot' ? 'It paid down what you owed' : 'It was paid when bought — no effect on the balance'}>
+                        title={l.kind === 'spot' ? 'It pays your oldest open bills; anything over is credit for the next one' : 'It was paid when bought — no effect on the balance'}>
                         {l.kind === 'spot' ? 'Paid on account?' : 'Paid at purchase?'}
                       </button>
                     )}
@@ -672,6 +679,8 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
                     {l.kind === 'bill' && l.due_date && <span className="tag">due {nice(l.due_date)}</span>}
                     {l.awaiting && <span className="tag">Unconfirmed until statement</span>}
                     {l.pays && l.pays.length > 1 && <div className="split-lines">Paid {l.pays.length} bills: {l.pays.join(', ')}</div>}
+                    {l.applies && l.applies.length > 0 && <div className="split-lines">Paid {l.applies.join(', ')}</div>}
+                    {l.credit_left > 0 && <span className="tag">{cents(l.credit_left)} credit for the next bill</span>}
                     {l.account && <div className="split-lines">{l.account}</div>}
                     {l.cleared?.changed && <div className="review-error" style={{ margin: 0 }}>Changed since ticked (was {cents(l.cleared.amount)})</div>}
                   </td>
@@ -694,7 +703,7 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
                 {editKey === l.key && (
                   <tr className="stmt-edit-row">
                     <td colSpan={7}>
-                      <LineEditor line={l} save={save} onClose={() => setEditKey(null)} />
+                      <LineEditor line={l} save={save} payeeId={payeeId} onClose={() => setEditKey(null)} />
                     </td>
                   </tr>
                 )}

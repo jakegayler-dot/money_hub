@@ -5,7 +5,11 @@ import { validateSegment, segmentValues, SEGMENT_COLUMNS } from '../lib/segments
 import {
   payBill, removeTransaction, linkBillToTransaction, expenseCategoryFor, linkBillsToTransaction, payBills,
   applyVendorOwnerToBill, recordVendorDeposit, applyVendorCredit, unapplyVendorCredit, refundVendorCredit, keepVendorCredit, removeVendorCredit, payeeId,
+  settleVendorAccount,
 } from '../lib/postings.js';
+
+/** After a vendor's bills or credits change: settle its account oldest first. */
+const settle = (payeeId) => (payeeId ? withTransaction((client) => settleVendorAccount(client, Number(payeeId))).catch((e) => console.error('Vendor settle failed', payeeId, e.message)) : null);
 
 // "JS & CL Gayler — Inv. 0588652" → "JS & CL Gayler" (same rule as the schema backfill).
 const vendorFromName = (name) => String(name || '').replace(/\s+(—|–|-|#|inv\.?\s|invoice\s).*$/i, '').trim() || String(name || '').trim();
@@ -165,6 +169,7 @@ router.post('/', ah(async (req, res) => {
   const defaultOwner = !req.body.is_segment_split && (req.body.segment || 'grain') === 'grain';
   if (noOwner || (!req.body.payee_id && defaultOwner)) await applyVendorOwnerToBill(pool, rows[0].id);
   autoLinkBillsSoon(); // already paid? find the payment
+  await settle(vendor); // credit already held with the vendor pays it
   res.status(201).json({ ...rows[0], ...fin });
 }));
 
@@ -333,6 +338,7 @@ router.post('/credits', ah(async (req, res) => {
     account_id: b.account_id || null, amount: b.amount, date: b.date, note: b.note || null,
   }));
   autoLinkBillsSoon();
+  if (c.kind === 'prepayment') await settle(c.payee_id);
   res.status(201).json(c);
 }));
 router.post('/credits/:id/apply', ah(async (req, res) => {
@@ -449,8 +455,18 @@ router.post('/vendors/:payeeId/on-account', ah(async (req, res) => {
   const txId = Number(req.body?.transaction_id);
   const { rows: [t] } = await pool.query('SELECT id FROM transactions WHERE id = $1 AND payee_id = $2', [txId, payeeId]);
   if (!t) return res.status(404).json({ error: 'That entry isn’t this vendor’s.' });
-  if (req.body?.on) await pool.query('INSERT INTO vendor_on_account (transaction_id) VALUES ($1) ON CONFLICT DO NOTHING', [txId]);
-  else await pool.query('DELETE FROM vendor_on_account WHERE transaction_id = $1', [txId]);
+  await withTransaction(async (client) => {
+    if (req.body?.on) {
+      await client.query('INSERT INTO vendor_on_account (transaction_id) VALUES ($1) ON CONFLICT DO NOTHING', [txId]);
+    } else {
+      // Back to paid at purchase: the credit it became comes off the bills it paid.
+      const { rows: held } = await client.query(
+        `SELECT id FROM vendor_credits WHERE transaction_id = $1 AND kind = 'prepayment'`, [txId]);
+      for (const c of held) await removeVendorCredit(client, c.id);
+      await client.query('DELETE FROM vendor_on_account WHERE transaction_id = $1', [txId]);
+    }
+    await settleVendorAccount(client, payeeId);
+  });
   res.json(await statementFor(payeeId));
 }));
 
@@ -616,12 +632,15 @@ router.patch('/:id', ah(async (req, res) => {
   });
 
   if (bill.status === 'unpaid') autoLinkBillsSoon();
+  await settle(bill.payee_id);
+  if (current.payee_id && current.payee_id !== bill.payee_id) await settle(current.payee_id);
   res.json(bill);
 }));
 
 router.delete('/:id', ah(async (req, res) => {
-  const { rowCount } = await pool.query('DELETE FROM bills WHERE id = $1', [req.params.id]);
-  if (!rowCount) return res.status(404).json({ error: 'not found' });
+  const { rows: [gone] } = await pool.query('DELETE FROM bills WHERE id = $1 RETURNING payee_id', [req.params.id]);
+  if (!gone) return res.status(404).json({ error: 'not found' });
+  await settle(gone.payee_id); // what was applied to it goes back to the account
   res.status(204).end();
 }));
 

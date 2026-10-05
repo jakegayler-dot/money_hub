@@ -1277,3 +1277,7 @@ CREATE TABLE IF NOT EXISTS vendor_on_account (
   transaction_id INTEGER PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE,
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- A bill someone took a vendor credit off by hand: the account's
+-- oldest-first settling leaves it alone.
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS no_auto_settle BOOLEAN NOT NULL DEFAULT false;
