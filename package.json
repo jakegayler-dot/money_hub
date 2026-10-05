@@ -8,6 +8,7 @@
     "start": "node server/lib/migrate.js && NODE_ENV=production node server/index.js",
     "migrate": "node server/lib/migrate.js",
     "dev:server": "npm --prefix server run dev",
-    "dev:client": "npm --prefix client run dev"
+    "dev:client": "npm --prefix client run dev",
+    "test": "npm --prefix server test"
   }
 }

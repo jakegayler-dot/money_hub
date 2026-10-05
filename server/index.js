@@ -28,6 +28,7 @@ import { readPending, matchPending } from './lib/receipts.js';
 import { pairAllCardPayments, splitAllLoanPayments, syncLoanPieceOwners } from './lib/postings.js';
 import { withTransaction } from './db.js';
 import { authRouter, requireSignIn, authEnabled } from './lib/appAuth.js';
+import sentinelReadRoute from './routes/sentinelRead.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -40,6 +41,10 @@ app.use('/api/receipts/upload', receiptUpload);
 app.use(express.json());
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+
+// Sentinel's read-only data API: its own key (SENTINEL_ACTION_KEY), so
+// it's mounted before the sign-in guard below and is the only path exempt.
+app.use('/api/sentinel/read', sentinelReadRoute);
 
 // Everything under /api below this needs a signed-in browser or the API key.
 app.use('/api/auth', authRouter);

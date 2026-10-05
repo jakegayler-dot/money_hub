@@ -107,7 +107,9 @@ router.get('/by-category', ah(async (req, res) => {
 // transaction piece counted there (same rules as /by-category), weighted to
 // the owner picked. category_id: a category (its subcategories included),
 // 'none' for uncategorized; month 1–12 narrows to that month.
-async function countedLines(year, owner, kind) {
+// Exported for the Sentinel read API (lib/sentinelRead.js), so its
+// spending and budget figures match this page exactly.
+export async function countedLines(year, owner, kind) {
   const [{ rows: cats }, { rows: lines }] = await Promise.all([
     pool.query('SELECT id, name, parent_id, kind FROM expense_categories'),
     pool.query(
