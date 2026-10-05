@@ -1096,6 +1096,12 @@ button.danger:hover { filter: brightness(1.08); }
 .vendor-statement tr.before-open td { opacity: 0.45; }
 .vendor-statement .stmt-spot { color: var(--text-faint); }
 .stmt-toggle { margin-left: 8px; color: var(--text-faint); }
+.vendor-statement .stmt-received { color: var(--text-muted); text-align: center; }
+.stmt-docs { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; margin-top: 3px; font-size: 12px; }
+.stmt-doc { padding: 0 6px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--gold); text-decoration: none; line-height: 18px; }
+.stmt-doc:hover, .stmt-doc:focus-visible { border-color: var(--gold); }
+.stmt-attach { color: var(--text-faint); font-size: 12px; }
+.stmt-attach:hover, .stmt-attach:focus-visible { color: var(--gold); }
 .owner-rule-field { align-self: end; }
 
 /* Ledger: an entry edited in place, under its own row */
@@ -1120,3 +1126,18 @@ tr.ledger-edit-row .form-panel { border: 1px solid rgba(201, 162, 39, 0.35); bor
 .loan-legend i, .loan-readout i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 .loan-readout { min-height: 20px; margin-top: 4px; }
 .loan-readout b { font-family: var(--font-mono); font-weight: 500; color: var(--text); }
+
+/* Vendor account: add a charge or payment, edit a line in place */
+.stmt-form { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; margin: 0 16px 12px; padding: 12px 14px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--panel-alt); }
+.stmt-form label { display: grid; gap: 4px; font-size: 12px; color: var(--text-muted); }
+.stmt-form label input:not([type=checkbox]), .stmt-form label select { min-width: 0; }
+.stmt-form label input[type=number] { width: 120px; }
+.stmt-form .stmt-check { display: flex; gap: 6px; align-items: center; padding-bottom: 8px; }
+.stmt-form-title { flex-basis: 100%; font-weight: 600; color: var(--text); font-size: 13px; }
+.stmt-form-actions { display: flex; gap: 12px; align-items: center; padding-bottom: 4px; }
+.stmt-form-note { flex-basis: 100%; margin: 0; }
+.stmt-form-inline { margin: 0 12px; border-color: rgba(201, 162, 39, 0.35); }
+.vendor-statement tr.stmt-edit-row > td { background: var(--panel-alt); padding: 4px 0 12px; border-top: 0; }
+.stmt-delete { color: var(--negative); margin-left: auto; }
+@media (max-width: 600px) { .stmt-form label { flex: 1 1 140px; } .stmt-form label input[type=number] { width: 100%; } }

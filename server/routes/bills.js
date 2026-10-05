@@ -388,7 +388,7 @@ router.get('/summary', ah(async (req, res) => {
             (SELECT max(statement_date) FROM vendor_reconciliations r WHERE r.payee_id = p.id AND r.status = 'done') AS reconciled_to
      FROM payees p
      WHERE EXISTS (SELECT 1 FROM bills b WHERE b.payee_id = p.id) OR EXISTS (SELECT 1 FROM vendor_credits c WHERE c.payee_id = p.id)
-        OR EXISTS (SELECT 1 FROM transactions t WHERE t.payee_id = p.id AND t.amount < 0) OR p.segment IS NOT NULL OR p.is_segment_split
+        OR EXISTS (SELECT 1 FROM transactions t WHERE t.payee_id = p.id) OR p.segment IS NOT NULL OR p.is_segment_split
      ORDER BY lower(p.name)`);
   res.json({
     summary: billSummary(bills, credits),
@@ -585,6 +585,11 @@ router.patch('/:id', ah(async (req, res) => {
        ...segVals, req.params.id, setsCategory, req.body.category_id || null]
     );
     const updated = rows[0];
+    // The invoice date: where the charge lands on the vendor's account.
+    if (req.body.received_date !== undefined) {
+      await client.query('UPDATE bills SET received_date = $2 WHERE id = $1', [updated.id, req.body.received_date || null]);
+      updated.received_date = req.body.received_date || null;
+    }
     if (req.body.payee_id !== undefined) {
       await client.query('UPDATE bills SET payee_id = $2 WHERE id = $1', [updated.id, req.body.payee_id ? Number(req.body.payee_id) : null]);
       updated.payee_id = req.body.payee_id ? Number(req.body.payee_id) : null;

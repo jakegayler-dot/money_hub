@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { localToday } from '../format.js';
 import { Link } from 'react-router-dom';
 import { cents } from '../components/SplitEditor.jsx';
 
@@ -93,7 +94,7 @@ export default function Books() {
                       <button className="small secondary" onClick={() => setChecking(null)}>Cancel</button>
                     </span>
                   ) : (
-                    <button className="small secondary" onClick={() => setChecking({ key: `${l.kind}${l.id}`, date: new Date().toISOString().slice(0, 10), balance: '' })}>
+                    <button className="small secondary" onClick={() => setChecking({ key: `${l.kind}${l.id}`, date: localToday(), balance: '' })}>
                       Confirm balance
                     </button>
                   )}

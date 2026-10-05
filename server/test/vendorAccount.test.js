@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { vendorStatement, billSummary, rawOwing, billDate } from '../lib/vendorAccount.js';
 
-const fakeDb = (bills, credits = [], { payee = null, loose = [] } = {}) => ({
+const fakeDb = (bills, credits = [], { payee = null, loose = [], docs = [] } = {}) => ({
   query: async (sql) => {
     if (sql.includes('FROM payees')) return { rows: payee ? [payee] : [] };
+    if (sql.includes('FROM receipts')) return { rows: docs };
     if (sql.includes('FROM transactions t')) return { rows: loose };
     return { rows: sql.includes('FROM bills') ? bills : credits };
   },
@@ -60,4 +61,17 @@ test('entries with no bill: paid at purchase leaves the balance; on account pays
   assert.equal(st.balance, 1800);
   assert.equal(st.lines.find((l) => l.key === 'spot:70').amount, 0);
   assert.equal(st.lines.find((l) => l.key === 'acct:72').before_opening, true);
+});
+
+test('money in from a vendor is income, not a charge; documents land on their lines', async () => {
+  const b = bill({ id: 3, amount: 200, received_date: '2026-03-01', due_date: '2026-03-31' });
+  const loose = [{ id: 80, date: '2026-03-15', amount: 1500, description: 'e-Transfer — wages', on_account: false }];
+  const docs = [{ id: 501, mime: 'application/pdf', bill_id: 3, transaction_id: null }, { id: 502, mime: 'image/jpeg', bill_id: null, transaction_id: 80 }];
+  const st = await vendorStatement(fakeDb([b], [], { loose, docs }), 1, '2026-04-01');
+  const wage = st.lines.find((l) => l.key === 'spot:80');
+  assert.equal(wage.kind, 'received');
+  assert.equal(wage.amount, 0);
+  assert.equal(st.balance, 200);
+  assert.deepEqual(st.lines.find((l) => l.kind === 'bill').docs.map((d) => d.id), [501]);
+  assert.deepEqual(wage.docs.map((d) => d.id), [502]);
 });

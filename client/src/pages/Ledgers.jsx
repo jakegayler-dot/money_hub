@@ -114,7 +114,20 @@ export default function Ledgers() {
   const loadLinkOptions = () => fetch('/api/transactions/link-options').then((r) => r.json())
     .then((d) => setLinkOptions(d && d.bills ? { contracts: [], cards: [], ...d } : { bills: [], loan_payments: [], contracts: [], cards: [] })).catch(() => {});
 
+  // Opened on one entry (/ledgers?edit=ID from Bills, Contracts, Review…):
+  // the list shows just that entry, open for editing, until "Show all".
+  const [focusId, setFocusId] = useState(() => new URLSearchParams(window.location.search).get('edit'));
+  const focusOpened = useRef(false);
   const load = () => {
+    if (focusId) {
+      setBalance(null);
+      fetch(`/api/transactions?id=${encodeURIComponent(focusId)}`).then((r) => r.json()).then((d) => {
+        const rows = Array.isArray(d) ? d : [];
+        setTransactions(rows);
+        if (rows[0] && !focusOpened.current) { focusOpened.current = true; startEdit(rows[0]); }
+      });
+      return;
+    }
     const params = new URLSearchParams();
     if (filter !== 'all') params.set('ledger', filter);
     if (reviewOnly) params.set('needs_review', 'true');
@@ -131,16 +144,8 @@ export default function Ledgers() {
     else setBalance(null);
   };
 
-  useEffect(load, [filter, reviewOnly, unconfirmedOnly, payeeFilter, where]);
+  useEffect(load, [filter, reviewOnly, unconfirmedOnly, payeeFilter, where, focusId]);
   useEffect(() => { try { window.localStorage.setItem('moneyhub.ledgerWhere', where); } catch { /* private mode */ } }, [where]);
-  // /ledgers?edit=ID (from the Review tab) opens that transaction for editing.
-  useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get('edit');
-    if (!id) return;
-    fetch(`/api/transactions?id=${encodeURIComponent(id)}`).then((r) => r.json()).then((rows) => {
-      if (Array.isArray(rows) && rows[0]) startEdit(rows[0]);
-    });
-  }, []);
   useEffect(() => {
     fetch('/api/accounts').then((r) => r.json()).then(setAccounts);
     fetch('/api/credit-cards').then((r) => r.json()).then((c) => setCards(c.filter((x) => x.status === 'active')));
@@ -567,6 +572,11 @@ export default function Ledgers() {
         <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
           <span>
             Transactions
+            {focusId && (
+              <> — one entry{' '}
+                <button type="button" className="small secondary" onClick={() => { setFocusId(null); cancelEdit(); window.history.replaceState(null, '', '/ledgers'); }}>Show all</button>
+              </>
+            )}
             {payeeFilter && (
               <> — {payees.find((x) => String(x.id) === String(payeeFilter))?.name || 'one payee'}{' '}
                 <button type="button" className="small secondary" onClick={() => { setPayeeFilter(''); window.history.replaceState(null, '', '/ledgers'); }}>Show all</button>

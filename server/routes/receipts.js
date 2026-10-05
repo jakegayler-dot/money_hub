@@ -86,9 +86,21 @@ receiptUpload.post('/', express.raw({ type: () => true, limit: '25mb' }), ah(asy
   // says what it's for, so it isn't read — it's filed as that invoice, and
   // attaches to the bill's payment once there is one.
   const billId = Number(req.query.bill_id) || null;
+  // `keep=1`: attached by hand to a line on a vendor's account. Filed exactly
+  // where it was put — not read, not matched, nothing on the bill or entry changed.
+  const keep = req.query.keep === '1';
   if (billId) {
     const { rows: [bill] } = await pool.query('SELECT * FROM bills WHERE id = $1', [billId]);
     if (!bill) return res.status(404).json({ error: 'Bill not found.' });
+    if (keep) {
+      const ex = { is_receipt: true, doc_type: 'invoice', party: bill.name, date: toISODate(bill.received_date || bill.due_date), total: Number(bill.amount), notes: '' };
+      const tx = bill.status === 'paid' ? bill.linked_transaction_id : null;
+      const { rows: [r] } = await pool.query(
+        `INSERT INTO receipts (source, mime, bytes, image, bill_id, transaction_id, extracted, status, matched_at)
+         VALUES ('app', $1, $2, $3, $4, $5, $6, 'filed', CASE WHEN $5::int IS NULL THEN NULL ELSE now() END) RETURNING id`,
+        [mime, buf.length, buf, billId, tx, ex]);
+      return res.status(201).json({ id: r.id, ok: true, message: 'Filed on the bill.' });
+    }
     const ex = {
       is_receipt: true, doc_type: 'invoice', party: bill.name,
       date: toISODate(bill.received_date || bill.due_date), due_date: toISODate(bill.due_date),
@@ -119,6 +131,15 @@ receiptUpload.post('/', express.raw({ type: () => true, limit: '25mb' }), ah(asy
   if (txId) {
     const { rows: [t] } = await pool.query('SELECT id FROM transactions WHERE id = $1', [txId]);
     if (!t) return res.status(404).json({ error: 'Transaction not found.' });
+    if (keep) {
+      const { rows: [tx] } = await pool.query('SELECT t.date, t.amount, p.name AS payee FROM transactions t LEFT JOIN payees p ON p.id = t.payee_id WHERE t.id = $1', [txId]);
+      const ex = { is_receipt: true, doc_type: 'receipt', party: tx.payee || null, date: toISODate(tx.date), total: Math.abs(Number(tx.amount)), notes: '' };
+      const { rows: [r] } = await pool.query(
+        `INSERT INTO receipts (source, mime, bytes, image, transaction_id, extracted, status, matched_at)
+         VALUES ('app', $1, $2, $3, $4, $5, 'filed', now()) RETURNING id`,
+        [mime, buf.length, buf, txId, ex]);
+      return res.status(201).json({ id: r.id, ok: true, message: 'Filed on the entry.' });
+    }
     const { rows: [r] } = await pool.query(
       `INSERT INTO receipts (source, mime, bytes, image, status) VALUES ('app', $1, $2, $3, 'reading') RETURNING id`,
       [mime, buf.length, buf]);

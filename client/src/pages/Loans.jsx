@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { money } from '../format.js';
+import { money, localToday } from '../format.js';
 import { OWNER_LABELS, OwnerFields, ownerPayload, ownerFieldsFrom, ownerSummary, emptyOwnerFields } from '../owners.jsx';
 
 const emptyForm = {
@@ -16,7 +16,7 @@ const FREQUENCY_LABELS = {
 };
 
 const STALE_DAYS = 90;
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => localToday();
 const emptyVerify = { verified_on: today(), balance: '', interest_rate_pct: '', payment_amount: '', source: 'statement', note: '', prior_paid_outside_app: false };
 
 // Verification age: never verified is red, over 90 days amber, else green.
@@ -191,7 +191,7 @@ export default function Loans() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         account_id: recordAccountId,
-        paid_date: new Date().toISOString().slice(0, 10),
+        paid_date: localToday(),
         paid_by_check: recordByCheck,
       }),
     });

@@ -27,3 +27,8 @@ export function pct(n) {
   if (n === null || n === undefined) return '—';
   return `${(n * 100).toFixed(0)}%`;
 }
+
+/** Today on this device's calendar (not UTC — after 6 pm in Saskatchewan UTC is already tomorrow). */
+export function localToday(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}

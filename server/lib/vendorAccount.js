@@ -73,7 +73,7 @@ function monthlyInterest(b, base, start, end, total, keyPrefix) {
 /** The bill's charge lines up to `end`: the invoice, any vendor-statement adjustment, and monthly interest. Sums to rawOwing(b, end). */
 function chargeLines(b, end) {
   const lines = [{ key: `bill:${b.id}`, date: billDate(b), kind: 'bill', amount: round2(b.amount), bill_id: b.id, label: b.name, due_date: toISODate(b.due_date),
-    gst: b.has_gst ? round2(b.gst_amount || 0) : null }];
+    gst: b.has_gst ? round2(b.gst_amount || 0) : null, has_gst: !!b.has_gst, paid: b.status === 'paid' }];
   if (!b.is_financed) return lines;
   const total = round2(rawOwing(b, end) - Number(b.amount));
   if (b.balance_as_of && b.balance_amount != null) {
@@ -96,7 +96,7 @@ function chargeLines(b, end) {
   return lines;
 }
 
-const ORDER = { opening: -1, spot: 4, onaccount: 4, bill: 0, adjust: 1, interest: 2, deposit: 3, payment: 4, diff: 5, marked: 5, refund: 6, kept: 7 };
+const ORDER = { opening: -1, spot: 4, received: 4, onaccount: 4, bill: 0, adjust: 1, interest: 2, deposit: 3, payment: 4, diff: 5, marked: 5, refund: 6, kept: 7 };
 
 /**
  * The vendor's account: every line with its running balance, plus bills
@@ -143,6 +143,9 @@ export async function vendorStatement(db, payeeId, today = todayISO()) {
     const base = { date: toISODate(t.date), transaction_id: t.id, label: t.description || 'Entry', account: t.account,
       gst: t.gst_amount == null ? null : round2(t.gst_amount), awaiting: !!t.awaiting_statement };
     if (t.on_account) lines.push({ ...base, key: `acct:${t.id}`, kind: 'onaccount', amount: round2(t.amount) });
+    // Money in from them (wages, a rebate cheque) is income to you, not a
+    // charge on the account: shown, but it doesn't move the balance.
+    else if (Number(t.amount) > 0) lines.push({ ...base, key: `spot:${t.id}`, kind: 'received', amount: 0, received: round2(t.amount) });
     else lines.push({ ...base, key: `spot:${t.id}`, kind: 'spot', amount: 0, spot: round2(t.amount) });
   }
   for (const b of bills) {
@@ -207,7 +210,31 @@ export async function vendorStatement(db, payeeId, today = todayISO()) {
     l.balance = bal;
   }
   upcoming.sort((a, b) => (a.date < b.date ? -1 : 1));
+  await attachDocuments(db, lines);
   return { lines, upcoming, balance: bal, bills, credits, opening };
+}
+
+/**
+ * The invoices and receipts filed on each line: a bill's own documents on
+ * its bill line, an entry's on the entry. A document filed on a bill that
+ * also sits on the bill's payment shows once, on the bill.
+ */
+async function attachDocuments(db, lines) {
+  const billIds = [...new Set(lines.filter((l) => l.kind === 'bill').map((l) => l.bill_id))];
+  const txIds = [...new Set(lines.filter((l) => l.transaction_id && l.kind !== 'diff').map((l) => l.transaction_id))];
+  for (const l of lines) if (l.kind === 'bill' || (l.transaction_id && l.kind !== 'diff')) l.docs = [];
+  if (!billIds.length && !txIds.length) return;
+  const { rows } = await db.query(
+    `SELECT id, mime, bill_id, transaction_id FROM receipts WHERE bill_id = ANY($1::int[]) OR transaction_id = ANY($2::int[]) ORDER BY id`,
+    [billIds, txIds]);
+  const onBill = new Set(billIds);
+  for (const r of rows) {
+    const doc = { id: r.id, mime: r.mime };
+    const target = r.bill_id && onBill.has(r.bill_id)
+      ? lines.find((l) => l.kind === 'bill' && l.bill_id === r.bill_id)
+      : lines.find((l) => l.docs && l.kind !== 'bill' && l.transaction_id === r.transaction_id);
+    if (target) target.docs.push(doc);
+  }
 }
 
 /**

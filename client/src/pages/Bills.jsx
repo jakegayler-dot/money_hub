@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { money } from '../format.js';
+import { money, localToday } from '../format.js';
 import { OwnerFields, ownerPayload, ownerFieldsFrom, ownerSummary, emptyOwnerFields, OWNER_LABELS, OWNER_KEYS, ruleOf } from '../owners.jsx';
 import CategorySelect from '../components/CategorySelect.jsx';
 import PayeeSelect, { usePayees } from '../components/PayeeSelect.jsx';
@@ -9,7 +9,7 @@ import { uploadBody } from './Receipts.jsx';
 
 // Sorting, remembered per browser. Ties fall back to soonest due.
 const COLUMNS = [['due', 'Due'], ['name', 'Name'], ['category', 'Category'], ['owner', 'Owner'], ['amount', 'Total'], ['status', 'Status']];
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => localToday();
 const statusRank = (b) => (b.status === 'paid' ? 2 : b.due_date?.slice(0, 10) < today() ? 0 : 1);
 const sortValue = {
   due: (b) => b.due_date?.slice(0, 10) || '',
@@ -194,7 +194,7 @@ export default function Bills() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        paid_date: new Date().toISOString().slice(0, 10),
+        paid_date: localToday(),
         account_id: payAccountId || null,
         paid_by_check: payByCheck,
       }),

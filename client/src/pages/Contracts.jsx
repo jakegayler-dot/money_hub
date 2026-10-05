@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { uploadBody } from './Receipts.jsx';
-import { money, unitPrice } from '../format.js';
+import { money, unitPrice, localToday } from '../format.js';
 import { OWNER_LABELS } from '../owners.jsx';
 import { cents } from '../components/SplitEditor.jsx';
 
@@ -116,7 +116,7 @@ export default function Contracts() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         account_id: settleAccountId,
-        settled_date: new Date().toISOString().slice(0, 10),
+        settled_date: localToday(),
         amount: settleAmount ? Number(settleAmount) : null,
       }),
     });

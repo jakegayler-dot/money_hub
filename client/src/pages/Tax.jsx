@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { money } from '../format.js';
+import { money, localToday } from '../format.js';
 import { cents } from '../components/SplitEditor.jsx';
 
 const STATUS = {
@@ -9,7 +9,7 @@ const STATUS = {
   filed: <span className="badge warn">FILED — AWAITING</span>,
   settled: <span className="badge pass">SETTLED</span>,
 };
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => localToday();
 const net = (n) => (n < 0 ? `${cents(-n)} refund` : n > 0 ? `${cents(n)} owing` : cents(0));
 
 export default function Tax() {

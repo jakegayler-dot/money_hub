@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from 'react';
 import MetricCard from '../components/MetricCard.jsx';
-import { money, unitPrice } from '../format.js';
+import { money, unitPrice, localToday } from '../format.js';
 import { OwnerFields, ownerPayload, ownerFieldsFrom, ownerSummary, emptyOwnerFields } from '../owners.jsx';
 
 const CATEGORY_LABELS = {
@@ -27,7 +27,7 @@ const RATE_PRESETS = [
   { key: 'c50', label: 'CCA Class 50 · 55% — computers', rate: -55, cca: '50' },
 ];
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => localToday();
 const emptyAsset = {
   name: '', category: 'machinery', value: '', value_date: today(), preset: 'c8',
   annual_change_pct: '-20', cca_class: '8', notes: '', loan_ids: [], ...emptyOwnerFields,

@@ -10,7 +10,7 @@ const STATUS = {
   failed: <span className="badge fail">COULDN'T READ</span>,
   not_receipt: <span className="badge">NOT A RECEIPT</span>,
   billed: <span className="badge warn">BILL — NOT PAID YET</span>,
-  filed: <span className="badge pass">FILED WITH CONTRACT</span>,
+  filed: <span className="badge pass">FILED</span>,
 };
 
 const DOC_LABEL = { receipt: 'Receipt', invoice: 'Invoice', sales_ticket: 'Sales ticket', contract: 'Contract' };
@@ -187,6 +187,12 @@ export function ReceiptRow({ r, act }) {
         )}
         {r.status === 'filed' && r.contract_label && (
           <div className="split-lines">Contract: {r.contract_label} <a className="small-link" href="/contracts">Contracts</a></div>
+        )}
+        {r.status === 'filed' && !r.contract_label && (r.bill_name || r.transaction_id) && (
+          <div className="split-lines">
+            Filed on {r.bill_name ? `the bill "${r.bill_name}"` : `${r.tx_date} · ${r.tx_description} · ${cents(r.tx_amount)}`}
+            {r.transaction_id && <>{' '}<a className="small-link" href={`/ledgers?edit=${r.transaction_id}`}>Open</a></>}
+          </div>
         )}
         {r.status === 'billed' && (
           <div className="split-lines">

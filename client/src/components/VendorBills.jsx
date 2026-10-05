@@ -1,11 +1,12 @@
-import { Fragment, useEffect, useState } from 'react';
-import { money } from '../format.js';
+import { Fragment, useEffect, useRef, useState } from 'react';
+import { uploadBody } from '../pages/Receipts.jsx';
+import { money, localToday } from '../format.js';
 import { cents } from './SplitEditor.jsx';
 import CategorySelect from './CategorySelect.jsx';
 import MetricCard from './MetricCard.jsx';
 import { OwnerFields, ownerPayload, ownerSummary, ownerFieldsFrom, emptyOwnerFields } from '../owners.jsx';
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => localToday();
 const KIND = { prepayment: 'Prepayment (applied to bills)', refundable: 'Refundable deposit' };
 const CREDIT_STATUS = { open: 'Held', used: 'All applied', refunded: 'Refunded', kept: 'Kept by vendor' };
 
@@ -64,7 +65,7 @@ export default function VendorBills({ accounts, categories, onChanged }) {
       {error && <p className="review-error" style={{ margin: '0 16px 8px' }}>{error}</p>}
       <div className="vendor-find">
         <div className="vendor-search">
-          <input type="search" aria-label="Find a vendor" placeholder="Find a vendor…" value={query}
+          <input type="search" aria-label="Find a vendor" placeholder="Search vendors…" value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
@@ -93,6 +94,7 @@ export default function VendorBills({ accounts, categories, onChanged }) {
         <VendorAccount key={picked} payeeId={picked} reload={tick} open={openById.get(picked)} name={pickedVendor.name}
           accounts={accounts} categories={categories} call={call}
           others={known.filter((v) => v.payee_id !== picked)}
+          onChanged={() => { load(); onChanged?.(); }}
           onDeleted={() => { pick(null); load(); onChanged?.(); }} />
       ) : (
         <>
@@ -135,6 +137,113 @@ const nice = (d) => {
   return `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1]} ${dd}${y !== new Date().getFullYear() ? `, ${y}` : ''}`;
 };
 
+const num = (v) => (v === '' || v == null ? null : Number(v));
+
+/** A new charge (a bill on this vendor) or payment (a ledger entry paid to them), added from the account. */
+function AddEntry({ kind, payeeId, accounts, categories, save, onCancel, onDone }) {
+  const [f, setF] = useState({ name: '', date: today(), due_date: '', amount: '', has_gst: false, category_id: null, account_id: accounts[0]?.id || '', on_account: true });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
+  const amount = num(f.amount);
+  const ok = amount > 0 && f.date && (kind === 'charge' ? !!f.name.trim() : !!f.account_id);
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!ok) return;
+    if (kind === 'charge') {
+      const d = await save('POST', '/api/bills', {
+        name: f.name.trim(), payee_id: payeeId, amount, received_date: f.date, due_date: f.due_date || f.date,
+        has_gst: f.has_gst, gst_pct: 5, category_id: f.category_id || null,
+      });
+      if (d) onDone();
+      return;
+    }
+    const t = await save('POST', '/api/transactions', {
+      account_id: Number(f.account_id), date: f.date, amount: -amount, description: f.name.trim() || 'Payment', payee_id: payeeId,
+    });
+    if (!t) return;
+    if (f.on_account) await save('POST', `/api/bills/vendors/${payeeId}/on-account`, { transaction_id: t.id, on: true });
+    onDone();
+  };
+  return (
+    <form className="stmt-form" onSubmit={submit}>
+      <div className="stmt-form-title">{kind === 'charge' ? 'New charge' : 'New payment'}</div>
+      <label>{kind === 'charge' ? 'Invoice' : 'Description'}
+        <input value={f.name} onChange={set('name')} placeholder={kind === 'charge' ? 'e.g. Inv 4471' : 'Payment'} autoFocus /></label>
+      <label>Date<input type="date" value={f.date} onChange={set('date')} /></label>
+      {kind === 'charge' && <label>Due<input type="date" value={f.due_date} onChange={set('due_date')} /></label>}
+      <label>Amount<input type="number" step="0.01" min="0" value={f.amount} onChange={set('amount')} placeholder="0.00" /></label>
+      {kind === 'charge' ? (
+        <>
+          <label className="stmt-check"><input type="checkbox" checked={f.has_gst} onChange={set('has_gst')} /> Includes 5% GST</label>
+          <label>Category<CategorySelect value={f.category_id || ''} onChange={(id) => setF({ ...f, category_id: id })} categories={categories} /></label>
+        </>
+      ) : (
+        <>
+          <label>Paid from
+            <select value={f.account_id} onChange={set('account_id')}>{accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+          <label className="stmt-check"><input type="checkbox" checked={f.on_account} onChange={set('on_account')} /> Pays down the account</label>
+        </>
+      )}
+      <div className="stmt-form-actions">
+        <button type="submit" className="small" disabled={!ok}>{kind === 'charge' ? 'Add charge' : 'Add payment'}</button>
+        <button type="button" className="small-link" onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+/** One line changed or deleted in place: a bill, or the ledger entry behind a payment. */
+function LineEditor({ line: l, save, onClose }) {
+  const isBill = l.kind === 'bill';
+  const txAmount = isBill ? null : l.kind === 'spot' ? l.spot : l.kind === 'received' ? l.received : l.amount;
+  const start = isBill
+    ? { name: l.label, date: l.date, due_date: l.due_date || '', amount: String(l.amount), has_gst: !!l.has_gst }
+    : { name: l.label, date: l.date, amount: String(Math.abs(txAmount)) };
+  const [f, setF] = useState(start);
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
+  const paid = isBill && l.paid;
+  const submit = async (e) => {
+    e.preventDefault();
+    const body = {};
+    const changed = (k) => String(f[k]) !== String(start[k]);
+    if (isBill) {
+      if (changed('name')) body.name = f.name.trim();
+      if (changed('date')) body.received_date = f.date;
+      if (changed('due_date') && f.due_date) body.due_date = f.due_date;
+      if (changed('amount')) body.amount = Number(f.amount);
+      if (changed('has_gst')) { body.has_gst = f.has_gst; body.gst_pct = 5; }
+      if (!Object.keys(body).length) return onClose();
+      if (await save('PATCH', `/api/bills/${l.bill_id}`, body)) onClose();
+      return;
+    }
+    if (changed('name')) body.description = f.name.trim();
+    if (changed('date')) body.date = f.date;
+    if (changed('amount')) body.amount = Math.sign(txAmount || -1) * Math.abs(Number(f.amount));
+    if (!Object.keys(body).length) return onClose();
+    if (await save('PATCH', `/api/transactions/${l.transaction_id}`, body)) onClose();
+  };
+  const remove = async () => {
+    const what = isBill ? `the charge "${f.name}"` : `the ledger entry "${l.label}" (it comes off the ledger too)`;
+    if (!window.confirm(`Delete ${what}?`)) return;
+    if (await save('DELETE', isBill ? `/api/bills/${l.bill_id}` : `/api/transactions/${l.transaction_id}`)) onClose();
+  };
+  return (
+    <form className="stmt-form stmt-form-inline" onSubmit={submit}>
+      <label>{isBill ? 'Invoice' : 'Description'}<input value={f.name} onChange={set('name')} /></label>
+      <label>{isBill ? 'Invoice date' : 'Date'}<input type="date" value={f.date} onChange={set('date')} /></label>
+      {isBill && <label>Due<input type="date" value={f.due_date} onChange={set('due_date')} disabled={paid} /></label>}
+      <label>Amount<input type="number" step="0.01" min="0" value={f.amount} onChange={set('amount')} disabled={paid} /></label>
+      {isBill && <label className="stmt-check"><input type="checkbox" checked={f.has_gst} onChange={set('has_gst')} disabled={paid} /> Includes 5% GST</label>}
+      <div className="stmt-form-actions">
+        <button type="submit" className="small">Save</button>
+        <button type="button" className="small-link" onClick={onClose}>Cancel</button>
+        {!isBill && <a className="small-link" href={`/ledgers?edit=${l.transaction_id}`}>More in the ledger</a>}
+        <button type="button" className="small-link stmt-delete" onClick={remove}>Delete</button>
+      </div>
+      {paid && <p className="split-lines stmt-form-note">Paid — the amount and due date are locked to the payment. Delete the payment first to change them.</p>}
+    </form>
+  );
+}
+
 /** Headline figures: one vendor's (with its account balance and reconciliation) or every vendor's. */
 function BillSummaryCards({ s, account }) {
   return (
@@ -158,7 +267,7 @@ function BillSummaryCards({ s, account }) {
   );
 }
 
-const KIND_LABEL = { opening: 'Opening', spot: 'Paid at purchase', onaccount: 'On account', bill: 'Bill', adjust: 'Adjustment', interest: 'Interest', deposit: 'Deposit', payment: 'Payment', diff: 'Difference', marked: 'Paid', refund: 'Refund', kept: 'Kept' };
+const KIND_LABEL = { opening: 'Opening', spot: 'Paid at purchase', received: 'Paid to you', onaccount: 'On account', bill: 'Bill', adjust: 'Adjustment', interest: 'Interest', deposit: 'Deposit', payment: 'Payment', diff: 'Difference', marked: 'Paid', refund: 'Refund', kept: 'Kept' };
 
 /**
  * The vendor's standing settings: an owner split every new bill and entry
@@ -266,13 +375,18 @@ function AccountSettings({ payeeId, st, onSaved }) {
 }
 
 /** One vendor's account: figures, pay/deposit actions, the running-balance statement, and reconciling it. */
-function VendorAccount({ payeeId, reload, open, name, accounts, categories, call, others = [], onDeleted }) {
+function VendorAccount({ payeeId, reload, open, name, accounts, categories, call, others = [], onDeleted, onChanged }) {
   const [removing, setRemoving] = useState(false);
   const [st, setSt] = useState(null);
   const [range, setRange] = useState('year');
   const [form, setForm] = useState(null); // { statement_date, statement_balance } while starting one
   const [err, setErr] = useState(null);
   const [showActions, setShowActions] = useState(false);
+  const fileRef = useRef(null);
+  const [attachTo, setAttachTo] = useState(null); // the line a picked file goes on
+  const [busy, setBusy] = useState(null);
+  const [adding, setAdding] = useState(null); // 'charge' | 'payment'
+  const [editKey, setEditKey] = useState(null); // the line being edited in place
 
   const load = () => fetch(`/api/bills/vendors/${payeeId}/statement`).then((r) => r.json()).then(setSt);
   useEffect(() => { load(); }, [payeeId, reload]);
@@ -292,7 +406,7 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
   if (st.error) return <div className="empty-state">{st.error}</div>;
   const rec = st.reconciliation;
   const recOn = !!rec.open;
-  const from = range === 'year' ? (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 1); return d.toISOString().slice(0, 10); })() : null;
+  const from = range === 'year' ? (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 1); return localToday(d); })() : null;
   const earlier = from ? st.lines.filter((l) => l.date < from) : [];
   // While reconciling, show everything not yet reconciled even if older.
   const shown = st.lines.filter((l) => !from || l.date >= from || (recOn && !(l.cleared && l.cleared.done)));
@@ -307,6 +421,33 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
     const d = await r.json().catch(() => ({}));
     if (!r.ok) setErr(d.error || `HTTP ${r.status}`); else setSt(d);
   };
+  const pickFor = (l) => { setAttachTo(l); fileRef.current.value = ''; fileRef.current.click(); };
+  const attach = async (file) => {
+    const l = attachTo;
+    if (!file || !l) return;
+    setErr(null);
+    setBusy(l.key);
+    try {
+      const { body, type } = await uploadBody(file);
+      const q = l.kind === 'bill' ? `bill_id=${l.bill_id}` : `transaction_id=${l.transaction_id}`;
+      const r = await fetch(`/api/receipts/upload?${q}&keep=1`, { method: 'POST', headers: { 'Content-Type': type }, body });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) setErr(d.error || `HTTP ${r.status}`); else await load();
+    } catch (e) { setErr(e.message); }
+    setBusy(null);
+    setAttachTo(null);
+  };
+  // Add, change or delete an entry, then refresh this account and the vendor list.
+  const save = async (method, url, body) => {
+    setErr(null);
+    const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    const d = r.status === 204 ? {} : await r.json().catch(() => ({}));
+    if (!r.ok) { setErr(d.error || `HTTP ${r.status}`); return null; }
+    await load();
+    onChanged?.();
+    return d;
+  };
+  const editable = (l) => !l.before_opening && (l.kind === 'bill' || ['payment', 'spot', 'received', 'onaccount'].includes(l.kind));
   const v = open || { payee_id: payeeId, name, bills: [], credits: [], owing: 0, held: 0, net: 0 };
 
   return (
@@ -324,11 +465,13 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
             <button key={k} type="button" aria-pressed={range === k} className={range === k ? 'on' : ''} onClick={() => setRange(k)}>{l}</button>
           ))}
         </span>
+        <button type="button" className="small" aria-expanded={adding === 'charge'} onClick={() => setAdding(adding === 'charge' ? null : 'charge')}>Add charge</button>
+        <button type="button" className="small" aria-expanded={adding === 'payment'} onClick={() => setAdding(adding === 'payment' ? null : 'payment')}>Add payment</button>
         <button type="button" className="small secondary" aria-expanded={showActions} onClick={() => setShowActions(!showActions)}>
           {showActions ? 'Hide' : 'Pay bills or record a deposit'}
         </button>
         {!recOn && !form && (
-          <button type="button" className="small" onClick={() => setForm({ statement_date: today(), statement_balance: '' })}>Reconcile to a statement</button>
+          <button type="button" className="small secondary" onClick={() => setForm({ statement_date: today(), statement_balance: '' })}>Reconcile to a statement</button>
         )}
         {!recOn && rec.last && (
           <span className="split-lines">
@@ -340,6 +483,10 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
       </div>
 
       {removing && <DeleteVendor payeeId={payeeId} name={st.name} others={others} onCancel={() => setRemoving(false)} onDeleted={onDeleted} />}
+      {adding && (
+        <AddEntry kind={adding} payeeId={payeeId} accounts={accounts} categories={categories} onCancel={() => setAdding(null)}
+          save={save} onDone={() => setAdding(null)} />
+      )}
       {showActions && <VendorDetail v={v} accounts={accounts} categories={categories} call={call} />}
 
       {form && !recOn && (
@@ -375,6 +522,8 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
         </p>
       )}
 
+      <input ref={fileRef} type="file" accept="application/pdf,image/jpeg,image/png,image/webp,.pdf,.jpg,.jpeg,.png" hidden
+        onChange={(e) => attach(e.target.files[0])} />
       <div className="table-scroll">
         <table className="vendor-statement">
           <thead>
@@ -389,7 +538,8 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
               const done = l.cleared?.done;
               const tickable = recOn && !done && !l.before_opening && l.date <= rec.open.statement_date;
               return (
-                <tr key={l.key} className={`stmt-${l.kind}${l.cleared && !done ? ' ticked' : ''}${l.before_opening ? ' before-open' : ''}`}>
+                <Fragment key={l.key}>
+                <tr className={`stmt-${l.kind}${l.cleared && !done ? ' ticked' : ''}${l.before_opening ? ' before-open' : ''}`}>
                   <td className="recon-col">
                     {done ? <span title="Reconciled" aria-label="Reconciled" className="recon-done">✓</span>
                       : tickable ? <input type="checkbox" aria-label={`On the statement: ${l.label}`} checked={!!l.cleared}
@@ -399,20 +549,40 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
                   <td className="nowrap">{nice(l.date)}</td>
                   <td>
                     <span className="stmt-kind">{KIND_LABEL[l.kind]}</span>{' '}
-                    {l.transaction_id && ['payment', 'refund', 'deposit', 'spot', 'onaccount'].includes(l.kind)
+                    {l.transaction_id && ['payment', 'refund', 'deposit', 'spot', 'received', 'onaccount'].includes(l.kind)
                       ? <a href={`/ledgers?edit=${l.transaction_id}`}>{l.label}</a> : l.label}
-                    {(l.kind === 'spot' || l.kind === 'onaccount') && !l.before_opening && (
+                    {['spot', 'onaccount'].includes(l.kind) && !l.before_opening && (
                       <button type="button" className="small-link stmt-toggle" onClick={() => setOnAccount(l.transaction_id, l.kind === 'spot')}
-                        title={l.kind === 'spot' ? 'It paid down what you owed (or, money in, the vendor paid you back on the account)' : 'It was paid when bought — no effect on the balance'}>
+                        title={l.kind === 'spot' ? 'It paid down what you owed' : 'It was paid when bought — no effect on the balance'}>
                         {l.kind === 'spot' ? 'Paid on account?' : 'Paid at purchase?'}
                       </button>
                     )}
+                    {l.kind === 'received' && <div className="split-lines">Income to you — not on the account, so the balance doesn't change.</div>}
                     {l.before_opening && <span className="tag">before the opening balance</span>}
                     {l.kind === 'bill' && l.due_date && <span className="tag">due {nice(l.due_date)}</span>}
                     {l.awaiting && <span className="tag">Unconfirmed until statement</span>}
                     {l.pays && l.pays.length > 1 && <div className="split-lines">Paid {l.pays.length} bills: {l.pays.join(', ')}</div>}
                     {l.account && <div className="split-lines">{l.account}</div>}
                     {l.cleared?.changed && <div className="review-error" style={{ margin: 0 }}>Changed since ticked (was {cents(l.cleared.amount)})</div>}
+                    {(l.docs || editable(l)) && (
+                      <div className="stmt-docs">
+                        {(l.docs || []).map((d, i) => (
+                          <a key={d.id} href={`/api/receipts/${d.id}/image`} target="_blank" rel="noreferrer" className="stmt-doc">
+                            {d.mime === 'application/pdf' ? 'PDF' : 'Photo'}{l.docs.length > 1 ? ` ${i + 1}` : ''}
+                          </a>
+                        ))}
+                        {l.docs && (
+                          <button type="button" className="small-link stmt-attach" disabled={busy === l.key} onClick={() => pickFor(l)}
+                            aria-label={`Attach a PDF or photo to ${l.label}`}>
+                            {busy === l.key ? 'Attaching…' : l.docs.length ? 'Add another' : 'Attach PDF or photo'}
+                          </button>
+                        )}
+                        {editable(l) && (
+                          <button type="button" className="small-link stmt-attach" aria-expanded={editKey === l.key}
+                            onClick={() => setEditKey(editKey === l.key ? null : l.key)}>{editKey === l.key ? 'Close' : 'Edit'}</button>
+                        )}
+                      </div>
+                    )}
                   </td>
                   <td className="num nowrap stmt-gst">{l.gst != null ? cents(l.gst) : l.kind === 'bill' || l.kind === 'payment' ? <span className="split-lines">none</span> : ''}</td>
                   {l.kind === 'spot' ? (
@@ -420,6 +590,8 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
                       <td className="num nowrap stmt-spot">{cents(Math.abs(l.spot))}</td>
                       <td className="num nowrap stmt-spot">{cents(Math.abs(l.spot))}</td>
                     </>
+                  ) : l.kind === 'received' ? (
+                    <td colSpan={2} className="num nowrap stmt-received">+{cents(l.received)} to you</td>
                   ) : (
                     <>
                       <td className="num nowrap">{l.amount > 0 ? cents(l.amount) : ''}</td>
@@ -428,6 +600,14 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
                   )}
                   <td className="num nowrap stmt-bal">{l.balance == null ? '—' : cents(l.balance)}</td>
                 </tr>
+                {editKey === l.key && (
+                  <tr className="stmt-edit-row">
+                    <td colSpan={7}>
+                      <LineEditor line={l} save={save} onClose={() => setEditKey(null)} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               );
             })}
             {forward != null && (

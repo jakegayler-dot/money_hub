@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react';
-import { money, pct } from '../format.js';
+import { money, pct, localToday } from '../format.js';
 import { OWNER_LABELS } from '../owners.jsx';
 
 const emptyForm = {
@@ -9,7 +9,7 @@ const emptyForm = {
 };
 const emptyStatement = { statement_date: '', due_date: '', statement_balance: '', minimum_payment: '', interest_amount: '', notes: '' };
 const emptyReward = { category: '', rate_pct: '', notes: '' };
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => localToday();
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const SEGMENT_LABELS = OWNER_LABELS;
 
