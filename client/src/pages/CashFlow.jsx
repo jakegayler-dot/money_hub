@@ -300,7 +300,7 @@ export default function CashFlow() {
           <table>
             <thead>
               <tr>
-                <th>Month</th><th>Contracts</th><th>Est. in</th><th>Bills</th><th>Debt service</th><th>Cards</th><th>Fees</th><th>GST</th><th>Tax</th><th>Est. out</th>
+                <th>Month</th><th>Contracts</th><th>Est. in</th><th>Bills</th><th>Debt service</th><th>Cards</th><th>Fees</th><th>GST</th><th>Tax</th><th>Personal</th><th>Est. out</th>
                 <th>Committed bal.</th><th>With estimates</th>
               </tr>
             </thead>
@@ -319,6 +319,7 @@ export default function CashFlow() {
                     <td>{v(t.accountFees, '−')}</td>
                     <td>{t.gst ? `${t.gst > 0 ? '+' : '−'}${money(Math.abs(Math.round(t.gst)))}` : '—'}</td>
                     <td>{v(t.taxInstalment, '−')}</td>
+                    <td style={{ color: 'var(--text-muted)' }}>{v(t.personalSpending, '−')}</td>
                     <td style={{ color: 'var(--text-muted)' }}>{v(t.estimatedOutflows, '−')}</td>
                     <td style={t.committedBalance < requiredFloor ? { color: 'var(--negative)' } : undefined}>{money(Math.round(t.committedBalance))}</td>
                     <td style={t.balance < requiredFloor ? { color: 'var(--negative)' } : { fontWeight: 500 }}>{money(Math.round(t.balance))}</td>

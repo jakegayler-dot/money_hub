@@ -19,7 +19,9 @@ import { SEGMENT_COLUMNS } from './segments.js';
 import { closedMonth } from './periods.js';
 import { OWNERS } from './segments.js';
 
-const MODEL = process.env.RECEIPT_MODEL || 'claude-haiku-4-5-20251001';
+// Handwritten receipt books and cheque stubs need a strong reader; the small
+// model guessed at them. Override with RECEIPT_MODEL in Railway if needed.
+const MODEL = process.env.RECEIPT_MODEL || 'claude-sonnet-5-5';
 const r2 = (n) => Math.round(Number(n) * 100) / 100;
 
 export const readerEnabled = () => !!process.env.ANTHROPIC_API_KEY;
@@ -47,6 +49,7 @@ Return ONLY a JSON object, no other text, with these fields (angle brackets desc
   "pst": <Saskatchewan PST as printed, else null>,
   "party": <the business as printed — reuse the spelling from KNOWN BUSINESSES when it's the same one>,
   "card_last4": <last 4 digits of the card or account used, if printed, else null>,
+  "cheque_number": <if it says it was paid by cheque, the cheque number as written (digits only), else null>,
   "items": [<main lines as {"description": <text as printed>, "amount": <number>}, at most 15>],
   "category": <exact name from CATEGORIES, chosen by the rules below, or null>,
   "category_reason": <a few words: the printed words the category is based on>,
@@ -60,6 +63,12 @@ Return ONLY a JSON object, no other text, with these fields (angle brackets desc
   "notes": <anything a person should know (smudged total, two receipts in one photo…), else "">
 }
 If it isn't any of these, return {"is_receipt": false, "notes": <what it is>}.
+
+WHO IS WHO
+The farm is the CUSTOMER of almost everything you read. Its owners are Jake and Ashley (surname Gayler) and the farm may be named after them (e.g. initials + Gayler). A "Sold to", "Bill to", "Customer" or "Received from" name that is the farm or its owners is the farm itself — NEVER the "party". The party is whoever issued the document: the printed letterhead, or on a blank receipt-book form, the handwritten "From …" name or the signature. A form preprinted "SALES ORDER", "INVOICE" or "RECEIPT" is just a stationery pad: a person who sold or rented something TO the farm (land rent, hay, custom work, a used part) wrote it out, so it is a "receipt" (paid) or "invoice" (owing) — it is a "sales_ticket" ONLY when the farm is the one being paid.
+
+HANDWRITING
+Read handwritten figures carefully and use the TOTAL line; a red or printed serial number (e.g. 012098) is the form number, never an amount — put it in "invoice_number". Dates on Canadian handwritten forms are usually DD/MM/YY ("29/04/26" is 2026-04-29); if the first number is over 12 it is certainly the day. "Paid by cheque 401", "chq #000401" → doc_type "receipt" and cheque_number "401". Land rent, cash rent and pasture rent from an individual normally have no GST — leave gst null unless it's written. If any figure is genuinely unreadable, set confidence "low" and say which in notes.
 For a sales_ticket, "category" is the INCOME category for the commodity sold, gross minus deductions must equal total, "party" is the buyer, and GST collected on the sale goes in "gst".
 
 CHOOSING THE CATEGORY
@@ -276,6 +285,16 @@ export async function matchReceipt(id, client = pool) {
     return null;
   }
 
+  // Paid by cheque: the cheque clears whenever it's cashed — weeks later is normal —
+  // and the bank line usually carries its number.
+  if (ex.cheque_number) {
+    const n = String(ex.cheque_number).replace(/\D/g, '').replace(/^0+/, '');
+    const byCheque = (await candidates(client, ex, -r2(ex.total), 3, 120))
+      .filter((t) => !n || new RegExp(`(^|\\D)0*${n}(\\D|$)`).test(t.description || ''));
+    const pool2 = byCheque.length ? byCheque : await candidates(client, ex, -r2(ex.total), 3, 120);
+    if (pool2.length === 1) { await attachReceipt(id, pool2[0].id, client); return pool2[0].id; }
+    if (pool2.length > 1) { await toReview(client, id, pool2); return null; }
+  }
   const list = await candidates(client, ex, -r2(ex.total), 3, 10); // a purchase is money out
   if (list.length === 1) { await attachReceipt(id, list[0].id, client); return list[0].id; }
   if (list.length > 1) await toReview(client, id, list);

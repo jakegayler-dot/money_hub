@@ -17,6 +17,7 @@
 import { looksLikeCraGst } from './gstMatch.js';
 import { validateSegment } from './segments.js';
 import { toISODate } from './dates.js';
+import { suggestLoanPayment } from './loanMatch.js';
 import { closedMonth, monthLabel } from './periods.js';
 import {
   applyVendorOwnerToTransaction,
@@ -320,6 +321,12 @@ async function processLineInner(client, { target, source, external_id, payload: 
             await insertTransaction(client, { ...plain, splits: [], category_id: null, is_debt_service: true }),
             'Historical loan payment — no schedule entry on file, recorded as debt service'
           );
+        }
+        // The line names the loan: its oldest open payment, at the amount the bank actually took.
+        const named = await suggestLoanPayment(client, { description: `${p.description || ''} ${p.payee || ''}`, amount, date });
+        if (named && named.by === 'name') {
+          const r = await rec(named.payment.id);
+          return posted(r.transaction, `Recorded loan payment: ${named.loan.name || named.loan.lender} (actual ${fmt(amount)})`);
         }
         const { rows: near } = await client.query(
           `${sql} AND lp.due_date BETWEEN $1::date - 20 AND $1::date + 20

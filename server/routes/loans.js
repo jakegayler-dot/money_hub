@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
-import { recordLoanPayment, removeTransaction, unsplitLoanPayment, syncLoanPieceOwners } from '../lib/postings.js';
+import { recordLoanPayment, removeTransaction, unsplitLoanPayment, syncLoanPieceOwners, linkLoanPaymentToTransaction } from '../lib/postings.js';
+import { undoActualPayment, namesLoan, closeToScheduled } from '../lib/loanMatch.js';
 import { ledgerForSegment, segmentValues, validateSegment } from '../lib/segments.js';
 import { buildSchedule, scheduleFromTerms, dueDateFor, FREQUENCIES } from '../lib/amortization.js';
 import { toISODate, todayISO } from '../lib/dates.js';
@@ -28,6 +29,51 @@ router.get('/payments/upcoming', ah(async (req, res) => {
   res.json(rows);
 }));
 
+// For each loan's oldest open payment: the entry already in the ledger that
+// looks like it — names the loan (or was paid to its payee), or is the
+// exact amount — from 45 days before it was due to 60 after, not already
+// paying something, nearest the due date. So a payment that came in on a
+// statement is linked, not recorded a second time.
+router.get('/payments/matches', ah(async (req, res) => {
+  const { rows: oldest } = await pool.query(
+    `SELECT DISTINCT ON (lp.loan_id) lp.*, lp.principal_amount + lp.interest_amount AS total, l.name, l.lender, l.statement_names, l.payee_id
+     FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
+     WHERE NOT lp.paid AND NOT lp.is_adjustment ORDER BY lp.loan_id, lp.due_date, lp.id`);
+  const out = [];
+  for (const p of oldest) {
+    const due = toISODate(p.due_date);
+    const { rows: txs } = await pool.query(
+      `SELECT t.id, t.date, t.amount, t.description, t.payee_id, py.name AS payee_name, a.name AS account
+       FROM transactions t JOIN accounts a ON a.id = t.account_id LEFT JOIN payees py ON py.id = t.payee_id
+       WHERE t.credit_card_id IS NULL AND t.amount < 0 AND NOT t.is_transfer
+         AND t.date BETWEEN $1::date - 45 AND $1::date + 60
+         AND NOT EXISTS (SELECT 1 FROM bills x WHERE x.linked_transaction_id = t.id)
+         AND NOT EXISTS (SELECT 1 FROM loan_payments x WHERE x.linked_transaction_id = t.id)
+         AND NOT EXISTS (SELECT 1 FROM contract_payments x WHERE x.transaction_id = t.id)
+         AND NOT EXISTS (SELECT 1 FROM vendor_credits x WHERE x.transaction_id = t.id)
+       ORDER BY abs(t.date - $1::date), t.id`, [due]);
+    const hit = txs.find((t) => (p.payee_id && t.payee_id === p.payee_id) || namesLoan(p, `${t.description || ''} ${t.payee_name || ''}`))
+      || txs.find((t) => Math.abs(-Number(t.amount) - Number(p.total)) < 0.005);
+    if (hit) {
+      out.push({
+        payment_id: p.id, loan_id: p.loan_id,
+        transaction: { id: hit.id, date: toISODate(hit.date), amount: Number(hit.amount), description: hit.description, account: hit.account },
+        close: closeToScheduled(hit.amount, p.total),
+      });
+    }
+  }
+  res.json(out);
+}));
+
+// Links a scheduled payment to the ledger entry that paid it (the bank's
+// actual amount is used; it always settles the loan's oldest open payment).
+router.post('/payments/:paymentId/link', ah(async (req, res) => {
+  const txId = Number(req.body?.transaction_id);
+  if (!txId) return res.status(400).json({ error: 'Which ledger entry paid it?' });
+  const r = await withTransaction((client) => linkLoanPaymentToTransaction(client, Number(req.params.paymentId), txId));
+  res.json(r.payment);
+}));
+
 // Records a scheduled payment as actually made: creates the ledger
 // transaction (flagged is_debt_service so NOI/DSCR don't double-count it,
 // tagged with the loan's owner so Expenses buckets it right), moves the
@@ -52,13 +98,16 @@ router.post('/payments/:paymentId/unrecord', ah(async (req, res) => {
     if (!rows.length) return null;
     const payment = rows[0];
     if (!payment.paid || payment.is_adjustment) return payment;
+    await undoActualPayment(client, payment.id); // back to the plan
     // Null the FK reference before deleting the transaction it points to.
     const { rows: updated } = await client.query(
       `UPDATE loan_payments SET paid = false, paid_date = NULL, linked_transaction_id = NULL WHERE id = $1 RETURNING *`,
       [payment.id]
     );
     if (payment.linked_transaction_id && payment.linked_existing) {
-      // Matched to a transaction already in the ledger: unlink it, keep it.
+      // Matched to a transaction already in the ledger: unlink it, keep it —
+      // and don't link it to a loan automatically again.
+      await client.query('INSERT INTO loan_link_rejections (transaction_id) VALUES ($1) ON CONFLICT DO NOTHING', [payment.linked_transaction_id]);
       await unsplitLoanPayment(client, payment.linked_transaction_id);
       await client.query('UPDATE transactions SET is_debt_service = false WHERE id = $1', [payment.linked_transaction_id]);
     } else if (payment.linked_transaction_id) {
@@ -485,6 +534,11 @@ router.patch('/:id', ah(async (req, res) => {
        next.payment_frequency, next.first_payment_date, req.params.id, isSplit, gPct, lPct, jPct, aPct]
     );
     const updated = updatedRows[0];
+    // What the loan shows up as on statements ("AAFC LOAN", "FCC PAD"), comma-separated.
+    if (b.statement_names !== undefined) {
+      await client.query('UPDATE loans SET statement_names = $2 WHERE id = $1', [updated.id, String(b.statement_names || '').trim() || null]);
+      updated.statement_names = String(b.statement_names || '').trim() || null;
+    }
 
     const termsChanged =
       Number(next.principal) !== Number(cur.principal) ||

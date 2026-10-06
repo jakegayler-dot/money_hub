@@ -22,10 +22,11 @@ import { inventorySales } from './inventoryForecast.js';
 import { loadBalanceSheet } from './balanceSheet.js';
 import { businessShare } from './segments.js';
 import { todayISO, toISODate, addMonths, addDays, monthIndex } from './dates.js';
-import { LATEST_STATEMENTS_SQL } from './cardLedger.js';
+import { LATEST_STATEMENTS_SQL, cardBalances } from './cardLedger.js';
 import { farmIncomeTax, gstReport, gstPeriods } from './tax.js';
 import { personalTax } from './taxRates.js';
 import { billDates } from './billDates.js';
+import { personalFlows } from './personal.js';
 
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const pad = (n) => String(n).padStart(2, '0');
@@ -200,6 +201,27 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
       farm: businessShare({ segment: c.segment }), overdue: d < today, ref: { card_id: c.card_id } });
   }
 
+  // Charges since the last statement: what paying the card off will take
+  // beyond the statement above. Due on the card's next due date (a cycle
+  // after the last statement's), estimated until that statement is entered.
+  const { rows: activeCards } = await pool.query(`SELECT * FROM credit_cards WHERE status = 'active'`);
+  if (activeCards.length) {
+    const [balances, { rows: latest }] = await Promise.all([cardBalances(pool, activeCards), pool.query(LATEST_STATEMENTS_SQL)]);
+    const latestBy = new Map(latest.map((x) => [x.credit_card_id, x]));
+    for (const c of activeCards) {
+      const owed = balances.get(c.id)?.outstanding || 0;
+      const st = latestBy.get(c.id);
+      const onStatement = st && !st.paid ? Math.max(Number(st.statement_balance) - Number(st.paid_amount || 0), 0) : 0;
+      const unbilled = r2(owed - onStatement);
+      if (unbilled < 0.5) continue;
+      let due = st ? addMonths(toISODate(st.due_date), 1) : addDays(today, 30);
+      while (due < today) due = addMonths(due, 1);
+      if (due >= endStr) continue;
+      add({ key: `card-unbilled:${c.id}`, kind: 'card', label: `${c.name} — charges since the last statement`, date: due, amount: -unbilled,
+        farm: businessShare({ segment: c.segment }), estimate: true, ref: { card_id: c.id, unbilled: true } });
+    }
+  }
+
   // Account fees: monthly fees every month; annual ones spread across the year.
   for (const a of accounts.rows) {
     const fee = Number(a.fee_amount) || 0;
@@ -216,6 +238,26 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
   // GST refunds and payments.
   for (const f of await gstFlows(win)) add(f);
 
+  // Personal spending: essentials from what the household actually spends,
+  // less what's already here for the household that month (personal bills,
+  // loan interest, fees, personal estimates); discretionary at the budget.
+  let personal = null;
+  try {
+    const knownOut = new Map();
+    for (const f of flows) {
+      const share = 1 - (f.farm ?? 1);
+      if (share <= 0 || f.amount >= 0) continue;
+      const amt = f.kind === 'loan' ? (f.ref?.interest || 0) * share
+        : ['bill', 'fee', 'estimate_out'].includes(f.kind) ? -f.amount * share : 0;
+      if (amt) knownOut.set(f.date.slice(0, 7), (knownOut.get(f.date.slice(0, 7)) || 0) + amt);
+    }
+    const r = await personalFlows({ meta: win.meta, today, tax: taxY0, known: (k) => knownOut.get(k) || 0 });
+    for (const f of r.flows) add(f);
+    personal = { limit: r.plan.limit, per_month: r.plan.discretionary.per_month, essentials_basis: r.plan.essentials.basis };
+  } catch (e) {
+    console.error('Personal plan unavailable for the forecast:', e.message);
+  }
+
   const accountRows = accounts.rows.map((a) => ({
     id: a.id, name: a.name, ledger: a.ledger, type: a.account_type, balance: Number(a.opening_balance),
     farm: businessShare(a),
@@ -225,7 +267,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
   // like this year unless a scenario says otherwise.
   const netY0 = taxY0 ? taxY0.projected.net_income : null;
   return {
-    win, today, flows, accounts: accountRows, groups, known,
+    win, today, flows, accounts: accountRows, groups, known, personal,
     bills: billRows.rows, loans: loanRows.rows, contracts: contractRows.rows, estimates,
     inventory: inv, bufferPct: Number(bufferPct),
     tax: {
@@ -371,7 +413,7 @@ export function evaluate(flows, ctx, { scope = 'everything', accountIds = null }
   const months = meta.map((m) => ({
     year: m.year, month: m.month, items: [],
     contractInflows: 0, estimatedInflows: 0, unpaidBillsDue: 0, debtServiceDue: 0, creditCardDue: 0, accountFees: 0,
-    estimatedOutflows: 0, taxInstalment: 0, gst: 0, other: 0,
+    estimatedOutflows: 0, taxInstalment: 0, gst: 0, personalSpending: 0, other: 0,
   }));
   for (const f of flows) {
     if (f.date >= endStr) continue;
@@ -391,6 +433,7 @@ export function evaluate(flows, ctx, { scope = 'everything', accountIds = null }
       case 'fee': m.accountFees -= amount; break;
       case 'tax': m.taxInstalment -= amount; break;
       case 'gst': m.gst += amount; break;
+      case 'personal': m.personalSpending -= amount; break;
       default: m.other += amount;
     }
   }

@@ -7,6 +7,7 @@
 import { SEGMENT_COLUMNS, segmentValues, validateSegment, ledgerForSegment } from './segments.js';
 import { toISODate, addMonths } from './dates.js';
 import { getSetting, pool } from '../db.js';
+import { applyActualPayment, learnLoanName } from './loanMatch.js';
 
 const SEG_COLS = SEGMENT_COLUMNS.join(', ');
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
@@ -908,17 +909,24 @@ export async function linkLoanPaymentToTransaction(client, paymentId, txId) {
   const payment = rows[0];
   if (!payment || payment.is_adjustment) throw new PostingError('Loan payment not found.');
   if (payment.paid) throw new PostingError('That loan payment is already recorded.');
+  // Never past an older payment on the same loan that's still open: the oldest open one is what was paid.
+  const { rows: [older] } = await client.query(
+    `SELECT id, due_date FROM loan_payments WHERE loan_id = $1 AND NOT paid AND NOT is_adjustment AND (due_date, id) < ($2::date, $3)
+     ORDER BY due_date, id LIMIT 1`, [payment.loan_id, payment.due_date, payment.id]);
+  const target = older ? (await client.query('SELECT * FROM loan_payments WHERE id = $1 FOR UPDATE', [older.id])).rows[0] : payment;
   await client.query(
     `UPDATE loan_payments SET paid = true, paid_date = $1, linked_transaction_id = $2, linked_existing = true WHERE id = $3`,
-    [tx.date, tx.id, payment.id]
+    [tx.date, tx.id, target.id]
   );
   await client.query('UPDATE transactions SET is_debt_service = true WHERE id = $1', [tx.id]);
-  await splitLoanPayment(client, tx.id, payment.id);
+  await applyActualPayment(client, target.id, -Number(tx.amount), toISODate(tx.date)); // what it really was; the rest re-priced
+  await learnLoanName(client, target.loan_id, tx);
+  await splitLoanPayment(client, tx.id, target.id);
   if (!tx.payee_id) {
-    const { rows: l } = await client.query('SELECT COALESCE(lender, name) AS who FROM loans WHERE id = $1', [payment.loan_id]);
+    const { rows: l } = await client.query('SELECT COALESCE(lender, name) AS who FROM loans WHERE id = $1', [target.loan_id]);
     if (l[0]?.who) await client.query('UPDATE transactions SET payee_id = $1 WHERE id = $2', [await payeeId(client, l[0].who), tx.id]);
   }
-  return { payment };
+  return { payment: target };
 }
 
 /**
@@ -935,8 +943,14 @@ export async function recordLoanPayment(client, paymentId, {
     [paymentId]
   );
   if (!rows.length) return null;
-  const payment = rows[0];
+  let payment = rows[0];
   if (payment.paid || payment.is_adjustment) return { payment, alreadyPaid: true, transaction: null };
+  // The oldest open payment on the loan is the one being paid — never a later one while it's still open.
+  const { rows: [older] } = await client.query(
+    `SELECT lp.*, l.name AS loan_name, l.lender, l.segment FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
+     WHERE lp.loan_id = $1 AND NOT lp.paid AND NOT lp.is_adjustment AND (lp.due_date, lp.id) < ($2::date, $3)
+     ORDER BY lp.due_date, lp.id LIMIT 1 FOR UPDATE OF lp`, [payment.loan_id, payment.due_date, payment.id]);
+  if (older) payment = older;
 
   const total = Math.abs(Number(amount ?? (Number(payment.principal_amount) + Number(payment.interest_amount))));
   const tx = await insertTransaction(client, {
@@ -945,11 +959,13 @@ export async function recordLoanPayment(client, paymentId, {
     is_debt_service: true, owner: ownerOf({ segment: payment.segment }), payee: payment.lender || payment.loan_name,
     cleared: !paid_by_check, source, external_id, entered_by, awaiting_statement: true,
   });
-  const { rows: updated } = await client.query(
-    `UPDATE loan_payments SET paid = true, paid_date = $1, linked_transaction_id = $2 WHERE id = $3 RETURNING *`,
+  await client.query(
+    `UPDATE loan_payments SET paid = true, paid_date = $1, linked_transaction_id = $2 WHERE id = $3`,
     [date, tx.id, payment.id]
   );
+  await applyActualPayment(client, payment.id, total, toISODate(date)); // what it really was; the rest re-priced
   await splitLoanPayment(client, tx.id, payment.id);
+  const { rows: updated } = await client.query('SELECT * FROM loan_payments WHERE id = $1', [payment.id]);
   return { payment: updated[0], transaction: tx };
 }
 

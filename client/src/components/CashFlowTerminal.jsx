@@ -31,9 +31,9 @@ const signed = (v) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${money(Math.abs(Math.
 const KIND_LABEL = {
   contract: 'Contract', estimate_in: 'Estimated sale', inventory: 'Inventory sale', bill: 'Bill', loan: 'Loan payment',
   card: 'Card statement', fee: 'Account fees', tax: 'Income tax', gst: 'GST', estimate_out: 'Estimated cost',
-  whatif: 'What-if', opline: 'Operating line',
+  whatif: 'What-if', opline: 'Operating line', personal: 'Personal spending',
 };
-const KIND_LINK = { contract: '/contracts', bill: '/bills', loan: '/loans', card: '/credit-cards', gst: '/tax', tax: '/tax' };
+const KIND_LINK = { personal: '/personal', contract: '/contracts', bill: '/bills', loan: '/loans', card: '/credit-cards', gst: '/tax', tax: '/tax' };
 
 /** Eases displayed numbers toward their targets so lines glide when a scenario changes. */
 function useGlide(targets, ms = 520) {

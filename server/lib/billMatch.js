@@ -11,7 +11,8 @@
 // unlinked from a bill ("Not this payment") is never linked automatically again.
 import { pool, withTransaction } from '../db.js';
 import { linkBillToTransaction, linkLoanPaymentToTransaction, linkBillsToTransaction, refundVendorCredit, PostingError } from './postings.js';
-import { toISODate } from './dates.js';
+import { toISODate, addDays } from './dates.js';
+import { suggestLoanPayment, closeToScheduled } from './loanMatch.js';
 import { closedMonth } from './periods.js';
 import { matchPending } from './receipts.js';
 
@@ -198,39 +199,36 @@ export async function autoLinkDepositRefunds() {
 }
 
 /**
- * Scheduled loan payments the bank took but that came in as an ordinary
- * line: money out of a bank account for exactly the scheduled total, from
- * a week before the due date to 10 days after, not already paying
- * something. Linked when it's the only such payment and it fits no other
- * scheduled payment — then the entry is split into interest and principal.
+ * Loan payments the bank took that came in as an ordinary line. A line
+ * that names the loan (its name, lender, the lender's initials, or the
+ * payee it was paid to before) is that loan's OLDEST open payment, as long
+ * as the amount is within 35% of it — the actual amount is what's booked.
+ * A line that names no loan links only on an exact scheduled amount near
+ * its due date. Lines someone unlinked from a loan are left alone.
  */
 export async function autoLinkLoanPayments() {
-  const { rows: due } = await pool.query(
-    `SELECT lp.*, COALESCE(l.lender, l.name) AS who FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
-     WHERE NOT lp.paid AND NOT COALESCE(lp.is_adjustment, false) AND lp.due_date <= CURRENT_DATE + 10`);
-  const cands = new Map();
-  for (const p of due) {
-    const total = Number(p.principal_amount) + Number(p.interest_amount);
-    const { rows } = await pool.query(
-      `SELECT t.id, t.date FROM transactions t
-       WHERE t.account_id IS NOT NULL AND t.credit_card_id IS NULL AND NOT t.is_transfer AND NOT t.is_debt_service
-         AND abs(t.amount + $1) < 0.005 AND t.date BETWEEN $2::date - 7 AND $2::date + 10
-         AND NOT EXISTS (SELECT 1 FROM bills x WHERE x.linked_transaction_id = t.id)
-         AND NOT EXISTS (SELECT 1 FROM loan_payments x WHERE x.linked_transaction_id = t.id)
-         AND NOT EXISTS (SELECT 1 FROM contract_payments x WHERE x.transaction_id = t.id)`,
-      [total, toISODate(p.due_date)]);
-    cands.set(p.id, rows);
-  }
-  const fits = new Map();
-  for (const [, rows] of cands) for (const t of rows) fits.set(t.id, (fits.get(t.id) || 0) + 1);
+  const { rows: txs } = await pool.query(
+    `SELECT t.id, t.date, t.amount, t.description, t.payee_id, p.name AS payee_name FROM transactions t
+     LEFT JOIN payees p ON p.id = t.payee_id
+     WHERE t.account_id IS NOT NULL AND t.credit_card_id IS NULL AND t.amount < 0 AND NOT t.is_transfer AND NOT t.is_debt_service
+       AND NOT t.is_split AND t.date >= CURRENT_DATE - 400
+       AND NOT EXISTS (SELECT 1 FROM bills x WHERE x.linked_transaction_id = t.id)
+       AND NOT EXISTS (SELECT 1 FROM loan_payments x WHERE x.linked_transaction_id = t.id)
+       AND NOT EXISTS (SELECT 1 FROM contract_payments x WHERE x.transaction_id = t.id)
+       AND NOT EXISTS (SELECT 1 FROM vendor_credits x WHERE x.transaction_id = t.id)
+       AND NOT EXISTS (SELECT 1 FROM loan_link_rejections x WHERE x.transaction_id = t.id)
+     ORDER BY t.date, t.id`);
   const made = [];
-  for (const p of due) {
-    const rows = cands.get(p.id);
-    if (rows.length !== 1 || fits.get(rows[0].id) > 1) continue;
-    if (await closedMonth(pool, rows[0].date)) continue;
+  for (const t of txs) {
+    const date = toISODate(t.date);
+    const s = await suggestLoanPayment(pool, { ...t, date });
+    if (!s) continue;
+    if (!closeToScheduled(t.amount, s.payment.total)) continue; // an AgriStability fee to AAFC isn't the loan
+    if (toISODate(s.payment.due_date) > addDays(date, 60)) continue; // nothing due yet: not this
+    if (await closedMonth(pool, t.date)) continue;
     try {
-      await withTransaction((client) => linkLoanPaymentToTransaction(client, p.id, rows[0].id));
-      made.push({ loan_payment_id: p.id, transaction_id: rows[0].id });
+      await withTransaction((client) => linkLoanPaymentToTransaction(client, s.payment.id, t.id));
+      made.push({ loan_payment_id: s.payment.id, transaction_id: t.id, by: s.by });
     } catch (e) {
       if (!(e instanceof PostingError) && e.status !== 409) throw e;
     }

@@ -176,6 +176,10 @@ export default function Ledgers() {
   // Amount matches first, then the due date closest to this transaction's date.
   const dayGap = (d) => (form.date ? Math.abs(new Date(d) - new Date(form.date)) : 0);
   const byMatch = (list) => [...list].sort((a, b) => (Number(near(b.amount)) - Number(near(a.amount))) || (dayGap(a.due_date) - dayGap(b.due_date)));
+  // A loan the entry names (its name, lender, the lender's initials, or the payee it was paid to before) comes first.
+  const entryText = ` ${`${form.description || ''} ${payees.find((x) => String(x.id) === String(form.payee_id))?.name || ''}`.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).join(' ')} `;
+  const namesIt = (l) => (form.payee_id && String(l.payee_id) === String(form.payee_id)) || (l.terms || []).some((t) => entryText.includes(` ${t} `));
+  const loansByMatch = (list) => [...list].sort((a, b) => (Number(namesIt(b)) - Number(namesIt(a))) || (Number(near(b.amount)) - Number(near(a.amount))) || (dayGap(a.due_date) - dayGap(b.due_date)));
   const linkPayload = () => {
     if (!form.pays) return {};
     const [kind, id] = form.pays.split(':');
@@ -418,7 +422,7 @@ export default function Ledgers() {
           )}
           {canLink && (linkOptions.bills.length > 0 || linkOptions.loan_payments.length > 0 || (!onCard && linkOptions.cards.length > 0)) && (
             <div className="field span2">
-              <label>Pays a bill, loan or credit card? (✓ = amount matches)</label>
+              <label>Pays a bill, loan or credit card? (✓ = name or amount matches)</label>
               <select value={form.pays} onChange={(e) => setForm({ ...form, pays: e.target.value })}>
                 <option value="">No — regular spending</option>
                 {linkOptions.bills.length > 0 && (
@@ -432,9 +436,9 @@ export default function Ledgers() {
                 )}
                 {!onCard && linkOptions.loan_payments.length > 0 && (
                   <optgroup label="Loan payments">
-                    {byMatch(linkOptions.loan_payments).map((l) => (
+                    {loansByMatch(linkOptions.loan_payments).map((l) => (
                       <option key={`l${l.id}`} value={`loan:${l.id}`}>
-                        {near(l.amount) ? '✓ ' : ''}{l.loan_name} · {cents(l.amount)} · due {l.due_date}
+                        {namesIt(l) || near(l.amount) ? '✓ ' : ''}{l.loan_name} · next open payment due {l.due_date} · scheduled {cents(l.amount)}
                       </option>
                     ))}
                   </optgroup>

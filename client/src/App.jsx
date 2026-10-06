@@ -18,6 +18,7 @@ import Review from './pages/Review.jsx';
 import Books from './pages/Books.jsx';
 import Tax from './pages/Tax.jsx';
 import Receipts from './pages/Receipts.jsx';
+import Personal from './pages/Personal.jsx';
 
 export default function App() {
   // The owner toggle and the three headline numbers live on the Dashboard
@@ -46,6 +47,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/cash-flow" element={<CashFlow />} />
+          <Route path="/personal" element={<Personal />} />
           <Route path="/accounts" element={<Accounts />} />
           <Route path="/bills" element={<Bills />} />
           <Route path="/contracts" element={<Contracts />} />

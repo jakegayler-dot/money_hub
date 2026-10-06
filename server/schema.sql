@@ -1281,3 +1281,22 @@ CREATE TABLE IF NOT EXISTS vendor_on_account (
 -- A bill someone took a vendor credit off by hand: the account's
 -- oldest-first settling leaves it alone.
 ALTER TABLE bills ADD COLUMN IF NOT EXISTS no_auto_settle BOOLEAN NOT NULL DEFAULT false;
+
+-- Loans follow the real payments: what was scheduled is kept beside what
+-- was actually paid (interest by actual days, the rest principal), and the
+-- names a loan shows up as on statements are learned from its payments.
+ALTER TABLE loan_payments ADD COLUMN IF NOT EXISTS scheduled_principal NUMERIC(14,2);
+ALTER TABLE loan_payments ADD COLUMN IF NOT EXISTS scheduled_interest NUMERIC(14,2);
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS payee_id INTEGER REFERENCES payees(id) ON DELETE SET NULL;
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS statement_names TEXT;
+-- "That entry isn't this loan's payment": never linked to a loan automatically again.
+CREATE TABLE IF NOT EXISTS loan_link_rejections (
+  transaction_id INTEGER PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Personal spending buckets: which household spending is essential (forecast
+-- from history) and which is discretionary (budgeted from the year's plan).
+-- NULL = inherit from the parent category, else guessed from the name.
+ALTER TABLE expense_categories ADD COLUMN IF NOT EXISTS personal_bucket TEXT
+  CHECK (personal_bucket IN ('essential', 'discretionary'));

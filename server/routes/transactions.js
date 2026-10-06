@@ -11,6 +11,7 @@ import { assertOpen, CONFIRMED_SQL, PASSED_SQL } from '../lib/periods.js';
 import { matchPending } from '../lib/receipts.js';
 import { autoLinkBillsSoon } from '../lib/billMatch.js';
 import { settleVendorAccount } from '../lib/postings.js';
+import { loanTerms } from '../lib/loanMatch.js';
 
 /** Vendors whose account a payment sits on (as a payment on account). */
 const creditVendors = async (txId) => (await pool.query(
@@ -88,13 +89,15 @@ router.get('/link-options', ah(async (req, res) => {
   const { rows: bills } = await pool.query(
     `SELECT id, name, due_date, bill_owing(bills, CURRENT_DATE) AS amount, category FROM bills WHERE status = 'unpaid' ORDER BY due_date, id`
   );
+  // Each loan's oldest open payment — the only one a payment can be paying.
   const { rows: payments } = await pool.query(
-    `SELECT lp.id, lp.due_date, lp.principal_amount + lp.interest_amount AS amount,
-            COALESCE(l.name, l.lender) AS loan_name
+    `SELECT DISTINCT ON (lp.loan_id) lp.id, lp.loan_id, lp.due_date, lp.principal_amount + lp.interest_amount AS amount,
+            COALESCE(NULLIF(l.name, ''), l.lender) AS loan_name, l.name, l.lender, l.statement_names, l.payee_id
      FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
-     WHERE NOT lp.paid AND NOT COALESCE(lp.is_adjustment, false) AND lp.due_date <= CURRENT_DATE + 90
-     ORDER BY lp.due_date, lp.id`
+     WHERE NOT lp.paid AND NOT COALESCE(lp.is_adjustment, false)
+     ORDER BY lp.loan_id, lp.due_date, lp.id`
   );
+  for (const p of payments) p.terms = loanTerms(p);
   const { rows: contracts } = await pool.query(
     `SELECT id, commodity, counterparty, GREATEST(total_value - received_amount, 0) AS amount,
             total_value, received_amount, expected_payment_date AS due_date, status

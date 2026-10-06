@@ -1169,3 +1169,40 @@ button.metric-card-button.active { border-color: rgba(201, 162, 39, 0.55); backg
 @media (hover: none) { .stmt-icon { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .stmt-icon svg.spin { animation: none; } }
 .summary-list-empty { margin: 0; padding: 4px 12px 12px; }
+
+/* Loans: ledger entries that look like an open loan payment */
+.loan-matches { padding-bottom: 6px; }
+.loan-match { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(240px, 2fr) auto; gap: 6px 16px; align-items: center;
+  padding: 10px 16px; border-top: 1px solid var(--border); font-size: 13px; }
+.loan-match-tx { color: var(--text-muted); }
+.loan-match-tx b { color: var(--text); font-family: var(--font-mono); font-weight: 600; }
+.loan-match-note { margin: 6px 16px 4px; }
+@media (max-width: 700px) { .loan-match { grid-template-columns: 1fr; } }
+
+/* Personal: the plan from profit to the discretionary limit */
+.grid.personal-cards { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-bottom: 16px; }
+.plan-steps { width: 100%; max-width: 720px; }
+.plan-steps td { padding: 7px 16px; border-top: 1px solid var(--border); font-size: 13.5px; }
+.plan-steps td.num { text-align: right; font-family: var(--font-mono); white-space: nowrap; color: var(--text); }
+.plan-steps td.num.out { color: var(--text-muted); }
+.plan-steps tr.plan-sub td { color: var(--text-faint); font-size: 12.5px; }
+.plan-steps tr.plan-total td { border-top: 1px solid var(--border-strong); font-weight: 600; font-size: 15px; padding-top: 10px; padding-bottom: 10px; }
+.plan-steps tr.plan-total td.num { color: var(--gold-bright); }
+.plan-edit { margin-left: 10px; font-weight: 400; color: var(--text-muted); font-size: 12.5px; }
+.plan-edit input { width: 90px; margin: 0 4px; }
+.plan-actions { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 10px 16px 14px; }
+.personal-months td.num, .personal-months th.num, .personal-cats td.num { text-align: right; font-family: var(--font-mono); white-space: nowrap; }
+.personal-months tr.past td { color: var(--text-muted); }
+.budget-bar { position: relative; display: inline-block; width: 160px; max-width: 100%; height: 18px; border-radius: 4px; background: var(--panel-alt); border: 1px solid var(--border); overflow: hidden; vertical-align: middle; }
+.budget-fill { position: absolute; inset: 0 auto 0 0; background: var(--gold-soft); border-right: 2px solid var(--gold); }
+.budget-fill.over { background: rgba(229, 72, 77, 0.18); border-right-color: var(--negative); }
+.budget-label { position: relative; padding: 0 6px; font-family: var(--font-mono); font-size: 11.5px; line-height: 18px; color: var(--text-muted); }
+.personal-cats-head { display: flex; justify-content: space-between; align-items: center; }
+.personal-cats td { padding: 6px 16px; }
+.personal-cats .seg-toggle button { font-size: 12px; }
+@media (max-width: 600px) {
+  table.plan-steps[data-stack] > tbody > tr { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 8px 16px; border-top: 1px solid var(--border); }
+  table.plan-steps[data-stack] > tbody > tr > td { display: block; width: auto; padding: 0; border: 0; }
+  table.plan-steps[data-stack] > tbody > tr > td::before { content: none; }
+  .budget-bar { width: 120px; }
+}

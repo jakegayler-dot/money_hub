@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { money, localToday } from '../format.js';
+import { cents } from '../components/SplitEditor.jsx';
 import { OWNER_LABELS, OwnerFields, ownerPayload, ownerFieldsFrom, ownerSummary, emptyOwnerFields } from '../owners.jsx';
 
 const emptyForm = {
@@ -62,6 +63,8 @@ export default function Loans() {
   const [showAdd, setShowAdd] = useState(false);
   const [showPlanner, setShowPlanner] = useState(false);
   const [projection, setProjection] = useState(null);
+  const [matches, setMatches] = useState([]); // ledger entries that look like an open loan payment
+  const loadMatches = () => fetch('/api/loans/payments/matches').then((r) => r.json()).then((d) => setMatches(Array.isArray(d) ? d : [])).catch(() => {});
   const load = () => {
     fetch('/api/loans').then((r) => r.json()).then(setLoans);
     fetch('/api/loans/projection').then((r) => r.json()).then((d) => setProjection(d && d.months ? d : null)).catch(() => {});
@@ -74,11 +77,12 @@ export default function Loans() {
   useEffect(() => {
     load();
     loadPlanner();
+    loadMatches();
     fetch('/api/accounts').then((r) => r.json()).then(setAccounts);
     fetch('/api/assets').then((r) => r.json()).then((d) => setAssets(Array.isArray(d) ? d : []));
   }, []);
 
-  const refreshAll = () => { load(); loadPlanner(); setSchedules({}); };
+  const refreshAll = () => { load(); loadPlanner(); loadMatches(); setSchedules({}); };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -141,6 +145,7 @@ export default function Loans() {
       payment_frequency: l.payment_frequency || 'monthly',
       first_payment_date: l.first_payment_date ? String(l.first_payment_date).slice(0, 10) : '',
       covenant_date: l.covenant_date?.slice(0, 10) || '', covenant_notes: l.covenant_notes || '',
+      statement_names: l.statement_names || '',
     });
     setError(null);
   };
@@ -181,6 +186,19 @@ export default function Loans() {
       return;
     }
     if (expandedId === l.id) setExpandedId(null);
+    refreshAll();
+  };
+
+  const linkPayment = async (paymentId, txId) => {
+    setError(null);
+    const res = await fetch(`/api/loans/payments/${paymentId}/link`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transaction_id: txId }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(body?.error || `Could not link the payment (HTTP ${res.status}).`);
+      return;
+    }
     refreshAll();
   };
 
@@ -263,6 +281,29 @@ export default function Loans() {
       )}
 
       <LoanMetrics loans={loans} planner={planner} projection={projection} staleCount={staleLoans.length} />
+      {matches.length > 0 && (
+        <div className="panel loan-matches">
+          <div className="panel-header">Payments in your ledger to link</div>
+          {matches.map((m) => {
+            const p = planner.find((x) => x.id === m.payment_id);
+            const loan = loans.find((l) => l.id === m.loan_id);
+            return (
+              <div key={m.payment_id} className="loan-match">
+                <span>
+                  <b>{loan ? loan.name || loan.lender : 'Loan'}</b> payment due {p ? p.due_date?.slice(0, 10) : ''}
+                  {p && <span className="split-lines"> · scheduled {cents(Number(p.principal_amount) + Number(p.interest_amount))}</span>}
+                </span>
+                <span className="loan-match-tx">
+                  {m.transaction.date} · {m.transaction.description} · <b>{cents(-m.transaction.amount)}</b> · {m.transaction.account}
+                  {!m.close && <span className="tag">different amount — the actual is used</span>}
+                </span>
+                <button type="button" className="small" onClick={() => linkPayment(m.payment_id, m.transaction.id)}>Link</button>
+              </div>
+            );
+          })}
+          <p className="split-lines loan-match-note">Linking uses what the bank actually took: interest for the days since the last payment, the rest off the balance — and the payments after it are re-estimated at that amount.</p>
+        </div>
+      )}
       {projection && projection.loans.length > 0 && <PaydownChart projection={projection} />}
 
       <div className="panel">
@@ -388,6 +429,9 @@ export default function Loans() {
                               <input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} /></div>
                             <div className="field"><label>Lender</label>
                               <input value={editForm.lender} onChange={(e) => setEditForm({ ...editForm, lender: e.target.value })} /></div>
+                            <div className="field"><label>Shows on statements as</label>
+                              <input value={editForm.statement_names} placeholder="e.g. AAFC LOAN, AGRI LOAN PAD"
+                                onChange={(e) => setEditForm({ ...editForm, statement_names: e.target.value })} /></div>
                             <div className="field"><label>Category</label>
                               <select value={editForm.purpose} onChange={(e) => setEditForm({ ...editForm, purpose: e.target.value })}>
                                 {Object.entries(PURPOSE_LABELS).map(([v, lab]) => <option key={v} value={v}>{lab}</option>)}
@@ -571,7 +615,7 @@ export default function Loans() {
             </thead>
             <tbody>
               {planner.map((p) => {
-                const overdue = new Date(p.due_date) < new Date();
+                const overdue = String(p.due_date).slice(0, 10) < localToday();
                 return (
                   <tr key={p.id}>
                     <td>
@@ -599,6 +643,10 @@ export default function Loans() {
                           <button className="small" disabled={!recordAccountId} onClick={() => recordPayment(p.id)}>Confirm</button>
                           <button className="small secondary" onClick={() => { setRecordingId(null); setRecordAccountId(''); setRecordByCheck(false); }}>Cancel</button>
                         </span>
+                      ) : matches.some((m) => m.payment_id === p.id) ? (
+                        <button className="small" onClick={() => { const m = matches.find((x) => x.payment_id === p.id); linkPayment(p.id, m.transaction.id); }}>
+                          Link ledger entry
+                        </button>
                       ) : (
                         <button className="small" onClick={() => { setRecordingId(p.id); setRecordAccountId(''); setRecordByCheck(false); }}>
                           Record payment
