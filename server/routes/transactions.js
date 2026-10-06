@@ -138,7 +138,7 @@ router.get('/', ah(async (req, res) => {
             COALESCE((
               SELECT json_agg(json_build_object(
                 'id', s.id, 'amount', s.amount, 'memo', s.memo, 'category_id', s.category_id,
-                'category_name', sc.name, 'ledger', s.ledger, 'is_capex', s.is_capex,
+                'category_name', sc.name, 'ledger', s.ledger, 'is_capex', s.is_capex, 'is_transfer', s.is_transfer,
                 'segment', s.segment, 'is_segment_split', s.is_segment_split,
                 'segment_grain_pct', s.segment_grain_pct, 'segment_livestock_pct', s.segment_livestock_pct,
                 'segment_jake_pct', s.segment_jake_pct, 'segment_ashley_pct', s.segment_ashley_pct
@@ -398,9 +398,9 @@ router.patch('/:id', ah(async (req, res) => {
       await client.query('DELETE FROM transaction_splits WHERE transaction_id = $1', [tx.id]);
       for (const s of splits) {
         await client.query(
-          `INSERT INTO transaction_splits (transaction_id, amount, category_id, memo, ledger, is_capex, ${SEGMENT_COLUMNS.join(', ')})
-           VALUES ($1,$2,$3,$4,$5,$6,${SEGMENT_COLUMNS.map((_, i) => `$${7 + i}`).join(',')})`,
-          [tx.id, s.amount, s.category_id, s.memo, s.ledger, s.is_capex, ...SEGMENT_COLUMNS.map((c) => s.owner[c])]
+          `INSERT INTO transaction_splits (transaction_id, amount, category_id, memo, ledger, is_capex, is_transfer, ${SEGMENT_COLUMNS.join(', ')})
+           VALUES ($1,$2,$3,$4,$5,$6,$7,${SEGMENT_COLUMNS.map((_, i) => `$${8 + i}`).join(',')})`,
+          [tx.id, s.amount, s.category_id, s.memo, s.ledger, s.is_capex, !!s.is_transfer, ...SEGMENT_COLUMNS.map((c) => s.owner[c])]
         );
       }
     }

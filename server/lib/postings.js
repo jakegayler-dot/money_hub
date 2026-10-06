@@ -7,7 +7,7 @@
 import { SEGMENT_COLUMNS, segmentValues, validateSegment, ledgerForSegment } from './segments.js';
 import { toISODate, addMonths } from './dates.js';
 import { getSetting, pool } from '../db.js';
-import { applyActualPayment, learnLoanName } from './loanMatch.js';
+import { applyActualPayment, undoActualPayment, learnLoanName, dueSoonEnough, repriceOpen } from './loanMatch.js';
 
 const SEG_COLS = SEGMENT_COLUMNS.join(', ');
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
@@ -86,6 +86,8 @@ export function normalizeSplits(pieces, parentAmount, parentOwner, parentLedger)
       category_id: p.category_id || null,
       memo: p.memo || p.description || null,
       is_capex: !!p.is_capex,
+      // A piece that's money moving, not spending (a loan's principal, a deposit held) stays that way when edited.
+      is_transfer: !!p.is_transfer,
       ledger: p.ledger || ledgerForOwner(owner, parentLedger),
       owner,
     });
@@ -902,6 +904,24 @@ export async function reopenContractByHand(client, contractId) {
 }
 
 /** Marks a scheduled loan payment made BY a transaction already in the ledger. */
+/**
+ * A loan payment made with nothing due yet (more than 10 days before the
+ * next scheduled payment): an extra payment, all principal, on its own
+ * line. The next scheduled payments stay where they are, re-priced from
+ * the lower balance, so the loan finishes sooner.
+ */
+async function bookExtraLoanPayment(client, loanId, tx, { existing = true } = {}) {
+  const amount = round2(-Number(tx.amount));
+  const { rows: [row] } = await client.query(
+    `INSERT INTO loan_payments (loan_id, due_date, principal_amount, interest_amount, paid, paid_date, linked_transaction_id, linked_existing, is_extra)
+     VALUES ($1, $2, $3, 0, true, $2, $4, $5, true) RETURNING *`, [loanId, toISODate(tx.date), amount, tx.id, existing]);
+  await client.query('UPDATE transactions SET is_debt_service = true WHERE id = $1', [tx.id]);
+  await repriceOpen(client, loanId);
+  await learnLoanName(client, loanId, tx);
+  await splitLoanPayment(client, tx.id, row.id);
+  return row;
+}
+
 export async function linkLoanPaymentToTransaction(client, paymentId, txId) {
   const tx = await linkableTx(client, txId);
   if (!tx.account_id) throw new PostingError('A loan payment comes out of a bank account, not a card.');
@@ -914,6 +934,15 @@ export async function linkLoanPaymentToTransaction(client, paymentId, txId) {
     `SELECT id, due_date FROM loan_payments WHERE loan_id = $1 AND NOT paid AND NOT is_adjustment AND (due_date, id) < ($2::date, $3)
      ORDER BY due_date, id LIMIT 1`, [payment.loan_id, payment.due_date, payment.id]);
   const target = older ? (await client.query('SELECT * FROM loan_payments WHERE id = $1 FOR UPDATE', [older.id])).rows[0] : payment;
+  // Paid with nothing due yet: an extra payment, not next month's.
+  if (!dueSoonEnough(target.due_date, tx.date)) {
+    const row = await bookExtraLoanPayment(client, target.loan_id, tx);
+    if (!tx.payee_id) {
+      const { rows: l } = await client.query('SELECT COALESCE(lender, name) AS who FROM loans WHERE id = $1', [target.loan_id]);
+      if (l[0]?.who) await client.query('UPDATE transactions SET payee_id = $1 WHERE id = $2', [await payeeId(client, l[0].who), tx.id]);
+    }
+    return { payment: row, extra: true };
+  }
   await client.query(
     `UPDATE loan_payments SET paid = true, paid_date = $1, linked_transaction_id = $2, linked_existing = true WHERE id = $3`,
     [tx.date, tx.id, target.id]
@@ -953,12 +982,17 @@ export async function recordLoanPayment(client, paymentId, {
   if (older) payment = older;
 
   const total = Math.abs(Number(amount ?? (Number(payment.principal_amount) + Number(payment.interest_amount))));
+  const extra = !dueSoonEnough(payment.due_date, date); // nothing due yet: it comes off the principal
   const tx = await insertTransaction(client, {
     account_id, ledger: ledgerForSegment(payment.segment), date, amount: -total,
     description: `Loan payment: ${payment.loan_name || payment.lender}${paid_by_check ? ' (check)' : ''}`,
     is_debt_service: true, owner: ownerOf({ segment: payment.segment }), payee: payment.lender || payment.loan_name,
     cleared: !paid_by_check, source, external_id, entered_by, awaiting_statement: true,
   });
+  if (extra) {
+    const row = await bookExtraLoanPayment(client, payment.loan_id, tx, { existing: false });
+    return { payment: row, transaction: tx, extra: true };
+  }
   await client.query(
     `UPDATE loan_payments SET paid = true, paid_date = $1, linked_transaction_id = $2 WHERE id = $3`,
     [date, tx.id, payment.id]
@@ -1094,7 +1128,9 @@ export async function syncLoanPieceOwners(client, loanId = null) {
      JOIN loan_payments lp ON lp.linked_transaction_id = t.id
      JOIN loans l ON l.id = lp.loan_id
      WHERE (s.memo LIKE $1 OR s.memo LIKE $2) AND (l.segment IS NOT NULL OR l.is_segment_split)
-       AND ($3::int IS NULL OR l.id = $3)`,
+       -- A loan edit re-applies its owner split to every payment; the startup pass
+       -- only fills pieces with no owner, so owners set by hand in the ledger stay.
+       AND (l.id = $3 OR ($3::int IS NULL AND s.segment IS NULL AND NOT s.is_segment_split))`,
     [`${LOAN_INTEREST_MEMO}%`, `${LOAN_PRINCIPAL_MEMO}%`, loanId]);
   let n = 0;
   const closed = new Map();
@@ -1122,6 +1158,63 @@ export async function unsplitLoanPayment(client, txId) {
     [txId, `${LOAN_INTEREST_MEMO}%`, `${LOAN_PRINCIPAL_MEMO}%`]);
   await client.query(
     `UPDATE transactions SET is_split = EXISTS (SELECT 1 FROM transaction_splits WHERE transaction_id = $1) WHERE id = $1`, [txId]);
+}
+
+/**
+ * Loans where a payment was put on a LATER scheduled payment while an
+ * earlier one is still open (how linking used to work). Each such loan's
+ * payments are taken off and put back in date order, oldest open first,
+ * at their actual amounts — owners set on the pieces by hand are kept.
+ * A loan with a payment in a closed month is left alone. Returns the
+ * loans fixed.
+ */
+export async function reorderLoanPayments(withTx) {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT p.loan_id FROM loan_payments p JOIN transactions t ON t.id = p.linked_transaction_id
+     WHERE p.paid AND NOT p.is_adjustment AND NOT p.is_extra
+       AND (t.date < p.due_date - ${10}
+            OR EXISTS (SELECT 1 FROM loan_payments u WHERE u.loan_id = p.loan_id AND NOT u.paid AND NOT u.is_adjustment AND u.due_date < p.due_date))`);
+  const fixed = [];
+  for (const { loan_id: loanId } of rows) {
+    try {
+      await withTx(async (client) => {
+        const { rows: [first] } = await client.query(
+          'SELECT MIN(due_date) AS d FROM loan_payments WHERE loan_id = $1 AND NOT paid AND NOT is_adjustment', [loanId]);
+        const { rows: linked } = await client.query(
+          `SELECT lp.id, lp.linked_transaction_id AS tx, lp.linked_existing, t.date FROM loan_payments lp
+           JOIN transactions t ON t.id = lp.linked_transaction_id
+           WHERE lp.loan_id = $1 AND lp.paid AND NOT lp.is_adjustment AND NOT lp.is_extra
+             AND (($2::date IS NOT NULL AND lp.due_date > $2) OR t.date < lp.due_date - 10)
+           ORDER BY lp.due_date DESC`, [loanId, first.d]);
+        const owners = new Map(); // tx → { interest|principal → owner columns }
+        for (const r of linked) {
+          const { rows: pieces } = await client.query(
+            `SELECT memo, ${SEG_COLS} FROM transaction_splits WHERE transaction_id = $1 AND (memo LIKE $2 OR memo LIKE $3)`,
+            [r.tx, `${LOAN_INTEREST_MEMO}%`, `${LOAN_PRINCIPAL_MEMO}%`]);
+          owners.set(r.tx, Object.fromEntries(pieces.map((pc) => [pc.memo.startsWith(LOAN_INTEREST_MEMO) ? 'i' : 'p', pc])));
+          await undoActualPayment(client, r.id);
+          await unsplitLoanPayment(client, r.tx);
+          await client.query('UPDATE loan_payments SET paid = false, paid_date = NULL, linked_transaction_id = NULL, linked_existing = false WHERE id = $1', [r.id]);
+        }
+        for (const r of [...linked].sort((a, b) => (toISODate(a.date) < toISODate(b.date) ? -1 : toISODate(a.date) > toISODate(b.date) ? 1 : a.tx - b.tx))) {
+          const { payment } = await linkLoanPaymentToTransaction(client, r.id, r.tx); // lands on the oldest open one
+          await client.query('UPDATE loan_payments SET linked_existing = $2 WHERE id = $1', [payment.id, r.linked_existing]);
+          const kept = owners.get(r.tx) || {};
+          for (const [k, prefix] of [['i', LOAN_INTEREST_MEMO], ['p', LOAN_PRINCIPAL_MEMO]]) {
+            if (!kept[k]) continue;
+            await client.query(
+              `UPDATE transaction_splits SET ${SEGMENT_COLUMNS.map((c, i) => `${c} = $${i + 3}`).join(', ')}
+               WHERE transaction_id = $1 AND memo LIKE $2`,
+              [r.tx, `${prefix}%`, ...SEGMENT_COLUMNS.map((c) => kept[k][c])]);
+          }
+        }
+      });
+      fixed.push(loanId);
+    } catch (e) {
+      if (!(e instanceof PostingError)) console.error('Loan payment reorder failed', loanId, e.message);
+    }
+  }
+  return fixed;
 }
 
 /** Splits every recorded loan payment that isn't split yet (payments recorded before this existed). */

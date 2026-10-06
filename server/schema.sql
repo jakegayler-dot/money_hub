@@ -1300,3 +1300,7 @@ CREATE TABLE IF NOT EXISTS loan_link_rejections (
 -- NULL = inherit from the parent category, else guessed from the name.
 ALTER TABLE expense_categories ADD COLUMN IF NOT EXISTS personal_bucket TEXT
   CHECK (personal_bucket IN ('essential', 'discretionary'));
+
+-- A loan payment made before anything was due (more than 10 days ahead of
+-- the next scheduled payment): all principal, the schedule keeps its dates.
+ALTER TABLE loan_payments ADD COLUMN IF NOT EXISTS is_extra BOOLEAN NOT NULL DEFAULT false;

@@ -68,6 +68,11 @@ export async function suggestLoanPayment(client, tx, { excludeIds = [] } = {}) {
   const text = `${tx.description || ''} ${tx.payee_name || ''}`;
   const named = loans.filter((l) => oldest.has(l.id) && ((tx.payee_id && l.payee_id === tx.payee_id) || namesLoan(l, text)));
   if (named.length === 1) return { payment: oldest.get(named[0].id), loan: named[0], by: 'name' };
+  // Two loans with the same lender: the one whose payment is about this amount.
+  if (named.length > 1) {
+    const fit = named.filter((l) => closeToScheduled(tx.amount, oldest.get(l.id).total));
+    if (fit.length === 1) return { payment: oldest.get(fit[0].id), loan: fit[0], by: 'name' };
+  }
   // No name: an exact amount (to the cent) due within 20 days, and only one.
   const paid = Math.abs(Number(tx.amount));
   const pool = named.length > 1 ? named.map((l) => oldest.get(l.id)) : open;
@@ -218,3 +223,32 @@ export async function undoActualPayment(client, paymentId) {
   });
 }
 
+
+/**
+ * A payment only counts as a scheduled one if it's at most this many days
+ * before that one is due — an October payment is never November's. Earlier
+ * than that it's an extra payment: all principal.
+ */
+export const EARLY_DAYS = 10;
+export const dueSoonEnough = (dueDate, paidOn) => daysBetween(toISODate(paidOn), toISODate(dueDate)) <= EARLY_DAYS;
+
+/**
+ * Re-prices every open payment on a loan from its real balance today
+ * (principal less everything actually paid), from the last day interest
+ * settled, at the payment the open ones already ask for — so an extra
+ * payment shortens the loan instead of changing the payment.
+ */
+export async function repriceOpen(client, loanId) {
+  const { rows: [loan] } = await client.query('SELECT * FROM loans WHERE id = $1', [loanId]);
+  if (!loan) return;
+  const { rows: [r] } = await client.query(
+    `SELECT COALESCE(SUM(principal_amount) FILTER (WHERE paid), 0) AS paid,
+            MAX(COALESCE(paid_date, due_date)) FILTER (WHERE paid AND NOT is_adjustment) AS last
+     FROM loan_payments WHERE loan_id = $1`, [loanId]);
+  const { rows: [next] } = await client.query(
+    `SELECT principal_amount + interest_amount AS total FROM loan_payments
+     WHERE loan_id = $1 AND NOT paid AND NOT is_adjustment ORDER BY due_date, id LIMIT 1`, [loanId]);
+  if (!next) return;
+  const from = [toISODate(loan.start_date), r.last ? toISODate(r.last) : null].filter(Boolean).sort().pop();
+  await rebuildRest(client, loan, { balance: round2(Number(loan.principal) - Number(r.paid)), from, afterDueDate: '1900-01-01', payment: Number(next.total) });
+}

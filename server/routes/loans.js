@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { recordLoanPayment, removeTransaction, unsplitLoanPayment, syncLoanPieceOwners, linkLoanPaymentToTransaction } from '../lib/postings.js';
-import { undoActualPayment, namesLoan, closeToScheduled } from '../lib/loanMatch.js';
+import { undoActualPayment, namesLoan, closeToScheduled, repriceOpen } from '../lib/loanMatch.js';
 import { ledgerForSegment, segmentValues, validateSegment } from '../lib/segments.js';
 import { buildSchedule, scheduleFromTerms, dueDateFor, FREQUENCIES } from '../lib/amortization.js';
 import { toISODate, todayISO } from '../lib/dates.js';
@@ -114,6 +114,11 @@ router.post('/payments/:paymentId/unrecord', ah(async (req, res) => {
       await removeTransaction(client, payment.linked_transaction_id);
     }
     await client.query('UPDATE loan_payments SET linked_existing = false WHERE id = $1', [payment.id]);
+    // An extra payment is its own line: undone, it goes, and the rest is re-priced without it.
+    if (payment.is_extra) {
+      await client.query('DELETE FROM loan_payments WHERE id = $1', [payment.id]);
+      await repriceOpen(client, payment.loan_id);
+    }
     return updated[0];
   });
   if (!result) return res.status(404).json({ error: 'not found' });

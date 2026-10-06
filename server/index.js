@@ -26,7 +26,7 @@ import taxRoute from './routes/tax.js';
 import personalRoute from './routes/personal.js';
 import receiptsRoute, { receiptUpload } from './routes/receipts.js';
 import { readPending, matchPending } from './lib/receipts.js';
-import { pairAllCardPayments, splitAllLoanPayments, syncLoanPieceOwners, settleAllVendorAccounts } from './lib/postings.js';
+import { pairAllCardPayments, splitAllLoanPayments, syncLoanPieceOwners, settleAllVendorAccounts, reorderLoanPayments } from './lib/postings.js';
 import { withTransaction } from './db.js';
 import { authRouter, requireSignIn, authEnabled } from './lib/appAuth.js';
 import sentinelReadRoute from './routes/sentinelRead.js';
@@ -126,6 +126,10 @@ app.listen(port, () => {
   setTimeout(() => withTransaction(async (c) => { const n = await splitAllLoanPayments(c); await syncLoanPieceOwners(c); return n; })
     .then((n) => n && console.log(`Split ${n} loan payment(s) into interest and principal.`))
     .catch((e) => console.error('Loan payment split failed:', e.message)), 2500);
+  // Loan payments that were put on a later scheduled payment while an earlier one was open: back in order.
+  setTimeout(() => reorderLoanPayments(withTransaction)
+    .then((ids) => ids.length && console.log(`Put the payments on ${ids.length} loan(s) back in date order.`))
+    .catch((e) => console.error('Loan reorder failed:', e.message)), 3000);
   // Vendor accounts settle oldest first: credit with a vendor pays its bills as they're billed.
   setTimeout(() => settleAllVendorAccounts(withTransaction), 3500);
   setInterval(() => settleAllVendorAccounts(withTransaction), 6 * 60 * 60 * 1000);

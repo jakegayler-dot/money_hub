@@ -548,6 +548,7 @@ export default function Loans() {
                                     {schedules[l.id].asset && <td>{money(p.equity_after)}</td>}
                                     <td>
                                       {p.is_adjustment ? <span className="badge warn" title="Balance correction from a verification — no money moved">ADJUSTMENT</span>
+                                        : p.paid && p.is_extra ? <span className="badge pass" title="Paid with nothing due yet — all off the principal">EXTRA PAYMENT</span>
                                         : p.paid ? <span className="badge pass">{p.linked_transaction_id ? 'RECORDED' : 'PAID OUTSIDE'}</span>
                                         : p.due_date < today() ? <span className="badge fail">OVERDUE</span>
                                         : <span className="badge">SCHEDULED</span>}

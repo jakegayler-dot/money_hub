@@ -4,7 +4,7 @@ import { uploadBody } from './Receipts.jsx';
 const DOC_LABEL = { receipt: 'Receipt', invoice: 'Invoice', sales_ticket: 'Ticket', contract: 'Contract' };
 import { money } from '../format.js';
 import { OwnerFields, ownerPayload, ownerSummary, emptyOwnerFields, ownerFieldsFrom, OWNER_LABELS, ruleOf } from '../owners.jsx';
-import SplitEditor, { cents, newPiece, piecesPayload } from '../components/SplitEditor.jsx';
+import SplitEditor, { cents, newPiece, piecesPayload, pieceFrom } from '../components/SplitEditor.jsx';
 import CategorySelect from '../components/CategorySelect.jsx';
 import PayeeSelect, { usePayees } from '../components/PayeeSelect.jsx';
 
@@ -205,7 +205,7 @@ export default function Ledgers() {
       ...ownerFieldsFrom(t),
     });
     setPieces(split
-      ? t.splits.map((p) => ({ amount: String(Number(p.amount)), category_id: p.category_id ? String(p.category_id) : '', segment: p.segment || 'grain', memo: p.memo || '' }))
+      ? t.splits.map(pieceFrom)
       : [newPiece(), newPiece()]);
     setAdding(false);
     // Edited in place: bring its row into view (it may be far down, or opened from Review).
