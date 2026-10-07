@@ -11,7 +11,8 @@
 // nothing runs until SENTINEL_URL and SENTINEL_API_KEY are both set.
 
 import { pool, withTransaction } from '../db.js';
-import { buildSnapshot, reginaToday } from './sentinelSnapshot.js';
+import { buildSnapshot, reginaToday, WINDOW_PAST_DAYS, WINDOW_FUTURE_DAYS } from './sentinelSnapshot.js';
+import { deadlineItems, taxItems, gstItems } from './calendar.js';
 import { buildSummary } from './sentinelSummary.js';
 import { liquidityFloor, termDebtCoverage, scheduledServiceBetween } from './calculations.js';
 import { loadBalanceSheet, inventoryOwnerRow } from './balanceSheet.js';
@@ -72,8 +73,22 @@ export async function loadSnapshotRows() {
   });
 }
 
+/**
+ * Tax, GST and program deadlines over the snapshot's longest possible
+ * window. Throws rather than returning a partial list: Sentinel deletes
+ * whatever a snapshot leaves out.
+ */
+export async function loadCalendarDeadlines(now = new Date()) {
+  const today = reginaToday(now);
+  const from = addDays(today, -WINDOW_PAST_DAYS);
+  const to = addDays(today, WINDOW_FUTURE_DAYS);
+  const parts = await Promise.all([deadlineItems(from, to), taxItems(from, to), gstItems(from, to)]);
+  return parts.flat();
+}
+
 export async function buildSnapshotFromDb(now = new Date()) {
   const rows = await loadSnapshotRows();
+  rows.deadlines = await loadCalendarDeadlines(now);
   return buildSnapshot(rows, { now, appUrl: process.env.APP_URL || null });
 }
 
@@ -224,6 +239,7 @@ async function runSync() {
     const now = new Date();
     try {
       snapshotRows = await loadSnapshotRows();
+      snapshotRows.deadlines = await loadCalendarDeadlines(now);
       snapshot = buildSnapshot(snapshotRows, { now, appUrl: process.env.APP_URL || null });
     } catch (err) {
       // Never send a partial list — Sentinel would delete what's missing.

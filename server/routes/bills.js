@@ -230,8 +230,8 @@ router.post('/:id/unpay', ah(async (req, res) => {
       await client.query(
         `UPDATE bills SET status = 'unpaid', paid_date = NULL, linked_transaction_id = NULL, linked_existing = false WHERE id = $1`, [b.id]);
       // Paying a recurring bill created next cycle's bill — a duplicate now.
-      if (b.frequency === 'monthly' || b.frequency === 'quarterly') {
-        const nextDue = addMonths(toISODate(b.due_date), b.frequency === 'monthly' ? 1 : 3);
+      if (['monthly', 'quarterly', 'annual'].includes(b.frequency)) {
+        const nextDue = addMonths(toISODate(b.due_date), { monthly: 1, quarterly: 3, annual: 12 }[b.frequency]);
         await client.query(
           `DELETE FROM bills WHERE id = (
              SELECT id FROM bills WHERE status = 'unpaid' AND name = $1 AND frequency = $2

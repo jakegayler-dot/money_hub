@@ -370,7 +370,7 @@ export default function Bills() {
                       <td>{b.due_date?.slice(0, 10)}</td>
                       <td>
                         {b.name}
-                        {b.frequency !== 'one_time' && <span className="tag">{b.frequency === 'monthly' ? 'Monthly' : 'Quarterly'}</span>}
+                        {b.frequency !== 'one_time' && <span className="tag">{{ monthly: 'Monthly', quarterly: 'Quarterly', annual: 'Yearly' }[b.frequency]}</span>}
                         {b.is_financed && <span className="tag">Financed</span>}
                         <div>
                           {b.invoice_receipt_id ? (
@@ -603,6 +603,7 @@ export default function Bills() {
               <option value="one_time">One-time</option>
               <option value="monthly">Monthly (recurs automatically once paid)</option>
               <option value="quarterly">Quarterly (recurs automatically once paid)</option>
+              <option value="annual">Yearly (recurs automatically once paid)</option>
             </select>
           </div>
           <FinanceFields state={form} setState={setForm} />

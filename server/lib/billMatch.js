@@ -22,6 +22,7 @@ const WINDOW = {
   one_time: { before: 7, after: 180 },
   monthly: { before: 20, after: 25 },
   quarterly: { before: 30, after: 45 },
+  annual: { before: 45, after: 60 },
 };
 
 const GENERIC = new Set(['inv', 'invoice', 'bill', 'the', 'and', 'ltd', 'inc', 'for', 'rent', 'land', 'payment', 'pmt', 'from']);

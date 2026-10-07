@@ -118,7 +118,7 @@ function billNotes(bill, extra) {
   return lines.join('\n');
 }
 
-const FREQUENCY_MONTHS = { monthly: 1, quarterly: 3 };
+const FREQUENCY_MONTHS = { monthly: 1, quarterly: 3, annual: 12 };
 
 /** Items for bills (real rows) plus projected future occurrences of unpaid recurring bills. */
 export function billItems(bills, { from, to, appUrl }) {
@@ -258,7 +258,28 @@ export function contractItems(contracts, { from, to, appUrl }) {
 }
 
 /**
- * rows: { bills, loanPayments, statements, loans, contracts } — raw DB rows
+ * Money calendar deadlines (lib/calendar.js): CRA tax and GST dates — a
+ * bill when there's an amount to pay — and farm program dates as events.
+ */
+export function deadlineSnapshotItems(deadlines, { from, to, appUrl, today = null }) {
+  const items = [];
+  for (const d of deadlines) {
+    if (!d.date || !inWindow(d.date, from, to)) continue;
+    const pays = d.amount != null && d.amount < 0;
+    items.push(makeItem({
+      source_id: d.id, kind: pays ? 'bill' : 'event', category: 'finance',
+      title: d.title, notes: d.notes || null, starts_at: d.date,
+      // A date that has passed with nothing to pay is over; an unpaid amount stays open.
+      status: d.done || (!pays && today && d.date < today) ? 'done' : pays ? 'open' : 'scheduled',
+      amount_cents: d.amount != null ? Math.abs(Math.round(d.amount * 100)) : null, currency: 'CAD',
+      deep_link: linkFor(appUrl, d.link || '/calendar'),
+    }));
+  }
+  return items;
+}
+
+/**
+ * rows: { bills, loanPayments, statements, loans, contracts, deadlines } — raw DB rows
  * (loanPayments joined with loan_name/lender, statements with card_name).
  */
 export function buildSnapshot(rows, { now = new Date(), appUrl = null } = {}) {
@@ -271,6 +292,7 @@ export function buildSnapshot(rows, { now = new Date(), appUrl = null } = {}) {
     ...statementItems(rows.statements || [], opts),
     ...covenantItems(rows.loans || [], opts),
     ...contractItems(rows.contracts || [], opts),
+    ...deadlineSnapshotItems(rows.deadlines || [], { ...opts, today }),
   ];
 
   const seen = new Set();

@@ -1,6 +1,6 @@
 import { addMonths, toISODate } from './dates.js';
 
-const BILL_STEP_MONTHS = { monthly: 1, quarterly: 3 };
+const BILL_STEP_MONTHS = { monthly: 1, quarterly: 3, annual: 12 };
 
 /**
  * Dates an unpaid bill will be owed before `toExclusive`: the bill itself

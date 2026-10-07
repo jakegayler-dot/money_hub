@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { ah } from '../lib/asyncHandler.js';
 import { requireIngestKey } from '../lib/ingestAuth.js';
-import { loadSnapshotRows, buildSummaryFromDb } from '../lib/sentinel.js';
+import { loadSnapshotRows, buildSummaryFromDb, loadCalendarDeadlines } from '../lib/sentinel.js';
 import { buildSnapshot } from '../lib/sentinelSnapshot.js';
 
 const router = Router();
@@ -13,6 +13,7 @@ const router = Router();
 router.get('/preview', requireIngestKey, ah(async (req, res) => {
   const now = new Date();
   const rows = await loadSnapshotRows();
+  rows.deadlines = await loadCalendarDeadlines(now);
   const snapshot = buildSnapshot(rows, { now, appUrl: process.env.APP_URL || null });
   let summary;
   try {

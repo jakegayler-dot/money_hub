@@ -1304,3 +1304,54 @@ ALTER TABLE expense_categories ADD COLUMN IF NOT EXISTS personal_bucket TEXT
 -- A loan payment made before anything was due (more than 10 days ahead of
 -- the next scheduled payment): all principal, the schedule keeps its dates.
 ALTER TABLE loan_payments ADD COLUMN IF NOT EXISTS is_extra BOOLEAN NOT NULL DEFAULT false;
+
+-- ============================================================================
+-- Money calendar: program and year-end deadlines, stored once and repeated
+-- every year. A fixed day (month + day) or the nth weekday of a month
+-- (nth 1–4, 5 = last; weekday 0 = Sunday). {year}, {prev} and {next} in a
+-- title or note become that year, the year before, the year after.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS calendar_deadlines (
+  id       SERIAL PRIMARY KEY,
+  key      TEXT UNIQUE NOT NULL,
+  kind     TEXT NOT NULL DEFAULT 'program',
+  title    TEXT NOT NULL,
+  month    INTEGER NOT NULL CHECK (month BETWEEN 1 AND 12),
+  day      INTEGER CHECK (day BETWEEN 1 AND 31),
+  nth      INTEGER CHECK (nth BETWEEN 1 AND 5),
+  weekday  INTEGER CHECK (weekday BETWEEN 0 AND 6),
+  notes    TEXT,
+  url      TEXT,
+  enabled  BOOLEAN NOT NULL DEFAULT true,
+  custom   BOOLEAN NOT NULL DEFAULT false
+);
+INSERT INTO calendar_deadlines (key, kind, title, month, day, nth, weekday, notes, url, enabled) VALUES
+  ('crop_ins_changes', 'program', 'Crop insurance: last day to change or cancel coverage for {year} (SCIC)', 3, 31, NULL, NULL,
+   'Crops, coverage level and options for this year are locked after today.', 'https://www.scic.ca/crop-insurance', true),
+  ('agristability_enrol', 'program', 'AgriStability: enrol for {year} (SCIC)', 4, 30, NULL, NULL,
+   'Enrol and pay the fee for the {year} program year.', 'https://www.scic.ca/agristability', true),
+  ('seeded_acreage', 'program', 'Seeded acreage report and unseeded claims (SCIC)', 6, 25, NULL, NULL,
+   'Report seeded acres and stored grain. Unseeded acreage claims after today are reduced.', 'https://www.scic.ca/crop-insurance', true),
+  ('lpi_calf', 'program', 'Livestock Price Insurance: last day to buy calf coverage for {year}', 6, NULL, 2, 4,
+   'Calf policies sold February to the second Thursday of June; they cover fall and winter calf sales.', 'https://www.scic.ca/livestock-price-insurance', true),
+  ('agri_forms', 'program', 'AgriStability and AgriInvest forms for {prev} — no penalty', 6, 30, NULL, NULL,
+   'In Saskatchewan both programs use the same form, filed with the farm tax information.', 'https://www.scic.ca/agristability', true),
+  ('agri_forms_final', 'program', 'AgriStability and AgriInvest forms for {prev} — final deadline, with penalty', 9, 30, NULL, NULL,
+   'After today the {prev} program year is lost for both programs.', 'https://agriculture.canada.ca/en/programs/agriinvest', true),
+  ('crop_premium', 'program', 'Crop insurance premium due (SCIC)', 10, 31, NULL, NULL,
+   'Interest is charged on premium unpaid after today.', 'https://www.scic.ca/crop-insurance', true),
+  ('harvest_report', 'program', 'Harvested production report (SCIC)', 11, 15, NULL, NULL,
+   'Needed before any post-harvest claim, and sets your yield history.', 'https://www.scic.ca/crop-insurance', true),
+  ('year_end', 'year_end', 'Year-end: count inventory and settle {year} timing', 12, 31, NULL, NULL,
+   'Count grain, feed and cattle on hand (AgriStability uses closing inventory). Decide before today which sales land in {year} or {next}, and any inputs to prepay.', NULL, true),
+  ('property_tax', 'year_end', 'RM property taxes', 12, 31, NULL, NULL,
+   'Set this to your RM''s due date (many give a discount for paying earlier).', NULL, true),
+  ('agriinvest_deposit', 'program', 'AgriInvest: deposit by the date on your deposit notice', 12, 31, NULL, NULL,
+   'Set this to the deadline on your AgriInvest deposit notice — miss it and the matching government contribution for that year is lost.', 'https://agriculture.canada.ca/en/programs/agriinvest', false)
+ON CONFLICT (key) DO NOTHING;
+
+-- A payee someone said isn't a recurring bill: not suggested again.
+CREATE TABLE IF NOT EXISTS recurring_dismissals (
+  payee_id   INTEGER PRIMARY KEY REFERENCES payees(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

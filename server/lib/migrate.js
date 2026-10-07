@@ -30,6 +30,8 @@ const ENUM_ADDITIONS = [
   `ALTER TYPE enterprise_segment ADD VALUE IF NOT EXISTS 'ashley'`,
   // Bales / silage — hay and straw inventory.
   `ALTER TYPE inventory_class ADD VALUE IF NOT EXISTS 'forage' BEFORE 'market_livestock'`,
+  // Yearly recurring bills (land rent, insurance) — learned from the ledger.
+  `ALTER TYPE bill_frequency ADD VALUE IF NOT EXISTS 'annual'`,
 ];
 
 async function migrate() {

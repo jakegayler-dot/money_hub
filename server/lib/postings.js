@@ -636,8 +636,8 @@ export async function removeVendorCredit(client, creditId) {
 /** Recurring bills: paying one cycle creates the next. */
 async function rollBillForward(client, bill) {
   let nextBill = null;
-  if (bill.frequency === 'monthly' || bill.frequency === 'quarterly') {
-    const nextDue = addMonths(toISODate(bill.due_date), bill.frequency === 'monthly' ? 1 : 3);
+  if (['monthly', 'quarterly', 'annual'].includes(bill.frequency)) {
+    const nextDue = addMonths(toISODate(bill.due_date), { monthly: 1, quarterly: 3, annual: 12 }[bill.frequency]);
     const { rows: next } = await client.query(
       `INSERT INTO bills
         (name, ledger, category, amount, frequency, due_date, status, notes, has_gst, gst_pct, gst_amount, subtotal_amount, category_id, ${SEG_COLS})

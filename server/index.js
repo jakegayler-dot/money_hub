@@ -24,6 +24,7 @@ import booksRoute from './routes/books.js';
 import forecastRoute from './routes/forecast.js';
 import taxRoute from './routes/tax.js';
 import personalRoute from './routes/personal.js';
+import calendarRoute from './routes/calendar.js';
 import receiptsRoute, { receiptUpload } from './routes/receipts.js';
 import { readPending, matchPending } from './lib/receipts.js';
 import { pairAllCardPayments, splitAllLoanPayments, syncLoanPieceOwners, settleAllVendorAccounts, reorderLoanPayments } from './lib/postings.js';
@@ -81,6 +82,7 @@ app.use('/api/books', booksRoute);
 app.use('/api/tax', taxRoute);
 app.use('/api/forecast', forecastRoute);
 app.use('/api/personal', personalRoute);
+app.use('/api/calendar', calendarRoute);
 app.use('/api/receipts', receiptsRoute);
 
 // In production, this is the only Railway service — it serves the built

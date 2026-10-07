@@ -290,7 +290,7 @@ def({
     f.textLike('vendor', 'vendor', 'vendor name (contains)'),
     f.textLike('category', 'category', 'category name (contains)'),
     f.minAbs('amount'), f.maxAbs('amount'), f.ledger(), f.owner(), f.month('due_date'),
-    f.eq('frequency', 'frequency', ['one_time', 'monthly', 'quarterly']),
+    f.eq('frequency', 'frequency', ['one_time', 'monthly', 'quarterly', 'annual']),
   ],
   base: (p, ctx) => `SELECT b.id, b.name, pv.name AS vendor, ${CAT_FULL('ec', 'pc')} AS category, b.amount,
       bill_owing(b, ${p(ctx.today)}::date) AS owing_now, bill_owing(b, b.due_date) AS owing_at_due,
