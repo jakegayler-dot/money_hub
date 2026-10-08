@@ -7,6 +7,7 @@ import { OwnerFields, ownerPayload, ownerSummary, emptyOwnerFields, ownerFieldsF
 import SplitEditor, { cents, newPiece, piecesPayload, pieceFrom } from '../components/SplitEditor.jsx';
 import CategorySelect from '../components/CategorySelect.jsx';
 import PayeeSelect, { usePayees } from '../components/PayeeSelect.jsx';
+import LedgerGrid from '../components/LedgerGrid.jsx';
 
 // Column sorting. Ties fall back to newest first, so equal amounts or
 // names keep a sensible order.
@@ -86,6 +87,9 @@ export default function Ledgers() {
   });
   const [balance, setBalance] = useState(null);
   const [editing, setEditing] = useState(null); // the transaction being edited
+  // Spreadsheet (type in every cell) or detailed (one entry at a time).
+  const [view, setView] = useState(() => { try { return localStorage.getItem('moneyhub.ledgerView') || 'grid'; } catch { return 'grid'; } });
+  const changeView = (v) => { setView(v); try { localStorage.setItem('moneyhub.ledgerView', v); } catch { /* private window */ } };
   const [adding, setAdding] = useState(false); // the new-entry form is open
   const [error, setError] = useState(null);
   // Attach a photo or PDF to one entry (an income stub, a ticket, an invoice).
@@ -546,13 +550,17 @@ export default function Ledgers() {
         </form>
   );
   const cols = 6 + (balance ? 1 : 0);
-  const editInList = !!editing && visible.some((t) => t.id === editing.id);
+  const editInList = view !== 'grid' && !!editing && visible.some((t) => t.id === editing.id);
 
   return (
     <>
       <div className="page-header">
         <h1 className="page-title">Ledgers</h1>
-        <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+        <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span className="seg-toggle" role="group" aria-label="Ledger view">
+          <button type="button" className={view === 'grid' ? 'on' : ''} aria-pressed={view === 'grid'} onClick={() => changeView('grid')}>Spreadsheet</button>
+          <button type="button" className={view !== 'grid' ? 'on' : ''} aria-pressed={view !== 'grid'} onClick={() => changeView('detail')}>Detailed</button>
+        </span>
         {!adding && <button type="button" className="small" onClick={() => { cancelEdit(); setAdding(true); }}>Record transaction</button>}
         <select value={filter} onChange={(e) => setFilter(e.target.value)}>
           <option value="all">All</option>
@@ -645,6 +653,17 @@ export default function Ledgers() {
         )}
         {visible.length === 0 ? (
           <div className="empty-state">{outstandingOnly ? 'Nothing outstanding.' : 'No transactions recorded yet.'}</div>
+        ) : view === 'grid' ? (
+          <LedgerGrid rows={visible} sort={sort}
+            onSort={(key) => setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'date' || key === 'amount' ? 'desc' : 'asc' }))}
+            accounts={accounts} cards={cards} categories={categories} payees={payees} balance={balance}
+            onPatched={(id, patch) => {
+              setTransactions((ts) => ts.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+              if (patch.needs_review === false) window.dispatchEvent(new Event('review-changed'));
+            }}
+            onOpen={(t) => { startEdit(t); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+            onAttach={(t) => { setAttachTo(t.id); fileRef.current?.click(); }}
+            onDelete={remove} attaching={attaching} />
         ) : (
           <table>
             <thead>

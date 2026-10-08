@@ -1257,3 +1257,63 @@ button.metric-card-button.active { border-color: rgba(201, 162, 39, 0.55); backg
 .cal-overdue .cal-date { justify-items: start; }
 .cal-overdue .cal-date b { font-size: 12.5px; }
 .cal-overdue { border-color: rgba(229, 72, 77, 0.35); }
+
+/* ---------- Ledger spreadsheet ---------- */
+
+.ledger-grid-wrap { overflow-x: auto; }
+.ledger-grid { min-width: 1100px; table-layout: fixed; }
+.ledger-grid th { white-space: nowrap; }
+.ledger-grid th.bal { width: 108px; }
+.ledger-grid th:last-child { width: 104px; }
+.ledger-grid th:nth-child(1) { width: 118px; }
+.ledger-grid th:nth-child(2) { width: 128px; }
+.ledger-grid th:nth-child(4) { width: 150px; }
+.ledger-grid th:nth-child(5) { width: 190px; }
+.ledger-grid th:nth-child(6) { width: 96px; }
+.ledger-grid th:nth-child(7) { width: 104px; }
+.ledger-grid th:nth-child(8) { width: 76px; }
+.ledger-grid th.num, .ledger-grid td.num { text-align: right; }
+.ledger-grid thead th { position: sticky; top: 0; z-index: 1; background: var(--panel); }
+.ledger-grid td { padding: 0; vertical-align: middle; border-right: 1px solid var(--border); }
+.ledger-grid td:first-child { padding-left: 0; }
+.ledger-grid td:last-child { border-right: none; padding: 0 8px; white-space: nowrap !important; }
+.ledger-grid tbody tr:hover td { background: var(--panel-alt); }
+.ledger-grid td input, .ledger-grid td select, .ledger-grid td .grid-split {
+  box-sizing: border-box; width: 100%; height: 30px; margin: 0; padding: 0 8px;
+  background: transparent; border: 1px solid transparent; border-radius: 0; box-shadow: none;
+  color: var(--text); font: inherit; font-size: 12px;
+}
+.ledger-grid td:first-child input { padding-left: 16px; }
+.ledger-grid td select { cursor: pointer; text-overflow: ellipsis; }
+.ledger-grid td select option, .ledger-grid td select optgroup { background: var(--panel-raised); color: var(--text); }
+.ledger-grid td input:hover:not(:disabled), .ledger-grid td select:hover:not(:disabled) { border-color: var(--border-strong); }
+.ledger-grid td input:focus, .ledger-grid td select:focus, .ledger-grid td .grid-split:focus-visible {
+  outline: none; border-color: var(--gold); background: var(--bg); box-shadow: none; position: relative; z-index: 1;
+}
+.ledger-grid td input:disabled, .ledger-grid td select:disabled { opacity: 1; color: var(--text-muted); cursor: default; }
+.ledger-grid td select:disabled { appearance: none; -webkit-appearance: none; }
+.ledger-grid td input[type='number'] { text-align: right; -moz-appearance: textfield; }
+.ledger-grid td input[type='number']::-webkit-inner-spin-button, .ledger-grid td input[type='number']::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.ledger-grid td input.in { color: var(--positive); }
+.ledger-grid td input.in:disabled { color: color-mix(in srgb, var(--positive) 70%, var(--text-muted)); }
+.ledger-grid td input[type='date']::-webkit-calendar-picker-indicator { filter: invert(0.6); cursor: pointer; }
+.ledger-grid td input[type='date']:disabled::-webkit-calendar-picker-indicator { display: none; }
+.ledger-grid .grid-split { all: unset; box-sizing: border-box; display: block; width: 100%; height: 30px; line-height: 30px; padding: 0 8px; color: var(--gold-bright); cursor: pointer; font-size: 12px; }
+.ledger-grid .grid-split:hover { background: var(--gold-soft); }
+.ledger-grid .grid-fixed { display: block; padding: 0 8px; line-height: 30px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ledger-grid .grid-bal { padding: 0 10px; color: var(--text-muted); white-space: nowrap; }
+.ledger-grid tr.closed td { background: var(--panel-alt); }
+.ledger-grid tr.err td { background: rgba(229, 72, 77, 0.07); }
+.ledger-grid .grid-actions { text-align: right; }
+.ledger-grid .grid-actions .stmt-icon { opacity: 0.55; }
+.ledger-grid tr:hover .stmt-icon, .ledger-grid .stmt-icon:focus-visible, .ledger-grid .stmt-icon.has-doc { opacity: 1; }
+.ledger-grid .grid-del:hover { color: var(--negative); background: rgba(229, 72, 77, 0.1); }
+.ledger-grid .grid-state { font-size: 10.5px; color: var(--text-faint); margin-right: 6px; }
+.ledger-grid .grid-state.ok { color: var(--positive); }
+.ledger-grid .grid-state.bad { color: var(--negative); }
+.ledger-grid .grid-dot {
+  all: unset; display: inline-block; width: 8px; height: 8px; margin: 0 7px 1px 3px; border-radius: 50%;
+  background: var(--gold-bright); cursor: pointer; vertical-align: middle;
+}
+.ledger-grid .grid-dot:hover, .ledger-grid .grid-dot:focus-visible { box-shadow: 0 0 0 3px var(--gold-soft); }
+.grid-errors { margin: 8px 16px; }

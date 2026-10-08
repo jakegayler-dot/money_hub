@@ -9,6 +9,7 @@
 const NUMERIC = /^[\s+\-−]*\$?[\d,]+(\.\d+)?\s*%?$|^\d{4}-\d{2}-\d{2}$/;
 
 function labelTable(table) {
+  if (table.hasAttribute('data-nostack')) return; // e.g. the ledger spreadsheet scrolls sideways instead
   const head = table.tHead && table.tHead.rows[table.tHead.rows.length - 1];
   const labels = [];
   if (head) {
