@@ -38,7 +38,7 @@ export async function loadBalanceSheet() {
     pool.query(`SELECT * FROM loans`),
     pool.query(`SELECT loan_id, due_date, principal_amount, paid FROM loan_payments`),
     pool.query(`SELECT * FROM inventory_items ORDER BY item_class, commodity`),
-    pool.query(`SELECT commodity, unit, quantity FROM sale_contracts WHERE status = 'open' AND quantity IS NOT NULL`),
+    pool.query(`SELECT commodity, unit, quantity, price_per_unit FROM sale_contracts WHERE status = 'open' AND quantity IS NOT NULL`),
     pool.query(`SELECT * FROM credit_cards WHERE status = 'active'`),
   ]);
 
@@ -77,12 +77,22 @@ export async function loadBalanceSheet() {
   // what the source reported, if it reported it for any row in the group
   // (the source knows which bins are sold); otherwise it's derived from
   // open contracts for the same commodity and unit. Breeding stock is
-  // never contracted. Only the uncontracted share counts as inventory —
-  // the contracted share is already counted as the contract receivable.
+  // never contracted. counted_value is the uncontracted share at the
+  // manager's price — what the cash forecast can still sell. book_value is
+  // all of it, as the balance sheet carries it: grain on hand under an open
+  // (undelivered) contract is still inventory, valued at the contract
+  // price; only delivery turns it into a receivable. Contracts for more
+  // than is on hand (next year's crop) aren't an asset yet.
   const openByKey = new Map();
+  const openPrice = new Map(); // key → { qty, value } for a weighted contract price
   for (const c of contractRows.rows) {
     const k = `${String(c.commodity).toLowerCase()}|${String(c.unit || '').toLowerCase()}`;
     openByKey.set(k, (openByKey.get(k) || 0) + Number(c.quantity));
+    if (c.price_per_unit != null && Number(c.quantity) > 0) {
+      const o = openPrice.get(k) || { qty: 0, value: 0 };
+      o.qty += Number(c.quantity); o.value += Number(c.quantity) * Number(c.price_per_unit);
+      openPrice.set(k, o);
+    }
   }
   const groups = new Map();
   for (const it of invRows.rows) {
@@ -110,6 +120,9 @@ export async function loadBalanceSheet() {
     }
     const uncontracted = Math.max(0, onHand - contracted);
     const fraction = onHand > 0 ? uncontracted / onHand : 0;
+    const op = openPrice.get(`${g.commodity.toLowerCase()}|${g.unit.toLowerCase()}`);
+    const contractPrice = op && op.qty > 0 ? op.value / op.qty : null;
+    let bookValue = 0;
     // Price per item: the estimate its manager (Quarter Section,
     // Livestock Manager) sent, or for a hand-entered item, the one typed in.
     // Money Hub keeps no price list of its own. No price → valued at $0 and
@@ -125,10 +138,13 @@ export async function loadBalanceSheet() {
       if (price == null) needsPrice++;
       const gross = price == null ? 0 : Number(i.quantity) * price;
       const counted = gross * fraction;
+      const contractedPart = Number(i.quantity) * (1 - fraction) * (contractPrice ?? price ?? 0);
+      const book = counted + contractedPart;
       grossValue += gross;
       value += counted;
+      bookValue += book;
       if (price != null) pricedQty += Number(i.quantity);
-      const row = { ...i, effective_price: price, price_basis: priceBasis, counted_value: counted };
+      const row = { ...i, effective_price: price, price_basis: priceBasis, counted_value: counted, book_value: book, contract_price: fraction < 1 ? contractPrice : null };
       enriched.push(row);
       inventoryRows.push(row);
     }
@@ -141,6 +157,8 @@ export async function loadBalanceSheet() {
       uncontracted,
       gross_value: grossValue,
       counted_value: value,
+      book_value: bookValue,
+      contract_price: contractPrice,
       avg_price: pricedQty > 0 ? grossValue / pricedQty : null,
       needs_price: needsPrice,
     });

@@ -14,6 +14,7 @@ import purchaseEvaluatorRoute from './routes/purchase-evaluator.js';
 import billsRoute from './routes/bills.js';
 import contractsRoute from './routes/contracts.js';
 import entityRoute from './routes/entity.js';
+import balanceSheetRoute from './routes/balanceSheet.js';
 import assetsRoute from './routes/assets.js';
 import inventoryRoute from './routes/inventory.js';
 import estimatesRoute from './routes/estimates.js';
@@ -31,6 +32,7 @@ import { pairAllCardPayments, splitAllLoanPayments, syncLoanPieceOwners, settleA
 import { withTransaction } from './db.js';
 import { authRouter, requireSignIn, authEnabled } from './lib/appAuth.js';
 import sentinelReadRoute from './routes/sentinelRead.js';
+import sentinelActionsRoute from './routes/sentinelActions.js';
 import sentinelRoute from './routes/sentinel.js';
 import { sentinelWriteTrigger, startSentinelSync } from './lib/sentinel.js';
 
@@ -52,8 +54,10 @@ app.use('/api', sentinelWriteTrigger);
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 // Sentinel's read-only data API: its own key (SENTINEL_ACTION_KEY), so
-// it's mounted before the sign-in guard below and is the only path exempt.
+// it's mounted before the sign-in guard below; with the actions it's the only path exempt.
 app.use('/api/sentinel/read', sentinelReadRoute);
+// Sentinel's actions (same key): what-if purchase checks, optionally saved.
+app.use('/api/sentinel/actions', sentinelActionsRoute);
 // The sync preview (GET /api/sentinel/preview) has its own key too (X-Api-Key = INGEST_API_KEY).
 app.use('/api/sentinel', sentinelRoute);
 
@@ -72,6 +76,7 @@ app.use('/api/purchase-evaluations', purchaseEvaluatorRoute);
 app.use('/api/bills', billsRoute);
 app.use('/api/contracts', contractsRoute);
 app.use('/api/entity-summary', entityRoute);
+app.use('/api/balance-sheet', balanceSheetRoute);
 app.use('/api/assets', assetsRoute);
 app.use('/api/inventory', inventoryRoute);
 app.use('/api/estimates', estimatesRoute);

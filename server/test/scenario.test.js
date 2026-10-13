@@ -86,3 +86,71 @@ test('the operating line draws to keep the minimum and repays from cash', () => 
   assert.equal(r.scenario.op_owing_end, 0);
   assert.ok(r.scenario.op_interest > 0);
 });
+
+// ---- Capital purchases ------------------------------------------------------------
+
+import { purchaseTerms } from '../lib/scenario.js';
+import { purchaseVerdict } from '../lib/purchaseCheck.js';
+
+test('a financed purchase: taxes on the loan, GST back on the next return, PST and fees depreciated', () => {
+  const t = purchaseTerms({ label: 'Combine', price: 500000, trade_in: 100000, deposit: 60000, fees: 1000, gst_pct: 5, pst_pct: 6,
+    rate: 7, years: 5, per_year: 1, month: '2026-11' }, { today: TODAY, gstFreq: 'quarterly' });
+  assert.equal(t.base, 400000);
+  assert.equal(t.gst, 20000);
+  assert.equal(t.pst, 24000);
+  assert.equal(t.financed, 400000 + 20000 + 24000 - 60000);
+  assert.equal(t.cash_up_front, 61000);
+  assert.equal(t.gst_refund_date, '2027-02-14'); // Q4 return due Jan 31, refund two weeks later
+  assert.equal(t.cca_cost, 425000);
+  assert.equal(t.first_payment.slice(0, 7), '2027-11');
+  assert.ok(Math.abs(t.equity_pct - (1 - 384000 / 544000) * 100) < 0.01);
+  const cash = purchaseTerms({ price: 100000, deposit: 20000, gst_pct: 5, taxes: 'cash', month: '2026-11', rate: 6, years: 5 }, { today: TODAY });
+  assert.equal(cash.financed, 80000);
+  assert.equal(cash.cash_up_front, 25000);
+  const home = purchaseTerms({ price: 50000, owner: 'personal', month: '2026-11' }, { today: TODAY });
+  assert.equal(home.gst_refund, 0);
+  assert.equal(home.cca_cost, 0);
+});
+
+test('a purchase moves cash, lowers tax through interest and CCA, and gets a verdict', () => {
+  const ctx = ctxWith([contract], { gstFreq: 'quarterly' });
+  const sc = { purchases: [{ label: 'Tractor', price: 300000, deposit: 60000, gst_pct: 5, rate: 6.5, years: 5, per_year: 1, month: '2026-11', cca_rate: 30 }] };
+  const r = runScenario(ctx, sc, { includeTax: true, floor: 20000 });
+  assert.equal(r.steps[0].id, 'purchases');
+  const items = r.scenario.trajectory.months.flatMap((m) => m.items);
+  assert.equal(items.find((i) => i.label === 'Tractor — deposit').amount, -60000);
+  assert.equal(items.find((i) => i.label === 'Tractor — GST back').amount, 15000);
+  assert.ok(r.scenario.tax_y0 < r.plan.tax_y0, 'CCA lowers this year’s tax');
+  assert.equal(r.purchases[0].financed, 300000 + 15000 - 60000);
+  assert.ok(r.new_debt_annual.farm > 55000 && r.new_debt_annual.farm < 65000);
+  const coverage = { threshold: 1.25, projected: { capacity: 200000, termDebtService: 50000, ratio: 4 } };
+  const v = purchaseVerdict(r, { coverage, reserveTarget: 10000 });
+  assert.equal(v.tests.find((t) => t.id === 'coverage').status, 'pass');
+  assert.equal(v.verdict, 'viable');
+  const weak = purchaseVerdict(r, { coverage: { ...coverage, projected: { capacity: 130000, termDebtService: 50000, ratio: 2.6 } }, reserveTarget: 10000 });
+  assert.equal(weak.verdict, 'tight');
+  const broke = purchaseVerdict(r, { coverage: { ...coverage, projected: { capacity: 50000, termDebtService: 50000, ratio: 1 } }, reserveTarget: 10000 });
+  assert.equal(broke.verdict, 'not_viable');
+  assert.match(broke.headline, /^Not viable/);
+});
+
+// ---- Balance sheet: loans --------------------------------------------------------
+
+import { loanPosition } from '../lib/statement.js';
+
+test('a loan on the balance sheet: owed until paid, current portion, accrued interest', () => {
+  const loan = { principal: 120000, interest_rate_pct: 6, start_date: '2025-01-01', purpose: 'term', created_at: '2025-06-01' };
+  const pay = (due, principal, interest, paid) => ({ due_date: due, principal_amount: principal, interest_amount: interest, paid, is_adjustment: false, is_extra: false });
+  const p = loanPosition(loan, [pay('2025-11-01', 20000, 7200, true), pay('2026-09-01', 20000, 6000, false), pay('2027-09-01', 20000, 4800, false), pay('2028-09-01', 20000, 3600, false)], '2026-10-12');
+  assert.equal(p.owing, 100000);             // only the paid payment came off
+  assert.equal(p.current, 40000);            // past due + due within 12 months
+  assert.equal(p.longterm, 60000);
+  assert.equal(p.overdue_count, 1);
+  assert.ok(Math.abs(p.accrued_interest - (6000 + 100000 * 0.06 * 41 / 365)) < 0.01); // past-due interest + since Sep 1
+  // Entered after the Sep payment: that one is history, counted as paid.
+  const late = loanPosition({ ...loan, created_at: '2026-09-20' }, [pay('2025-11-01', 20000, 7200, true), pay('2026-09-01', 20000, 6000, false), pay('2027-09-01', 20000, 4800, false)], '2026-10-12');
+  assert.equal(late.owing, 80000);
+  assert.equal(late.overdue_count, 0);
+  const op = loanPosition({ ...loan, purpose: 'operating' }, [], '2026-10-12');
+  assert.equal(op.current, 120000);
+});

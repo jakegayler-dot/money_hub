@@ -80,12 +80,18 @@ export function forecastSummary(liquidity, today) {
 
 // ---- Equity (Combined: the whole household, both ledgers) -------------------
 /**
- * Same valuation as Money Hub's dashboard net worth and the Combined
- * equity card: account balances + capital assets valued today + uncontracted
- * inventory − outstanding loan principal − credit card balances. An
- * overdrawn account counts as a liability rather than a negative asset.
+ * Total assets and liabilities from the balance sheet, the same as the
+ * dashboard and the equity card. Without one (tests, old callers): account
+ * balances + capital assets + uncontracted inventory − loan principal −
+ * card balances, an overdrawn account counting as a liability.
  */
 export function equitySummary(bal) {
+  // The balance sheet (lib/statement.js) when the loader supplied it.
+  if (bal.statement) {
+    const a = cents(bal.statement.assets);
+    const l = cents(bal.statement.liabilities);
+    return { assets_cents: a, liabilities_cents: l, equity_cents: a - l };
+  }
   let assets = 0;
   let liabilities = 0;
   for (const a of bal.accounts || []) {

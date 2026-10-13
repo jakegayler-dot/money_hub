@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Routes, Route, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import SignIn from './components/SignIn.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import EntityBar from './components/EntityBar.jsx';
@@ -12,7 +12,6 @@ import Assets from './pages/Assets.jsx';
 import Ledgers from './pages/Ledgers.jsx';
 import Loans from './pages/Loans.jsx';
 import Expenses from './pages/Expenses.jsx';
-import PurchaseEvaluator from './pages/PurchaseEvaluator.jsx';
 import CreditCards from './pages/CreditCards.jsx';
 import Review from './pages/Review.jsx';
 import Books from './pages/Books.jsx';
@@ -20,6 +19,7 @@ import Tax from './pages/Tax.jsx';
 import Receipts from './pages/Receipts.jsx';
 import Personal from './pages/Personal.jsx';
 import Calendar from './pages/Calendar.jsx';
+import BalanceSheet from './pages/BalanceSheet.jsx';
 
 export default function App() {
   // The owner toggle and the three headline numbers live on the Dashboard
@@ -48,6 +48,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/cash-flow" element={<CashFlow />} />
+          <Route path="/balance-sheet" element={<BalanceSheet />} />
           <Route path="/personal" element={<Personal />} />
           <Route path="/calendar" element={<Calendar />} />
           <Route path="/accounts" element={<Accounts />} />
@@ -57,7 +58,7 @@ export default function App() {
           <Route path="/loans" element={<Loans />} />
           <Route path="/assets" element={<Assets />} />
           <Route path="/expenses" element={<Expenses />} />
-          <Route path="/purchase-evaluator" element={<PurchaseEvaluator />} />
+          <Route path="/purchase-evaluator" element={<Navigate to="/cash-flow?whatif=new" replace />} />
           <Route path="/credit-cards" element={<CreditCards />} />
           <Route path="/review" element={<Review />} />
           <Route path="/books" element={<Books />} />

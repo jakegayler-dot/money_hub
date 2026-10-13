@@ -22,6 +22,8 @@
 //   prepay: [{ label, amount, month, instead_month }],
 //   costs_pct, rate_pts, rate_scope: 'variable'|'all', gst_delay,
 //   tax: { instalment: 'plan'|'skip', oia, next_year_net, prescribed_rate },
+//   purchases: [{ label, price, trade_in, deposit, fees, gst_pct, pst_pct, taxes: 'financed'|'cash', rate, years, per_year,
+//                 month, first_month, owner: 'farm'|'personal', cca_rate }],
 //   loans_new: [{ label, amount, rate, years, per_year, start_month, first_month, owner: 'farm'|'personal', buy_cost, cca_rate }],
 //   oneoffs: [{ label, amount, month, treatment: 'farm'|'capital'|'personal', cca_rate }],
 //   op_line: { on, limit, rate, keep },
@@ -32,6 +34,7 @@ import {
   evaluate, buildTaxFlows, taxesFor, baseNetByYear, taxYearOf, midMonth, norm, scopeShare, monthLabel,
 } from './forecast.js';
 import { rawOwing } from './vendorAccount.js';
+import { gstPeriods } from './tax.js';
 
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const num = (v) => (v === '' || v == null || !Number.isFinite(Number(v)) ? null : Number(v));
@@ -43,6 +46,7 @@ export const GROUPS = [
   { id: 'contracts', label: 'New contracts' },
   { id: 'timing', label: 'Sale & payment timing' },
   { id: 'costs', label: 'Costs & bills' },
+  { id: 'purchases', label: 'Capital purchases' },
   { id: 'loans', label: 'Loans & rates' },
   { id: 'oneoffs', label: 'One-off items' },
   { id: 'gst', label: 'GST timing' },
@@ -59,6 +63,7 @@ export function activeGroups(sc = {}) {
     contracts: (sc.contracts_new || []).some((c) => num(c.quantity) > 0 && num(c.price) > 0 && ym(c.pay_month)),
     timing: has(sc.contract_moves) || commodityHas((c) => ym(c.sell_month)),
     costs: !!num(sc.costs_pct) || has(sc.bill_moves) || (sc.prepay || []).some((p) => num(p.amount) > 0 && ym(p.month)),
+    purchases: (sc.purchases || []).some((p) => num(p.price) > 0),
     loans: !!num(sc.rate_pts) || (sc.loans_new || []).some((l) => num(l.amount) > 0),
     oneoffs: (sc.oneoffs || []).some((o) => num(o.amount) && ym(o.month)),
     gst: num(sc.gst_delay) > 0,
@@ -259,6 +264,95 @@ function applyLoans(flows, adj, ctx, sc) {
   return flows;
 }
 
+// ---- Capital purchases -------------------------------------------------------------
+//
+// A machine, truck, bin or building bought with a deposit and a loan.
+// Taxes are on the price less any trade-in. With taxes 'financed' (the
+// default) the GST and PST go on the loan; with 'cash' they're paid with
+// the deposit. A farm purchase gets its GST back as an input tax credit on
+// the return for the period it's bought in (paid out about two weeks after
+// that return is due); the PST and any fees are part of what it cost and
+// are depreciated with it (CCA). A personal purchase gets neither.
+
+export const PER_YEAR = [1, 2, 4, 12];
+const perYear = (v) => (PER_YEAR.includes(Number(v)) ? Number(v) : 1);
+
+/** The deal's numbers, without the forecast: what's borrowed, paid up front, refunded and depreciated. */
+export function purchaseTerms(p, { today, gstFreq = 'quarterly' } = {}) {
+  const price = Math.max(0, num(p.price) || 0);
+  const trade = Math.min(price, Math.max(0, num(p.trade_in) || 0));
+  const farm = p.owner === 'personal' ? 0 : 1;
+  const base = price - trade;
+  const gstPct = num(p.gst_pct) ?? 5;
+  const pstPct = num(p.pst_pct) ?? 0;
+  const gst = r2(base * gstPct / 100);
+  const pst = r2(base * pstPct / 100);
+  const fees = Math.max(0, num(p.fees) || 0);
+  const financedTaxes = p.taxes !== 'cash';
+  const deposit = Math.max(0, num(p.deposit) || 0);
+  const owed = base + (financedTaxes ? gst + pst : 0); // what the deposit and the loan pay for
+  const dep = Math.min(deposit, owed);
+  const loan = r2(owed - dep);
+  const upFront = r2(dep + fees + (financedTaxes ? 0 : gst + pst));
+  const month = ym(p.month) || (today ? today.slice(0, 7) : '2000-01');
+  const per = perYear(p.per_year);
+  const first = ym(p.first_month) || addMonths(`${month}-01`, 12 / per).slice(0, 7);
+  const rate = num(p.rate) || 0;
+  const years = num(p.years) || 5;
+  const sched = loan > 0 ? loanSchedule({ amount: loan, rate, years, per_year: per, first_month: first }) : { payment: 0, payments: [] };
+  const interest = r2(sched.payments.reduce((t, x) => t + x.interest, 0));
+  // The GST comes back on the return for the period the purchase lands in.
+  let refundDate = null;
+  if (farm && gst > 0) {
+    const d = `${month}-15`;
+    const period = gstPeriods(Number(month.slice(0, 4)), gstFreq).find((x) => x.start <= d && x.end >= d);
+    refundDate = period ? addDaysISO(period.due, 14) : addMonths(d, 3);
+    if (today && refundDate < today) refundDate = today;
+  }
+  const totalCost = r2(base + gst + pst + fees);
+  const ccaCost = farm ? r2(base + pst + fees) : 0;
+  const ccaRate = num(p.cca_rate) ?? 20;
+  return {
+    label: p.label || 'Capital purchase', owner: farm ? 'farm' : 'personal', month, price, trade_in: trade, base,
+    gst_pct: gstPct, pst_pct: pstPct, gst, pst, fees, taxes: financedTaxes ? 'financed' : 'cash', total_cost: totalCost,
+    deposit: dep, financed: loan, rate, years, per_year: per, first_payment: sched.payments[0]?.date || null,
+    payment: sched.payment, annual_payment: r2(sched.payment * per), total_interest: interest,
+    cash_up_front: upFront, gst_refund: farm ? gst : 0, gst_refund_date: refundDate,
+    // The buyer's own stake: everything not borrowed (trade-in, deposit, taxes paid in cash).
+    equity_pct: price > 0 ? r2((1 - loan / (price + gst + pst)) * 100) : null,
+    cca_rate: ccaRate, cca_cost: ccaCost, cca_year1: r2(ccaCost * ccaRate / 100),
+    // Every dollar out over the life of the deal, less the GST back.
+    lifetime_cost: r2(upFront + sched.payments.reduce((t, x) => t + x.payment, 0) - (farm ? gst : 0)),
+    payments: sched.payments,
+  };
+}
+const addDaysISO = (d, n) => { const t = new Date(`${d}T00:00:00Z`); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
+
+function applyPurchases(flows, adj, ctx, sc) {
+  adj.purchases = [];
+  for (const [i, p] of (sc.purchases || []).entries()) {
+    if (!(num(p.price) > 0)) continue;
+    const t = purchaseTerms(p, { today: ctx.today, gstFreq: ctx.gstFreq });
+    const farm = t.owner === 'farm' ? 1 : 0;
+    if (t.cash_up_front > 0) {
+      flows.push({ key: `whatif:pur:${i}:down`, kind: 'whatif', label: `${t.label} — ${t.taxes === 'cash' ? 'deposit, taxes & fees' : t.fees ? 'deposit & fees' : 'deposit'}`,
+        date: midMonth(t.month), amount: -t.cash_up_front, farm, taxable: 0, estimate: false, whatif: true, ref: {} });
+    }
+    t.payments.forEach((x, k) => flows.push({
+      key: `whatif:pur:${i}:pay:${k}`, kind: 'loan', label: `${t.label} — loan payment`, date: x.date, amount: -x.payment, farm,
+      taxable: -x.interest * farm, estimate: false, whatif: true, ref: { interest: x.interest, principal: x.principal, new_loan: true },
+    }));
+    if (t.gst_refund > 0 && t.gst_refund_date) {
+      flows.push({ key: `whatif:pur:${i}:gst`, kind: 'gst', label: `${t.label} — GST back`, date: t.gst_refund_date, amount: t.gst_refund,
+        farm: 1, taxable: 0, estimate: false, whatif: true, ref: { refund: true } });
+    }
+    if (t.cca_cost > 0) addCca(adj, Number(t.month.slice(0, 4)), t.cca_cost, t.cca_rate, farm);
+    const { payments, ...rest } = t;
+    adj.purchases.push(rest);
+  }
+  return flows;
+}
+
 function applyOneoffs(flows, adj, ctx, sc) {
   for (const [i, o] of (sc.oneoffs || []).entries()) {
     const amount = num(o.amount);
@@ -293,7 +387,7 @@ function applyTax(flows, adj, ctx, sc) {
   return flows;
 }
 
-const APPLY = { prices: applyPrices, contracts: applyContracts, timing: applyTiming, costs: applyCosts, loans: applyLoans,
+const APPLY = { prices: applyPrices, contracts: applyContracts, timing: applyTiming, costs: applyCosts, purchases: applyPurchases, loans: applyLoans,
   oneoffs: applyOneoffs, gst: applyGst, tax: applyTax };
 
 // ---- Outcome ---------------------------------------------------------------------
@@ -441,7 +535,7 @@ export function runScenario(ctx, sc = {}, opts = {}) {
   const base = { taxable: taxableByYear(baseFlows, ctx.today) };
   const freshAdj = () => ({
     price: {}, qty: {}, qtyLeft: {}, extra: {}, warnings: [], extraInterest: 0,
-    method: 'plan', prescribedRate: 7, nextYearNet: null, opLine: null,
+    method: 'plan', prescribedRate: 7, nextYearNet: null, opLine: null, purchases: [],
   });
 
   const planAdj = freshAdj();
@@ -474,8 +568,28 @@ export function runScenario(ctx, sc = {}, opts = {}) {
     plan: { ...planSum, trajectory: trimTrajectory(plan.ev) },
     scenario: { ...summarize(scn, ctx, floor), trajectory: trimTrajectory(scn.ev) },
     steps,
+    purchases: adj.purchases,
+    new_debt_annual: newDebtAnnual(sc),
     warnings: adj.warnings,
   };
+}
+
+/** Annual payments on every new loan in a scenario (farm share) — what a lender adds to term debt service. */
+export function newDebtAnnual(sc = {}) {
+  let farm = 0; let personal = 0;
+  for (const p of sc.purchases || []) {
+    if (!(num(p.price) > 0)) continue;
+    const t = purchaseTerms(p, {});
+    if (t.owner === 'farm') farm += t.annual_payment; else personal += t.annual_payment;
+  }
+  for (const l of sc.loans_new || []) {
+    const amount = num(l.amount);
+    if (!(amount > 0)) continue;
+    const per = Number(l.per_year) === 1 ? 1 : 12;
+    const { payment } = loanSchedule({ amount, rate: num(l.rate) || 0, years: num(l.years) || 5, per_year: per, first_month: '2000-01' });
+    if (l.owner === 'personal') personal += payment * per; else farm += payment * per;
+  }
+  return { farm: r2(farm), personal: r2(personal) };
 }
 
 /** Pickers for the what-if window: what can be re-priced, contracted, moved or deferred. */

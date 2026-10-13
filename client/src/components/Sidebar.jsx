@@ -6,6 +6,7 @@ const links = [
   { to: '/review', label: 'Review', count: true },
   { to: '/receipts', label: 'Receipts' },
   { to: '/books', label: 'Books' },
+  { to: '/balance-sheet', label: 'Balance Sheet' },
   { to: '/tax', label: 'Tax' },
   { to: '/calendar', label: 'Calendar' },
   { to: '/cash-flow', label: 'Cash Flow' },
@@ -18,7 +19,6 @@ const links = [
   { to: '/credit-cards', label: 'Credit Cards' },
   { to: '/assets', label: 'Assets' },
   { to: '/expenses', label: 'Income & Expenses' },
-  { to: '/purchase-evaluator', label: 'Purchase Evaluator' },
 ];
 
 export default function Sidebar({ canSignOut = false }) {

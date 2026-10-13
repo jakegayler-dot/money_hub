@@ -5,7 +5,7 @@ import { OWNERS, ownerWeights } from '../lib/segments.js';
 import { occurrences, signedAmount } from '../lib/estimates.js';
 import { forecastEstimates } from '../lib/inventoryForecast.js';
 import { cardAmountsDue } from '../lib/cardLedger.js';
-import { loadBalanceSheet, inventoryOwnerRow } from '../lib/balanceSheet.js';
+import { loadStatement, statementFor } from '../lib/statement.js';
 import { todayISO, addMonths, monthIndex } from '../lib/dates.js';
 import { billDates } from '../lib/billDates.js';
 import { farmIncomeTax } from '../lib/tax.js';
@@ -36,10 +36,9 @@ const HORIZON = 12;
  * portion of loan payments (repaying principal isn't a cost; interest is).
  * No depreciation yet. For Jake/Ashley it reads as net savings.
  *
- * EQUITY — cash + capital assets (valued today by their appreciation/CCA
- * rate) + uncontracted inventory at estimated market price − outstanding
- * loan principal. Contracted grain is counted once, as the contract's
- * receivable in cash flow, never also as inventory.
+ * EQUITY — total assets − total liabilities on the balance sheet
+ * (lib/statement.js): accrual basis, so receivables, payables, GST,
+ * accrued interest and prepayments are in it.
  */
 router.get('/', ah(async (req, res) => {
   const entity = String(req.query.entity || 'all');
@@ -55,7 +54,7 @@ router.get('/', ah(async (req, res) => {
   const endStr = addMonths(`${today.slice(0, 7)}-01`, HORIZON); // exclusive
   const ytdStart = `${y0}-01-01`;
 
-  const [accounts, txSums, allTx, ytdTx, bills, loanPays, cardStatements, contracts, estimates, sheet] = await Promise.all([
+  const [accounts, txSums, allTx, ytdTx, bills, loanPays, cardStatements, contracts, estimates] = await Promise.all([
     pool.query(`SELECT * FROM accounts`),
     pool.query(`SELECT account_id, COALESCE(SUM(amount), 0) AS total FROM transactions GROUP BY account_id`),
     // Cash: only money that moved through an account (a card purchase is
@@ -93,7 +92,6 @@ router.get('/', ah(async (req, res) => {
       [endStr]
     ),
     forecastEstimates(),
-    loadBalanceSheet(),
   ]);
 
   // ---- Cash (derived from tagged flows) ----
@@ -176,15 +174,9 @@ router.get('/', ah(async (req, res) => {
     if (!t.is_capex && ownerWeights(t).unassigned > 0.005) { noOwner += Math.abs(lineAmounts(t).gross) * ownerWeights(t).unassigned; noOwnerCount++; }
   }
 
-  // ---- Equity ----
-  let assetValue = 0;
-  for (const a of sheet.assets) assetValue += a.value_now * w(a);
-  let inventoryValue = 0;
-  for (const it of sheet.inventoryRows) inventoryValue += it.counted_value * w(inventoryOwnerRow(it));
-  let loanPrincipal = 0;
-  for (const l of sheet.loans) loanPrincipal += l.outstanding * w(l);
-  let cardBalance = 0;
-  for (const c of sheet.creditCards) cardBalance += c.outstanding * w({ segment: c.segment });
+  // ---- Equity: the balance sheet's (lib/statement.js), so the card and the statement agree ----
+  const statement = statementFor(await loadStatement(today), entity);
+  const lineSum = (keys) => statement.sections.flatMap((x) => x.lines).filter((l) => keys.includes(l.key)).reduce((t, l) => t + l.amount, 0);
 
   const r2 = (n) => Math.round(n * 100) / 100;
   const shape = (p) => ({
@@ -209,12 +201,13 @@ router.get('/', ah(async (req, res) => {
       no_owner: entity === 'all' ? { count: noOwnerCount, amount: r2(noOwner) } : null,
     },
     equity: {
-      total: r2(cash + assetValue + inventoryValue - loanPrincipal - cardBalance),
-      cash: r2(cash),
-      assets: r2(assetValue),
-      inventory: r2(inventoryValue),
-      loans: r2(loanPrincipal),
-      creditCards: r2(cardBalance),
+      total: statement.totals.equity,
+      assets: statement.totals.total_assets,
+      liabilities: statement.totals.total_liabilities,
+      cash: r2(lineSum(['cash', 'investment_accounts']) - lineSum(['overdraft', 'due_to_owners'])),
+      inventory: r2(lineSum(['inventory_grain', 'inventory_livestock'])),
+      loans: r2(lineSum(['operating_loans', 'current_ltd', 'term_debt'])),
+      creditCards: r2(lineSum(['credit_cards'])),
     },
     unassignedCash: entity === 'all' ? r2(unassignedCash) : undefined,
   });

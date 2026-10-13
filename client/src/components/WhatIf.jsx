@@ -25,6 +25,7 @@ const n = (v) => (v === '' || v == null || !Number.isFinite(Number(v)) ? null : 
 const clean = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== '' && v != null));
 
 const SECTIONS = [
+  { id: 'purchase', label: 'Capital purchase', hint: 'Buy on a loan: deposit, rate, term, taxes' },
   { id: 'prices', label: 'Prices & quantities', hint: 'Inventory and crop estimates' },
   { id: 'contracts', label: 'New contracts', hint: 'Price bins or next year’s crop and calves' },
   { id: 'revenue', label: 'Revenue timing', hint: 'When inventory sells and contracts pay' },
@@ -37,6 +38,7 @@ const SECTIONS = [
 function sectionCount(sc, id) {
   const com = Object.values(sc.commodities || {});
   switch (id) {
+    case 'purchase': return (sc.purchases || []).length;
     case 'prices': return com.filter((c) => n(c.price) != null || n(c.pct) || n(c.qty) != null).length;
     case 'contracts': return (sc.contracts_new || []).length;
     case 'revenue': return com.filter((c) => c.sell_month).length + Object.keys(sc.contract_moves || {}).length;
@@ -66,7 +68,7 @@ export default function WhatIf({ options, initial, onClose, onShow }) {
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
-  const [open, setOpen] = useState(() => SECTIONS.find((s) => sectionCount(initial?.scenario || {}, s.id))?.id || 'prices');
+  const [open, setOpen] = useState(() => SECTIONS.find((s) => sectionCount(initial?.scenario || {}, s.id))?.id || 'purchase');
   const [note, setNote] = useState(null);
   const dialogRef = useRef(null);
 
@@ -195,7 +197,7 @@ function makePresets(ctx) {
     out.push({ label: `Defer ${y0} contract payments to January`, open: 'revenue', sc: { contract_moves: Object.fromEntries(thisYear.map((c) => [c.id, `${y0 + 1}-01`])) } });
   }
   const m = ctx.months[Math.min(3, ctx.months.length - 1)].value;
-  out.push({ label: 'Buy a $400k machine with a $250k loan', open: 'loans', sc: { loans_new: [{ label: 'Machine', amount: 250000, rate: 6.5, years: 5, per_year: 1, start_month: m, owner: 'farm', buy_cost: 400000, cca_rate: 20 }] } });
+  out.push({ label: 'Buy a $450k combine, $100k trade, $40k down', open: 'purchase', sc: { purchases: [{ ...NEW_PURCHASE, label: 'Combine', price: 450000, trade_in: 100000, deposit: 40000, month: m }] } });
   const fin = ctx.bills.filter((b) => b.financed && b.free_until && b.free_until > b.due);
   if (fin.length) out.push({ label: 'Pay financed bills on their interest-free date', open: 'costs', sc: { bill_moves: Object.fromEntries(fin.map((b) => [b.id, b.free_until])) } });
   if (ctx.tax.available && !ctx.tax.instalment_paid) out.push({ label: `Skip the Dec 31 instalment`, open: 'tax', sc: { tax: { instalment: 'skip', prescribed_rate: 7 } } });
@@ -203,6 +205,81 @@ function makePresets(ctx) {
 }
 
 // ---- Lever sections ---------------------------------------------------------------
+
+const NEW_PURCHASE = { label: '', gst_pct: 5, pst_pct: 0, taxes: 'financed', rate: 6.5, years: 5, per_year: 1, owner: 'farm', cca_rate: 20 };
+const PAYMENTS = [[1, 'Annual'], [2, 'Semi-annual'], [4, 'Quarterly'], [12, 'Monthly']];
+const perLabel = { 1: 'yearly', 2: 'twice a year', 4: 'quarterly', 12: 'monthly' };
+
+function PurchaseSection({ sc, months, update, result }) {
+  const list = sc.purchases || [];
+  const set = (i, patch) => update((s) => { s.purchases[i] = clean({ ...s.purchases[i], ...patch }); });
+  // The server's numbers for each purchase, in the order they were run (only priced ones run).
+  const terms = [];
+  let k = 0;
+  for (const p of list) terms.push(n(p.price) > 0 ? (result?.purchases || [])[k++] : null);
+  return (
+    <>
+      {list.map((p, i) => {
+        const t = terms[i];
+        return (
+          <div key={i} className="wi-card">
+            <div className="wi-card-head">
+              <input className="wi-card-name" aria-label="What it is" value={p.label || ''} placeholder="What it is" onChange={(e) => set(i, { label: e.target.value })} />
+              <button type="button" className="wi-x" aria-label="Remove purchase" onClick={() => update((s) => { s.purchases.splice(i, 1); })}>×</button>
+            </div>
+            <div className="wi-grid2">
+              <Field label="Price before taxes"><NumIn label="Price" value={p.price} min="0" step="1000" onChange={(x) => set(i, { price: x })} /></Field>
+              <Field label="Trade-in"><NumIn label="Trade-in" value={p.trade_in} min="0" step="1000" placeholder="none" onChange={(x) => set(i, { trade_in: x })} /></Field>
+              <Field label="Deposit"><NumIn label="Deposit" value={p.deposit} min="0" step="1000" placeholder="none" onChange={(x) => set(i, { deposit: x })} /></Field>
+              <Field label="Fees"><NumIn label="Fees" value={p.fees} min="0" step="100" placeholder="none" onChange={(x) => set(i, { fees: x })} /></Field>
+              <Field label="GST %"><NumIn label="GST %" value={p.gst_pct} min="0" step="0.5" onChange={(x) => set(i, { gst_pct: x ?? 0 })} /></Field>
+              <Field label="PST %"><NumIn label="PST %" value={p.pst_pct} min="0" step="0.5" onChange={(x) => set(i, { pst_pct: x ?? 0 })} /></Field>
+              <Field label="Taxes" wide>
+                <div className="wi-seg small" role="group" aria-label="How the taxes are paid">
+                  <button type="button" className={p.taxes !== 'cash' ? 'on' : ''} aria-pressed={p.taxes !== 'cash'} onClick={() => set(i, { taxes: 'financed' })}>On the loan</button>
+                  <button type="button" className={p.taxes === 'cash' ? 'on' : ''} aria-pressed={p.taxes === 'cash'} onClick={() => set(i, { taxes: 'cash' })}>Paid in cash</button>
+                </div>
+              </Field>
+              <Field label="Rate %"><NumIn label="Rate" value={p.rate} min="0" step="0.05" onChange={(x) => set(i, { rate: x })} /></Field>
+              <Field label="Years"><NumIn label="Years" value={p.years} min="1" step="1" onChange={(x) => set(i, { years: x })} /></Field>
+              <Field label="Payments">
+                <select value={String(p.per_year || 1)} onChange={(e) => set(i, { per_year: Number(e.target.value), first_month: null })}>
+                  {PAYMENTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                </select>
+              </Field>
+              <Field label="Bought in"><MonthSelect months={months} value={p.month} allowNone={false} label="Bought in" onChange={(x) => set(i, { month: x, first_month: null })} /></Field>
+              <Field label="First payment"><MonthSelect months={months} value={p.first_month} planned={`${{ 1: 'a year', 2: '6 months', 4: '3 months', 12: 'a month' }[p.per_year || 1]} after`} label="First payment" onChange={(x) => set(i, { first_month: x })} /></Field>
+              <Field label="Owner">
+                <select value={p.owner || 'farm'} onChange={(e) => set(i, { owner: e.target.value })}><option value="farm">Farm</option><option value="personal">Personal</option></select>
+              </Field>
+              {p.owner !== 'personal' && (
+                <Field label="CCA class" wide>
+                  <select value={String(p.cca_rate ?? 20)} onChange={(e) => set(i, { cca_rate: Number(e.target.value) })}>
+                    {CCA_CLASSES.map((c) => <option key={c.rate} value={c.rate}>{c.label}</option>)}
+                  </select>
+                </Field>
+              )}
+            </div>
+            {t && (
+              <dl className="wi-deal">
+                <div><dt>Financed</dt><dd>{money(Math.round(t.financed))}</dd></div>
+                <div><dt>{t.payment > 0 ? `Payment, ${perLabel[t.per_year]}` : 'Payment'}</dt><dd>{t.payment > 0 ? money(Math.round(t.payment)) : '—'}</dd></div>
+                <div><dt>Cash up front</dt><dd>{money(Math.round(t.cash_up_front))}</dd></div>
+                <div><dt>Money down</dt><dd>{t.equity_pct == null ? '—' : `${Math.round(t.equity_pct)}%`}</dd></div>
+                <div><dt>Total interest</dt><dd>{money(Math.round(t.total_interest))}</dd></div>
+                <div><dt>GST back</dt><dd title={t.gst_refund > 0 ? dLabel(t.gst_refund_date) : undefined}>{t.gst_refund > 0 ? `${money(Math.round(t.gst_refund))} · ${dLabel(t.gst_refund_date).replace(/, \d{4}$/, '')}` : 'none'}</dd></div>
+              </dl>
+            )}
+          </div>
+        );
+      })}
+      <button type="button" className="small secondary" onClick={() => update((s) => {
+        s.purchases = [...(s.purchases || []), { ...NEW_PURCHASE, month: months[Math.min(2, months.length - 1)].value }];
+      })}>{list.length ? 'Add another purchase' : 'Add a purchase'}</button>
+      <p className="wi-help">Taxes are on the price less the trade-in. A farm purchase gets its GST back on the return for the quarter it’s bought in; PST and fees are part of its cost for CCA. Saskatchewan farm machinery is PST-exempt — use 6% for trucks and most other goods.</p>
+    </>
+  );
+}
 
 function MonthSelect({ months, value, onChange, planned, label, allowNone = true }) {
   return (
@@ -225,6 +302,8 @@ function NumIn({ value, onChange, placeholder, step = 'any', label, min }) {
 function Section({ id, sc, ctx, update, result, options }) {
   const months = ctx.months;
   const y0 = ctx.window.y0;
+
+  if (id === 'purchase') return <PurchaseSection sc={sc} months={months} update={update} result={result} />;
 
   if (id === 'prices') {
     const rows = ctx.commodities;
@@ -620,6 +699,7 @@ function Results({ r, busy, empty, presets, apply }) {
   ];
   return (
     <div className={`wi-out${busy ? ' busy' : ''}`}>
+      {r.verdict && <Verdict v={r.verdict} />}
       <div className="wi-figs">
         {figs.filter((f) => !f.hide).map((f) => <Fig key={f.label} f={f} big />)}
       </div>
@@ -640,6 +720,28 @@ function Results({ r, busy, empty, presets, apply }) {
         {r.scope === 'farm' ? 'Farm money only' : r.scope === 'personal' ? 'Personal money only' : 'All money, farm and personal'} · {r.window.start} – {r.window.end}
         {r.include_tax ? ' · income tax in the cash line' : ' · income tax not in the cash line'}. Nothing here changes your books.
       </p>
+    </div>
+  );
+}
+
+const MARK = { pass: '✓', caution: '!', fail: '✕', na: '–' };
+
+function Verdict({ v }) {
+  return (
+    <div className={`wi-verdict ${v.verdict}`}>
+      <div className="wi-verdict-head">
+        <span className="wi-verdict-label">{v.label}</span>
+        {v.figures.annual_payments > 0 && <span className="wi-verdict-sub">{money(Math.round(v.figures.annual_payments))} a year in new payments</span>}
+      </div>
+      <ul className="wi-tests">
+        {v.tests.map((t) => (
+          <li key={t.id} className={t.status}>
+            <span className="wi-test-mark" aria-label={t.status === 'pass' ? 'Passes' : t.status === 'caution' ? 'Tight' : t.status === 'fail' ? 'Fails' : 'Not tested'}>{MARK[t.status]}</span>
+            <span className="wi-test-label">{t.label}</span>
+            <span className="wi-test-detail">{t.detail}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

@@ -229,6 +229,19 @@ export default function CashFlow() {
   const [whatIfResult, setWhatIfResult] = useState(null);
   const [editing, setEditing] = useState(false);
 
+  // /cash-flow?whatif=<saved id> opens that what-if (Sentinel links here
+  // after saving a purchase check); ?whatif=new opens a blank one.
+  useEffect(() => {
+    const want = new URLSearchParams(window.location.search).get('whatif');
+    if (!want) return;
+    window.history.replaceState(null, '', '/cash-flow');
+    if (want === 'new') { setEditing(true); return; }
+    fetch('/api/forecast/scenarios').then((r) => r.json()).then((list) => {
+      const s = (Array.isArray(list) ? list : []).find((x) => String(x.id) === want);
+      if (s) { setWhatIf({ scenario: s.data || {}, name: s.name, id: s.id }); setEditing(true); }
+    }).catch(() => {});
+  }, []);
+
   useEffect(() => { writePref('scope', scope); writePref('months', months); writePref('tax', includeTax); writePref('accounts', chosen); writePref('whatif', whatIf); },
     [scope, months, includeTax, chosen, whatIf]);
 

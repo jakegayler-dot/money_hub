@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { termDebtCoverage, liquidityFloor, reserveStatus, monthlyAccountFees } from '../lib/calculations.js';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
-import { loadBalanceSheet } from '../lib/balanceSheet.js';
+import { balanceSheetStatement } from '../lib/statement.js';
 import { cardAmountsDue } from '../lib/cardLedger.js';
 import { toISODate } from '../lib/dates.js';
 import { overdueSummary } from '../lib/sentinelSummary.js';
@@ -61,21 +61,11 @@ router.get('/', ah(async (req, res) => {
                 WHERE paid = false AND is_adjustment = false AND due_date < CURRENT_DATE + 1`),
   ]);
 
-  // Net worth = all account balances (both ledgers — net worth is the whole
-  // household) + capital assets valued today + uncontracted inventory −
-  // outstanding loan principal. Same valuation as the Assets tab and the
-  // Combined equity card (lib/balanceSheet.js), so the numbers always agree.
-  const [cashRow, sheet] = await Promise.all([
-    pool.query(`SELECT COALESCE(SUM(opening_balance), 0) AS total FROM accounts`),
-    loadBalanceSheet(),
-  ]);
-  const netWorth = {
-    cash: Number(cashRow.rows[0].total),
-    assetValues: sheet.assets.reduce((s, a) => s + a.value_now, 0) + sheet.inventoryRows.reduce((s, i) => s + i.counted_value, 0),
-    outstandingPrincipal: sheet.loans.reduce((s, l) => s + l.outstanding, 0),
-    creditCardBalances: sheet.creditCards.reduce((s, c) => s + c.outstanding, 0),
-  };
-  netWorth.total = netWorth.cash + netWorth.assetValues - netWorth.outstandingPrincipal - netWorth.creditCardBalances;
+  // Net worth = equity on the balance sheet (lib/statement.js), Combined:
+  // the same figure as the equity card and the Balance Sheet page.
+  const statement = await balanceSheetStatement('all');
+  const { totals } = statement;
+  const netWorth = { total: totals.equity, assets: totals.total_assets, liabilities: totals.total_liabilities };
 
   const totalUnpaidBills = unpaidBills.rows.reduce((s, b) => s + Number(b.amount), 0);
   const totalUnpaidGst = unpaidBills.rows.reduce((s, b) => s + Number(b.gst_amount || 0), 0);
@@ -110,7 +100,7 @@ router.get('/', ah(async (req, res) => {
     },
     creditCards: {
       count: activeCards.rows.length,
-      totalBalance: sheet.creditCards.reduce((s, c) => s + c.outstanding, 0),
+      totalBalance: statement.sections.flatMap((x) => x.lines).filter((l) => l.key === 'credit_cards').reduce((t, l) => t + l.amount, 0),
       dueSoon: unpaidCardStatements
         .map((r) => ({ credit_card_id: r.credit_card_id, name: r.name, due_date: toISODate(r.due_date), amount: Number(r.amount) }))
         .sort((a, b) => a.due_date.localeCompare(b.due_date))

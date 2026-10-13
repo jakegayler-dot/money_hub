@@ -2,8 +2,9 @@ import { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { liquidityFloor } from '../lib/calculations.js';
-import { loadForecast, requiredFloorFor } from '../lib/forecast.js';
-import { runScenario, scenarioContext } from '../lib/scenario.js';
+import { loadForecast } from '../lib/forecast.js';
+import { scenarioContext } from '../lib/scenario.js';
+import { runAndJudge } from '../lib/purchaseCheck.js';
 
 const router = Router();
 
@@ -31,10 +32,8 @@ router.get('/context', ah(async (req, res) => {
 
 // Run a scenario: { scenario, months, scope, accounts, tax }.
 router.post('/scenario', ah(async (req, res) => {
-  const o = optionsFrom(req.body || {});
-  const ctx = await loadForecast({ months: o.months });
-  const floor = await requiredFloorFor(ctx.bufferPct);
-  res.json(runScenario(ctx, req.body?.scenario || {}, { ...o, floor }));
+  // With a purchase or new loan in it, the result carries the verdict.
+  res.json(await runAndJudge(req.body?.scenario || {}, optionsFrom(req.body || {})));
 }));
 
 // Saved scenarios.

@@ -183,6 +183,7 @@ export default function CashFlowTerminal({ liquidity, scenario = null, scenarioN
       {active && (
         <div className="cft-whatif-bar" role="status">
           <span><i className="sw what" /> What-if on the chart: <strong>{scenarioName || 'What-if'}</strong></span>
+          {scenario?.verdict && <span className={`cft-verdict ${scenario.verdict.verdict}`} title={scenario.verdict.headline}>{scenario.verdict.label}</span>}
           <button type="button" className="small-link" onClick={onOpenWhatIf}>Edit</button>
           <button type="button" className="small-link" onClick={onClearScenario}>Take it off</button>
         </div>

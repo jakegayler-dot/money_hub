@@ -389,10 +389,21 @@ test('forecast, liquidity, net worth, coverage, overview, tax and GST summaries'
   const [nw] = (await read('/net_worth')).body.rows;
   assert.equal(nw.cash, 38000);
   assert.equal(nw.capital_assets, 400000);
-  assert.equal(nw.inventory, 65000 * (4000 / 5000)); // 1,000 bu contracted → only 4,000 bu counted
+  // Balance sheet basis: the 1,000 contracted bu are still in the bin, at the $15 contract price.
+  assert.equal(nw.inventory, 4000 * 13 + 1000 * 15);
+  // The truck's past payment fell due before the loan was entered (the seed creates it today): history, counted as paid.
   assert.equal(nw.loans_outstanding, 48400);
   assert.equal(nw.credit_card_debt, 750);
-  assert.equal(nw.net_worth, 38000 + 400000 + 52000 - 48400 - 750);
+  assert.equal(nw.payables, 1500);
+  assert.equal(nw.net_worth, Math.round((nw.total_assets - nw.total_liabilities) * 100) / 100);
+  const bs = (await read('/balance_sheet')).body.rows;
+  const line = (id) => bs.find((r) => r.id === id)?.amount ?? 0;
+  const tot = bs.find((r) => r.id === 'totals');
+  assert.equal(tot.equity, nw.net_worth);
+  assert.equal(line('prepaid'), 500);
+  assert.ok(line('accrued_interest') > 0);
+  assert.equal(line('current_ltd') + line('term_debt'), nw.loans_outstanding);
+  assert.equal(tot.total_assets, line('cash') + line('gst_receivable') + line('prepaid') + line('inventory_grain') + line('land'));
 
   const cov = (await read('/debt_coverage')).body.rows;
   assert.deepEqual(cov.map((r) => r.id), ['projected', 'historical']);
@@ -463,4 +474,19 @@ test('no secrets, full account numbers, raw payloads or images; nothing is writt
     delete process.env.APP_PASSWORD;
     delete process.env.INGEST_API_KEY;
   }
+}));
+
+test('purchase_check: validates, judges the deal and saves nothing', () => withKey(async () => {
+  const bad = await read('/purchase_check?price=-5');
+  assert.equal(bad.status, 422);
+  const { rows: [before] } = await pool.query('SELECT COUNT(*)::int AS n FROM forecast_scenarios');
+  const r = await read('/purchase_check?label=Tractor&price=200000&deposit=40000&rate=7&years=5&per_year=1');
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const [v, p, m] = r.body.rows;
+  assert.ok(['viable', 'tight', 'not_viable'].includes(v.verdict));
+  assert.ok(v.tests.some((t) => t.id === 'coverage'));
+  assert.equal(p.deal.financed, 200000 + 10000 - 40000);
+  assert.equal(m.kind, 'month');
+  const { rows: [after] } = await pool.query('SELECT COUNT(*)::int AS n FROM forecast_scenarios');
+  assert.equal(after.n, before.n);
 }));

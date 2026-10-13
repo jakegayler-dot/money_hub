@@ -16,6 +16,7 @@ import { deadlineItems, taxItems, gstItems } from './calendar.js';
 import { buildSummary } from './sentinelSummary.js';
 import { liquidityFloor, termDebtCoverage, scheduledServiceBetween } from './calculations.js';
 import { loadBalanceSheet, inventoryOwnerRow } from './balanceSheet.js';
+import { balanceSheetStatement } from './statement.js';
 import { cardAmountsDue } from './cardLedger.js';
 import { addDays, addMonths } from './dates.js';
 
@@ -103,7 +104,7 @@ export async function loadSummaryInputs(now = new Date(), snapshotRows = null) {
   const d30 = addDays(today, -30);
   const d12 = addMonths(today, -12);
   const ytdFrom = `${today.slice(0, 4)}-01-01`;
-  const [liquidity, coverage, sheet, accounts, flows, t12Service, cardDue, rows] = await Promise.all([
+  const [liquidity, coverage, sheet, accounts, flows, t12Service, cardDue, rows, statement] = await Promise.all([
     liquidityFloor(),
     termDebtCoverage(),
     loadBalanceSheet(today),
@@ -126,6 +127,7 @@ export async function loadSummaryInputs(now = new Date(), snapshotRows = null) {
     scheduledServiceBetween(d12, today),
     cardAmountsDue(pool),
     snapshotRows || loadSnapshotRows(),
+    balanceSheetStatement('all', today),
   ]);
   const f = flows.rows[0];
   return {
@@ -139,6 +141,8 @@ export async function loadSummaryInputs(now = new Date(), snapshotRows = null) {
       loans: sheet.loans,
       creditCards: sheet.creditCards,
       needsPrice: sheet.inventoryGroups.reduce((s, g) => s + (g.needs_price || 0), 0),
+      // The balance sheet's totals: equity on the tile is the app's equity.
+      statement: { assets: statement.totals.total_assets, liabilities: statement.totals.total_liabilities },
     },
     ytd: { revenue: f.ytd_rev, expenses: f.ytd_exp },
     trailing12: {

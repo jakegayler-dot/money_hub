@@ -22,6 +22,8 @@ import { occurrences } from './estimates.js';
 import { billDates } from './billDates.js';
 import { farmIncomeTax, gstReport } from './tax.js';
 import { countedLines } from '../routes/expenses.js';
+import { runAndJudge, purchaseFromInput, agentAnswer } from './purchaseCheck.js';
+import { balanceSheetStatement } from './statement.js';
 
 export const APP = 'money_hub';
 export const DEFAULT_LIMIT = 50;
@@ -999,6 +1001,44 @@ def({
   },
 });
 
+// ---------- purchase check (what-if: can we afford it?) ----------
+const pcNum = (name, doc) => ({ name, type: 'number', param: true, doc });
+def({
+  name: 'purchase_check', mode: 'js', idType: 'text', summary: true, ownDates: true,
+  description: 'WHAT-IF (nothing is saved). Can the farm afford a capital purchase on a loan? Give price (required) and deposit, rate, years, per_year, trade_in, gst_pct, pst_pct, taxes, fees, month, owner, cca_rate, label. Runs the live cash forecast with the deposit, loan payments, GST back and the tax change, then judges it like a lender: cash floor, debt coverage (1.25x), money down (15%+), cash up front vs free cash, operating line. Rows: "verdict" (viable / tight / not_viable, headline, each test), "purchase" (the deal: amount financed, payment, interest, cash up front, GST back), then one row per month (balance with and without). To save it as a scenario use POST /api/sentinel/actions/purchase.',
+  fields: ['id', 'kind', 'verdict', 'verdict_label', 'headline', 'tests', 'cash', 'tax', 'deal', 'month', 'balance_without', 'balance_with', 'currency'],
+  search: [],
+  filters: [
+    { name: 'label', type: 'text', param: true, doc: 'what it is' },
+    pcNum('price', 'purchase price before taxes (required)'),
+    pcNum('trade_in', 'trade-in value'), pcNum('deposit', 'cash down payment'), pcNum('fees', 'fees paid in cash'),
+    pcNum('gst_pct', 'default 5'), pcNum('pst_pct', 'default 0 (Sask farm machinery exempt; 6 for trucks and most goods)'),
+    { name: 'taxes', type: 'enum', values: ['financed', 'cash'], param: true, doc: 'GST/PST on the loan (default) or paid in cash' },
+    pcNum('rate', 'loan rate %'), pcNum('years', 'loan term, default 5'),
+    { name: 'per_year', type: 'enum', values: ['1', '2', '4', '12'], param: true, doc: 'payments a year, default 1' },
+    { name: 'month', type: 'month', param: true, doc: 'month bought, default this month' },
+    { name: 'first_month', type: 'month', param: true, doc: 'first payment month' },
+    { name: 'owner', type: 'enum', values: ['farm', 'personal'], param: true, doc: 'default farm' },
+    pcNum('cca_rate', 'CCA %: 20 machinery (default), 30 trucks, 10 bins, 4 buildings'),
+    ...fcFilters.filter((x) => x.name !== 'include_tax'),
+  ],
+  load: async (q) => {
+    if (q.price === undefined) {
+      return [{ id: 'help', kind: 'help', currency: CURRENCY,
+        headline: 'Give at least price, e.g. ?label=Combine&price=485000&trade_in=150000&deposit=40000&rate=6.9&years=7&per_year=1&month=2027-03' }];
+    }
+    const { purchase, error } = purchaseFromInput(q);
+    if (error) throw new ReadError(422, error);
+    const result = await runAndJudge({ purchases: [purchase] }, { months: Number(q.months || 12), scope: q.scope || 'everything', includeTax: true });
+    const a = agentAnswer(result);
+    return [
+      { id: 'verdict', kind: 'verdict', verdict: a.verdict, verdict_label: a.verdict_label, headline: a.headline, tests: a.tests, cash: a.cash, tax: a.tax, currency: CURRENCY },
+      { id: 'purchase', kind: 'purchase', deal: a.purchase, currency: CURRENCY },
+      ...a.months.map((m) => ({ id: m.month, kind: 'month', month: m.month, balance_without: money(m.balance_without), balance_with: money(m.balance_with), currency: CURRENCY })),
+    ];
+  },
+});
+
 // ---------- liquidity ----------
 def({
   name: 'liquidity', mode: 'js', idType: 'text', summary: true,
@@ -1020,33 +1060,57 @@ def({
   },
 });
 
-// ---------- net worth ----------
+// ---------- net worth and the balance sheet ----------
+const lineTotal = (st, keys) => st.sections.flatMap((x) => x.lines).filter((l) => keys.includes(l.key)).reduce((t, l) => t + l.amount, 0);
 def({
   name: 'net_worth', mode: 'js', idType: 'text', summary: true,
-  description: 'SUMMARY (one row). Net worth / equity, the same valuation as the dashboard: all account balances + capital assets valued today + uncontracted inventory − loan principal − credit card balances. Liabilities shown as positive amounts; net_worth can be negative.',
-  fields: ['id', 'cash', 'capital_assets', 'inventory', 'total_assets', 'loans_outstanding', 'credit_card_debt', 'total_liabilities', 'net_worth',
-    'net_worth_in_12_months', 'assets_by_category', 'inventory_items_without_price', 'currency'],
+  description: 'SUMMARY (one row). Net worth / equity from the balance sheet (accrual basis, same as the dashboard and the Balance Sheet page): total assets − total liabilities, with the lender ratios. Receivables, payables, GST, accrued interest and contracted grain are in it. Liabilities are positive amounts; net_worth can be negative. Line by line: balance_sheet.',
+  fields: ['id', 'as_of', 'cash', 'receivables', 'inventory', 'current_assets', 'capital_assets', 'total_assets', 'payables', 'loans_outstanding', 'credit_card_debt',
+    'current_liabilities', 'total_liabilities', 'net_worth', 'net_worth_in_12_months', 'working_capital', 'current_ratio', 'debt_to_asset',
+    'assets_by_category', 'inventory_items_without_price', 'notes', 'currency'],
   search: [], filters: [],
   load: async () => {
-    const [{ rows: [cashRow] }, sheet] = await Promise.all([
-      pool.query('SELECT COALESCE(SUM(opening_balance), 0) AS total FROM accounts'), loadBalanceSheet(),
-    ]);
-    const cash = Number(cashRow.total);
-    const capital = sheet.assets.reduce((s, a) => s + a.value_now, 0);
-    const capital12 = sheet.assets.reduce((s, a) => s + a.value_12mo, 0);
-    const inv = sheet.inventoryRows.reduce((s, i) => s + i.counted_value, 0);
-    const loans = sheet.loans.reduce((s, l) => s + l.outstanding, 0);
-    const loans12 = sheet.loans.reduce((s, l) => s + l.outstanding12, 0);
-    const cards = sheet.creditCards.reduce((s, c) => s + c.outstanding, 0);
+    const [st, sheet] = await Promise.all([balanceSheetStatement('all'), loadBalanceSheet()]);
+    const t = st.totals;
+    // In 12 months: asset values rolled forward and scheduled principal paid; everything else held.
+    const dAssets = sheet.assets.reduce((s, a) => s + a.value_12mo - a.value_now, 0);
+    const dLoans = sheet.loans.reduce((s, l) => s + l.outstanding12 - l.outstanding, 0);
     const byCat = {};
     for (const a of sheet.assets) byCat[a.category] = (byCat[a.category] || 0) + a.value_now;
     return [{
-      id: 'net_worth', cash: money(cash), capital_assets: money(capital), inventory: money(inv), total_assets: money(cash + capital + inv),
-      loans_outstanding: money(loans), credit_card_debt: money(cards), total_liabilities: money(loans + cards),
-      net_worth: money(cash + capital + inv - loans - cards),
-      net_worth_in_12_months: money(cash + capital12 + inv - loans12 - cards),
+      id: 'net_worth', as_of: st.as_of,
+      cash: money(lineTotal(st, ['cash', 'investment_accounts'])), receivables: money(lineTotal(st, ['receivables'])),
+      inventory: money(lineTotal(st, ['inventory_grain', 'inventory_livestock'])), current_assets: money(t.current_assets),
+      capital_assets: money(t.longterm_assets), total_assets: money(t.total_assets),
+      payables: money(lineTotal(st, ['payables'])), loans_outstanding: money(lineTotal(st, ['operating_loans', 'current_ltd', 'term_debt'])),
+      credit_card_debt: money(lineTotal(st, ['credit_cards'])), current_liabilities: money(t.current_liabilities), total_liabilities: money(t.total_liabilities),
+      net_worth: money(t.equity), net_worth_in_12_months: money(t.equity + dAssets - dLoans),
+      working_capital: money(st.ratios.working_capital), current_ratio: st.ratios.current_ratio, debt_to_asset: st.ratios.debt_to_asset,
       assets_by_category: Object.fromEntries(Object.entries(byCat).map(([k, v]) => [k, money(v)])),
-      inventory_items_without_price: sheet.inventoryGroups.reduce((s, g) => s + (g.needs_price || 0), 0), currency: CURRENCY,
+      inventory_items_without_price: sheet.inventoryGroups.reduce((s, g) => s + (g.needs_price || 0), 0),
+      notes: st.notes, currency: CURRENCY,
+    }];
+  },
+});
+def({
+  name: 'balance_sheet', mode: 'js', idType: 'text', summary: true,
+  description: 'SUMMARY. The balance sheet line by line (accrual basis, current vs long-term, market value): one row per line — section (current_assets, longterm_assets, current_liabilities, longterm_liabilities), label, amount and the items behind it — then a "totals" row with total assets, total liabilities, equity and the lender ratios (working capital, current ratio, debt-to-asset, debt-to-equity). owner= gives one owner\'s share.',
+  fields: ['id', 'kind', 'section', 'label', 'amount', 'items', 'as_of', 'owner', 'current_assets', 'longterm_assets', 'total_assets', 'current_liabilities',
+    'longterm_liabilities', 'total_liabilities', 'equity', 'working_capital', 'current_ratio', 'debt_to_asset', 'debt_to_equity', 'notes', 'currency'],
+  search: ['label'], filters: [
+    { name: 'owner', type: 'enum', values: ['all', ...OWNER_VALUES], param: true, doc: 'all (default) or one owner' },
+  ],
+  load: async (q) => {
+    const entity = q.owner && q.owner !== 'all' ? ownerKey(q.owner) : 'all';
+    const st = await balanceSheetStatement(entity);
+    const rows = st.sections.flatMap((sec) => sec.lines.map((l) => ({
+      id: l.key, kind: 'line', section: sec.key, label: l.label, amount: money(l.amount),
+      items: l.items.slice(0, 25).map((x) => ({ name: text(x.name, 200), amount: money(x.amount) })), currency: CURRENCY,
+    })));
+    return [...rows, {
+      id: 'totals', kind: 'totals', as_of: st.as_of, owner: entity, ...Object.fromEntries(Object.entries(st.totals).map(([k, v]) => [k, money(v)])),
+      working_capital: money(st.ratios.working_capital), current_ratio: st.ratios.current_ratio, debt_to_asset: st.ratios.debt_to_asset,
+      debt_to_equity: st.ratios.debt_to_equity, notes: st.notes, currency: CURRENCY,
     }];
   },
 });

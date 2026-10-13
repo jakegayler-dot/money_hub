@@ -102,9 +102,10 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
       getSetting(`tax_instalment_paid_${y0}`, null),
       getSetting(`tax_prior_year_owing_${y0}`, null),
       getSetting(`tax_instalment_paid_${y0 - 1}`, null),
+      getSetting('gst_filing_frequency', 'quarterly'),
     ]),
   ]);
-  const [bufferPct, paidY0, priorOwingY0, paidPrev] = settings;
+  const [bufferPct, paidY0, priorOwingY0, paidPrev, gstFreq] = settings;
 
   // ---- Inventory groups (what the what-if prices and quantities act on) ----
   const groups = new Map();
@@ -269,7 +270,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
   return {
     win, today, flows, accounts: accountRows, groups, known, personal,
     bills: billRows.rows, loans: loanRows.rows, contracts: contractRows.rows, estimates,
-    inventory: inv, bufferPct: Number(bufferPct),
+    inventory: inv, bufferPct: Number(bufferPct), gstFreq: String(gstFreq || 'quarterly'),
     tax: {
       available: !!taxY0, netY0, taxY0: taxY0 ? taxY0.projected.tax.total : null,
       paidY0: paidY0 || null, priorOwingY0: priorOwingY0 != null ? Number(priorOwingY0) : null, paidPrev: paidPrev || null,
