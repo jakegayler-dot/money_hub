@@ -20,6 +20,7 @@ import Receipts from './pages/Receipts.jsx';
 import Personal from './pages/Personal.jsx';
 import Calendar from './pages/Calendar.jsx';
 import BalanceSheet from './pages/BalanceSheet.jsx';
+import Quicken from './pages/Quicken.jsx';
 
 export default function App() {
   // The owner toggle and the three headline numbers live on the Dashboard
@@ -49,6 +50,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/cash-flow" element={<CashFlow />} />
           <Route path="/balance-sheet" element={<BalanceSheet />} />
+          <Route path="/quicken" element={<Quicken />} />
           <Route path="/personal" element={<Personal />} />
           <Route path="/calendar" element={<Calendar />} />
           <Route path="/accounts" element={<Accounts />} />

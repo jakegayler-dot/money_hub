@@ -1401,3 +1401,20 @@ button.bs-line:focus-visible { outline: 1px solid var(--gold); outline-offset: 1
   .bs-num, .bs-title, .bs-side, .bs-row, .bs-subtotal, .bs-total, .bs-group-label { color: #000 !important; }
 }
 .bs-col > .bs-subtotal + .bs-group { margin-top: 16px; }
+
+/* ---------- Quicken feed ---------- */
+
+.qk-drop { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 18px 20px; border-style: dashed; }
+.qk-drop.over { border-color: var(--gold); background: var(--gold-soft); }
+.qk-drop strong { font-size: 14px; }
+.qk-drop p { margin: 4px 0 0; font-size: 12.5px; color: var(--text-muted); max-width: 70ch; line-height: 1.5; }
+.qk-result { margin: 0 0 16px; padding: 12px 16px; border-left: 3px solid var(--positive); background: color-mix(in srgb, var(--positive) 6%, transparent); border-radius: 6px; font-size: 13px; line-height: 1.6; }
+.qk-warn { color: var(--gold-bright); }
+.qk-note { font-size: 12.5px; color: var(--positive); margin: 0 0 14px; }
+.qk-help { margin: 10px 16px 0; font-size: 12px; color: var(--text-faint); }
+.qk-table td { vertical-align: middle; }
+.qk-table select, .qk-table input { max-width: 260px; }
+.qk-table tr.qk-todo td:first-child { box-shadow: inset 3px 0 0 var(--gold-bright); }
+.qk-auto { margin-left: 8px; font-size: 10.5px; color: var(--positive); }
+.qk-muted { color: var(--text-faint); }
+@media (max-width: 700px) { .qk-drop { flex-direction: column; align-items: flex-start; } }

@@ -15,6 +15,7 @@ import billsRoute from './routes/bills.js';
 import contractsRoute from './routes/contracts.js';
 import entityRoute from './routes/entity.js';
 import balanceSheetRoute from './routes/balanceSheet.js';
+import quickenRoute from './routes/quicken.js';
 import assetsRoute from './routes/assets.js';
 import inventoryRoute from './routes/inventory.js';
 import estimatesRoute from './routes/estimates.js';
@@ -44,6 +45,8 @@ app.set('trust proxy', 1);
 app.use(cors());
 // The receipt upload takes a raw image body, so it's mounted before the JSON parser.
 app.use('/api/receipts/upload', receiptUpload);
+// A Quicken export sent as JSON can be bigger than the usual limit.
+app.use('/api/quicken/import', express.json({ limit: '25mb' }));
 app.use(express.json());
 
 // Any successful write under /api (including statement ingest paying bills)
@@ -77,6 +80,7 @@ app.use('/api/bills', billsRoute);
 app.use('/api/contracts', contractsRoute);
 app.use('/api/entity-summary', entityRoute);
 app.use('/api/balance-sheet', balanceSheetRoute);
+app.use('/api/quicken', quickenRoute);
 app.use('/api/assets', assetsRoute);
 app.use('/api/inventory', inventoryRoute);
 app.use('/api/estimates', estimatesRoute);

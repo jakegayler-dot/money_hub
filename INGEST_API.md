@@ -218,6 +218,66 @@ One object without `links` also works. Each link is applied on its own. A deposi
 
 **`POST /api/contracts/ingest/unlink`** `{"transaction_ids": [219]}` takes entries off their contract. The entries stay in the ledger, and a contract that had settled reopens. Deposits recorded by hand on the Contracts tab can only be changed there.
 
+## 7. Quicken feed — `POST /api/quicken/import`
+
+The daily way to keep Money Hub current: send what Quicken has (any edition) and Money Hub enters what's new. Every line goes through the same statement ingest as §4 — bills, loan payments, card payments, transfers and duplicates are handled the same way, and anything uncertain waits on the Review page.
+
+**Send the export as it is.** Either the file as the body (`Content-Type: text/plain`; options in the query string), or JSON:
+
+```json
+{ "content": "<the QIF or CSV text>", "filename": "quicken-2026-10-13.qif", "label": "quicken-agent" }
+```
+
+| Option | When |
+|---|---|
+| `account` | A CSV or QIF for **one** account with no account name inside it — the Quicken account's name. |
+| `date_order` | `"mdy"` or `"dmy"` — only if Money Hub reports the dates as ambiguous and guesses wrong. |
+| `label` | Who sent it (shows in the import log). |
+
+Or, if you read the lines off Quicken's screen instead of exporting:
+
+```json
+{ "lines": [ { "account": "Farm Operating", "date": "2026-10-13", "amount": -412.60, "payee": "SaskPower",
+               "memo": "Sept bill", "category": "Utilities:Power", "num": null,
+               "splits": [ { "category": "Fuel", "amount": -200 }, { "category": "Repairs", "amount": -100 } ] } ] }
+```
+A transfer: `"category": "[Other Account Name]"` (Quicken's own form) or `"transfer_account": "Other Account Name"`.
+
+**Formats read:** QIF from Quicken Classic (Windows and Mac), all accounts in one file or one account per file; CSV from Classic transaction reports and registers, Quicken for Mac and Quicken Simplifi (header row found automatically; pending lines left out until they post). Amounts signed as Quicken shows them — money out negative.
+
+**What Money Hub does:**
+1. **Accounts:** each Quicken account is linked once, on the Quicken page, to a Money Hub account or card — automatically when exactly one has the same name or last 4 digits. Unlinked accounts are skipped (and listed in `needs_linking`); loan, asset and investment accounts are set aside. Each linked account has an *import from* date: lines before it are already on file and left alone.
+2. **No duplicates:** each line's id is its account, date, amount and its order among same-day same-amount lines. Send overlapping exports every day — what's already in is skipped (`already`). A line already entered by hand or by the statement agent is matched, not entered again.
+3. **Categories:** each Quicken category is mapped once to a Money Hub category and owner (exact names match automatically). An unmapped one still posts — uncategorized — and is listed in `unmapped_categories`; mapping it fills in every line already posted under it. Splits are kept when every piece's category is mapped.
+4. **Transfers** to another linked account are recorded on both sides; to a card, as a card payment; to a Quicken loan account, as a loan payment.
+5. **Deleted or changed in Quicken:** a line from an earlier export that's missing from this one, for dates this export covers, gets its transaction flagged for review — never deleted.
+
+**Response:**
+```json
+{ "import_id": 12, "format": "qif", "lines_read": 214,
+  "summary": { "posted": 9, "matched": 2, "held": 1, "errors": 0, "already": 201, "skipped_before": 1, "flagged_gone": 0 },
+  "accounts": [ { "quicken_account": "Farm Operating", "linked_to": "Ops", "posted": 6, "already_imported": 140, "held": 1 } ],
+  "needs_linking": [ { "quicken_account": "Kids RESP", "why": "not linked" } ],
+  "unmapped_categories": [ "Farm Exp:Custom Work" ],
+  "warnings": [] }
+```
+
+---
+
+## Quicken agent brief (paste this to the agent that runs Quicken)
+
+> Every morning you bring Money Hub up to date from Quicken.
+>
+> - **Credentials:** `MONEY_HUB_URL` and `INGEST_API_KEY` from environment variables. Never hardcode or print the key.
+> - **1. Update Quicken first:** run One Step Update (Classic) or let Simplifi finish syncing, so the bank downloads are in.
+> - **2. Export the last 45 days, all accounts:** Quicken Classic — File → Export → QIF file, all accounts, transactions only. Simplifi — Transactions, last 45 days, export to CSV. (Menu names differ a little by version; any QIF or CSV export of the register works.) Don't trim, edit or re-sort the file.
+> - **3. Send it:** `POST {MONEY_HUB_URL}/api/quicken/import` with header `X-Api-Key`, `Content-Type: text/plain`, the file as the body, and `?filename=<name>&label=quicken-agent`.
+> - **4. Read the response and report:** new transactions (`posted`), anything `held` (it waits on Money Hub's Review page), `flagged_gone`, every name in `needs_linking` and `unmapped_categories`, and any `warnings`. Those need Jake — don't try to fix them by editing the export.
+> - **Overlap is safe:** sending the same days again never enters anything twice. If an import fails, send the same file again; if it fails twice, report the error text.
+> - **Never** change categories, payees or amounts in Quicken to make Money Hub accept a line.
+
+---
+
 ## Quarter Section setup brief (paste this to Quarter Section)
 
 > Build an automatic export from Quarter Section to Money Hub's ingest API.

@@ -213,6 +213,25 @@ async function processLineInner(client, { target, source, external_id, payload: 
     if (dups.length > 1) {
       return hold(`${dups.length} transactions for ${fmt(amount)} already on file near ${date} — which one is this, or is it new?`, dups.map(txCandidate));
     }
+    // Posted already by a different feed (the Quicken feed and a bank
+    // statement both covering this account): the same money, seen twice.
+    // Each transaction answers to one line per feed.
+    const { rows: fed } = await client.query(
+      `SELECT t.* FROM transactions t
+       WHERE ${isCard ? 't.credit_card_id = $1 AND t.account_id IS NULL' : 't.account_id = $1'}
+         AND t.source IS NOT NULL AND t.source <> $4 AND abs(t.amount - $2) < 0.005
+         AND t.date BETWEEN $3::date - 4 AND $3::date + 4
+         AND NOT EXISTS (SELECT 1 FROM statement_lines sl WHERE sl.transaction_id = t.id AND sl.source = $4)
+       ORDER BY abs(t.date - $3::date), t.id`,
+      [T.id, amount, date, source]
+    );
+    if (fed.length === 1) {
+      await client.query('UPDATE transactions SET awaiting_statement = false WHERE id = $1', [fed[0].id]);
+      return matched(fed[0].id, `Already on file from ${fed[0].source}: ${fed[0].description || `transaction #${fed[0].id}`}`);
+    }
+    if (fed.length > 1) {
+      return hold(`${fed.length} transactions for ${fmt(amount)} near ${date} came in from other feeds — which one is this, or is it new?`, fed.map(txCandidate));
+    }
   }
 
   // GST/HST with CRA (a refund in, a remittance out) is a transfer: held so

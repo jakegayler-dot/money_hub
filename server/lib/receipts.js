@@ -35,7 +35,7 @@ const PROMPT = (categories, payees, history) => `You are reading a photo or PDF 
 - "invoice": a bill the farm still has to pay (shows a due date or terms, amount owing)
 - "sales_ticket": money the farm RECEIVED for something it sold — grain settlement or cash ticket (Cargill, Viterra, Richardson, Bunge, Parrish & Heimbecker, a crusher), livestock auction or order-buyer statement
 
-Return ONLY a JSON object, no other text, with these fields (angle brackets describe the value — never copy them):
+Record what you read by calling the record_document tool with these fields (angle brackets describe the value — never copy them). Always call it, even when the photo is hard to read — then set confidence "low" and say what you couldn't read in notes:
 {
   "is_receipt": true,
   "doc_type": <"receipt" | "invoice" | "sales_ticket">,
@@ -62,7 +62,7 @@ Return ONLY a JSON object, no other text, with these fields (angle brackets desc
   "confidence": <"high" | "medium" | "low">,
   "notes": <anything a person should know (smudged total, two receipts in one photo…), else "">
 }
-If it isn't any of these, return {"is_receipt": false, "notes": <what it is>}.
+If it isn't any of these, call it with {"is_receipt": false, "notes": <what it is>}.
 
 WHO IS WHO
 The farm is the CUSTOMER of almost everything you read. Its owners are Jake and Ashley (surname Gayler) and the farm may be named after them (e.g. initials + Gayler). A "Sold to", "Bill to", "Customer" or "Received from" name that is the farm or its owners is the farm itself — NEVER the "party". The party is whoever issued the document: the printed letterhead, or on a blank receipt-book form, the handwritten "From …" name or the signature. A form preprinted "SALES ORDER", "INVOICE" or "RECEIPT" is just a stationery pad: a person who sold or rented something TO the farm (land rent, hay, custom work, a used part) wrote it out, so it is a "receipt" (paid) or "invoice" (owing) — it is a "sales_ticket" ONLY when the farm is the one being paid.
@@ -125,7 +125,16 @@ async function extract(receipt) {
     },
     body: JSON.stringify({
       model: MODEL,
-      max_tokens: 1200,
+      // A long till slip (dozens of lines) needs room; the reply is cut off otherwise.
+      max_tokens: 4096,
+      // A forced tool call: the reply is always the fields, never prose
+      // ("I can't make out this receipt…") that has no JSON in it.
+      tools: [{
+        name: 'record_document',
+        description: 'Record the fields read from the document.',
+        input_schema: { type: 'object', properties: { is_receipt: { type: 'boolean' } }, required: ['is_receipt'], additionalProperties: true },
+      }],
+      tool_choice: { type: 'tool', name: 'record_document' },
       messages: [{
         role: 'user',
         content: [
@@ -140,9 +149,18 @@ async function extract(receipt) {
   });
   const body = await res.json().catch(() => null);
   if (!res.ok) throw new Error(body?.error?.message || `Claude API ${res.status}`);
-  const text = (body.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('');
-  const json = text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
-  const out = JSON.parse(json);
+  if (body.stop_reason === 'max_tokens') throw new Error('The reply was cut off — too many lines on this document. Read again, or enter it by hand.');
+  if (body.stop_reason === 'refusal') throw new Error('The reader declined this image. Enter it by hand.');
+  const tool = (body.content || []).find((c) => c.type === 'tool_use' && c.input && typeof c.input === 'object');
+  let out = tool?.input;
+  if (!out) {
+    // Older models without the tool: JSON in the text.
+    const text = (body.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('');
+    const i = text.indexOf('{');
+    const j = text.lastIndexOf('}');
+    if (i < 0 || j <= i) throw new Error(`The reader couldn't make out this document${text ? `: “${text.slice(0, 160).trim().replace(/[.\s]+$/, '')}”` : ''}. Retake the photo flat, in good light, the whole slip in frame.`);
+    try { out = JSON.parse(text.slice(i, j + 1)); } catch { throw new Error('The reader’s answer was incomplete. Read again, or enter it by hand.'); }
+  }
   // The category must be one that exists — match on the subcategory name.
   if (out.category) {
     const name = String(out.category).split('›').pop().trim().toLowerCase();

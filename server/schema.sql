@@ -1355,3 +1355,48 @@ CREATE TABLE IF NOT EXISTS recurring_dismissals (
   payee_id   INTEGER PRIMARY KEY REFERENCES payees(id) ON DELETE CASCADE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Quicken feed (lib/quicken.js). Each Quicken account is linked once to a
+-- Money Hub account or card (or ignored); lines before import_from are
+-- left alone (already on file). A card not itemized yet starts from
+-- card_opening_balance owed the day before import_from.
+CREATE TABLE IF NOT EXISTS quicken_accounts (
+  id                   SERIAL PRIMARY KEY,
+  name                 TEXT NOT NULL UNIQUE,
+  qtype                TEXT,
+  account_id           INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+  credit_card_id       INTEGER REFERENCES credit_cards(id) ON DELETE SET NULL,
+  ignored              BOOLEAN NOT NULL DEFAULT false,
+  auto_matched         BOOLEAN NOT NULL DEFAULT false,
+  import_from          DATE,
+  card_opening_balance NUMERIC(14,2),
+  lines_seen           INTEGER NOT NULL DEFAULT 0,
+  first_seen           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen            TIMESTAMPTZ
+);
+-- Each Quicken category is learned once: the Money Hub category and owner
+-- it means (or a kind: owner draw, transfer). Unmapped ones post
+-- uncategorized and are filled in when the mapping is set.
+CREATE TABLE IF NOT EXISTS quicken_categories (
+  id           SERIAL PRIMARY KEY,
+  name         TEXT NOT NULL UNIQUE,
+  category_id  INTEGER REFERENCES expense_categories(id) ON DELETE SET NULL,
+  owner        JSONB,
+  kind         TEXT NOT NULL DEFAULT 'standard' CHECK (kind IN ('standard', 'owner_draw', 'transfer')),
+  auto_matched BOOLEAN NOT NULL DEFAULT false,
+  lines_seen   INTEGER NOT NULL DEFAULT 0,
+  first_seen   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen    TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS quicken_imports (
+  id           SERIAL PRIMARY KEY,
+  source_label TEXT,
+  format       TEXT,
+  filename     TEXT,
+  date_order   TEXT,
+  received_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  lines_read   INTEGER NOT NULL DEFAULT 0,
+  summary      JSONB,
+  accounts     JSONB,
+  warnings     JSONB
+);

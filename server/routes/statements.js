@@ -130,18 +130,28 @@ router.get('/reference', requireIngestKey, ah(async (req, res) => {
 
 // One statement (or export) for one account or card. See INGEST_API.md §4.
 router.post('/ingest', requireIngestKey, ah(async (req, res) => {
-  const { source, statement = {}, lines } = req.body || {};
-  if (!source) return res.status(400).json({ error: 'source is required (e.g. "statement-agent").' });
-  if (!Array.isArray(lines)) return res.status(400).json({ error: 'lines must be an array.' });
+  const out = await ingestStatement(req.body || {});
+  res.status(out.status).json(out.body);
+}));
+
+/**
+ * The statement ingest itself, shared by POST /ingest and the Quicken feed
+ * (lib/quicken.js). Returns { status, body } — the HTTP answer.
+ * opts.externalId(target, line, occurrence) replaces the default per-line id.
+ */
+export async function ingestStatement({ source, statement = {}, lines } = {}, opts = {}) {
+  const reply = (status, body) => ({ status, body });
+  if (!source) return reply(400, { error: 'source is required (e.g. "statement-agent").' });
+  if (!Array.isArray(lines)) return reply(400, { error: 'lines must be an array.' });
   for (const k of ['period_start', 'period_end', 'due_date']) {
-    if (statement[k] != null && !isDate(statement[k])) return res.status(400).json({ error: `statement.${k} must be YYYY-MM-DD.` });
+    if (statement[k] != null && !isDate(statement[k])) return reply(400, { error: `statement.${k} must be YYYY-MM-DD.` });
   }
 
   let target;
   try {
     target = await resolveTarget(pool, statement);
   } catch (err) {
-    return res.status(err.status || 500).json({ error: err.message, ...err.details });
+    return reply(err.status || 500, { error: err.message, ...err.details });
   }
   const isCard = target.type === 'card';
 
@@ -149,11 +159,11 @@ router.post('/ingest', requireIngestKey, ah(async (req, res) => {
   const setOpening = !!statement.set_opening_balance;
   // Anchoring needs to know the balance on the statement's first day.
   if (setOpening && (statement.opening_balance == null || !statement.period_start)) {
-    return res.status(400).json({ error: 'set_opening_balance needs period_start and opening_balance.' });
+    return reply(400, { error: 'set_opening_balance needs period_start and opening_balance.' });
   }
   // A card's purchases can only be itemized from a known starting balance.
   if (isCard && !target.row.ledger_start_date && (statement.opening_balance == null || !statement.period_start)) {
-    return res.status(400).json({
+    return reply(400, {
       error: `${target.row.name} isn't itemized yet. Its first itemized statement must include period_start and opening_balance (the statement's "previous balance") so the running balance starts from the right number.`,
     });
   }
@@ -205,7 +215,7 @@ router.post('/ingest', requireIngestKey, ah(async (req, res) => {
       return rows[0];
     });
   } catch (err) {
-    if (err instanceof PostingError || err.status === 409) return res.status(err.status).json({ error: err.message });
+    if (err instanceof PostingError || err.status === 409) return reply(err.status, { error: err.message });
     throw err;
   }
 
@@ -222,7 +232,7 @@ router.post('/ingest', requireIngestKey, ah(async (req, res) => {
     const baseKey = `${line.date}|${line.amount}|${String(line.description || '').toLowerCase().trim()}`;
     const occ = (seen.get(baseKey) || 0) + 1;
     seen.set(baseKey, occ);
-    const external_id = line.external_id ? String(line.external_id) : fingerprint(target, line, occ);
+    const external_id = line.external_id ? String(line.external_id) : (opts.externalId || fingerprint)(target, line, occ);
 
     try {
       const saved = await withTransaction(async (client) => {
@@ -291,7 +301,7 @@ router.post('/ingest', requireIngestKey, ah(async (req, res) => {
   // New transactions may be what waiting receipts belong to.
   setImmediate(() => matchPending().catch(() => {}));
   autoLinkBillsSoon(); // a payment for a bill on file pays that bill
-  res.json({
+  return reply(200, {
     import_id: imp.id,
     target: { type: target.type, id: target.row.id, name: target.row.name },
     historical,
@@ -302,7 +312,7 @@ router.post('/ingest', requireIngestKey, ah(async (req, res) => {
     reconciliation: await reconcileImport(pool, freshImp),
     results,
   });
-}));
+}
 
 // ---- Review queue (app UI) ---------------------------------------------------
 
