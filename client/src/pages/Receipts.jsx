@@ -29,7 +29,12 @@ export async function compress(file) {
   const url = URL.createObjectURL(file);
   try {
     const img = await new Promise((ok, fail) => { const i = new Image(); i.onload = () => ok(i); i.onerror = fail; i.src = url; });
-    const scale = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+    // A long till slip keeps its reading width: shrunk by its long side it
+    // would be ~450 px wide and the print unreadable. Money Hub reads tall
+    // photos in strips.
+    const long = Math.max(img.naturalWidth, img.naturalHeight);
+    const short = Math.min(img.naturalWidth, img.naturalHeight);
+    const scale = long / short >= 1.8 ? Math.min(1, 1200 / short, 6000 / long) : Math.min(1, 1600 / long);
     const c = document.createElement('canvas');
     c.width = Math.round(img.naturalWidth * scale);
     c.height = Math.round(img.naturalHeight * scale);

@@ -17,6 +17,7 @@ import { toISODate } from './dates.js';
 import { applyVendorOwnerToBill, payeeId, refreshContract, linkBillToTransaction, linkContractToTransaction, incomeCategoryFor, normalizeSplits, ownerOf, PostingError } from './postings.js';
 import { SEGMENT_COLUMNS } from './segments.js';
 import { closedMonth } from './periods.js';
+import sharp from 'sharp';
 import { OWNERS } from './segments.js';
 
 // Handwritten receipt books and cheque stubs need a strong reader; the small
@@ -67,6 +68,9 @@ If it isn't any of these, call it with {"is_receipt": false, "notes": <what it i
 WHO IS WHO
 The farm is the CUSTOMER of almost everything you read. Its owners are Jake and Ashley (surname Gayler) and the farm may be named after them (e.g. initials + Gayler). A "Sold to", "Bill to", "Customer" or "Received from" name that is the farm or its owners is the farm itself — NEVER the "party". The party is whoever issued the document: the printed letterhead, or on a blank receipt-book form, the handwritten "From …" name or the signature. A form preprinted "SALES ORDER", "INVOICE" or "RECEIPT" is just a stationery pad: a person who sold or rented something TO the farm (land rent, hay, custom work, a used part) wrote it out, so it is a "receipt" (paid) or "invoice" (owing) — it is a "sales_ticket" ONLY when the farm is the one being paid.
 
+TILL SLIPS
+Some printers put each amount one line below its label (the subtotal beside the last item code, the total beside "Debit"). Check that subtotal + GST + PST = total and read the amounts in that order — never take a tax from the line it happens to sit on.
+
 HANDWRITING
 Read handwritten figures carefully and use the TOTAL line; a red or printed serial number (e.g. 012098) is the form number, never an amount — put it in "invoice_number". Dates on Canadian handwritten forms are usually DD/MM/YY ("29/04/26" is 2026-04-29); if the first number is over 12 it is certainly the day. "Paid by cheque 401", "chq #000401" → doc_type "receipt" and cheque_number "401". Land rent, cash rent and pasture rent from an individual normally have no GST — leave gst null unless it's written. If any figure is genuinely unreadable, set confidence "low" and say which in notes.
 For a sales_ticket, "category" is the INCOME category for the commodity sold, gross minus deductions must equal total, "party" is the buyer, and GST collected on the sale goes in "gst".
@@ -89,6 +93,51 @@ ${payees.join(', ') || '(none yet)'}
 
 PAST CHOICES (business → categories it has been filed under, most used first, with owner):
 ${history.join('\n') || '(none yet)'}`;
+
+// A photo is shown to the reader at no more than about 1.15 megapixels.
+// A long till slip shrunk to fit that is ~450 px wide and its print is too
+// small to read, so a tall photo goes in overlapping strips at full
+// reading width, top to bottom. Every photo is turned upright first.
+const READ_WIDTH = 1100;
+const STRIP_HEIGHT = 1040;
+const STRIP_OVERLAP = 120;
+const MAX_STRIPS = 8;
+
+/** The image as the reader should see it: one JPEG, or strips of a tall one. */
+export async function imageStrips(buf) {
+  const base = await sharp(buf, { failOn: 'none' }).rotate().toBuffer();
+  const { width, height } = await sharp(base).metadata();
+  const w = Math.min(width, READ_WIDTH);
+  const h = Math.round(height * (w / width));
+  const scaled = await sharp(base).resize({ width: w }).jpeg({ quality: 85 }).toBuffer();
+  if (h <= STRIP_HEIGHT * 1.6) {
+    return [await sharp(scaled).resize({ width: 1568, height: 1568, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer()];
+  }
+  let strip = STRIP_HEIGHT;
+  if (Math.ceil((h - STRIP_OVERLAP) / (strip - STRIP_OVERLAP)) > MAX_STRIPS) strip = Math.ceil((h - STRIP_OVERLAP) / MAX_STRIPS) + STRIP_OVERLAP;
+  const out = [];
+  for (let top = 0; top < h; top += strip - STRIP_OVERLAP) {
+    const hh = Math.min(strip, h - top);
+    out.push(await sharp(scaled).extract({ left: 0, top, width: w, height: hh }).jpeg({ quality: 85 }).toBuffer());
+    if (top + hh >= h) break;
+  }
+  return out;
+}
+
+/** The document as message content: a PDF as is, a photo upright and in strips when it's long. */
+async function documentBlocks(receipt) {
+  if (receipt.mime === 'application/pdf') {
+    return [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: Buffer.from(receipt.image).toString('base64') } }];
+  }
+  let parts;
+  try { parts = await imageStrips(Buffer.from(receipt.image)); } catch { parts = null; }
+  if (!parts) return [{ type: 'image', source: { type: 'base64', media_type: receipt.mime, data: Buffer.from(receipt.image).toString('base64') } }];
+  const blocks = parts.map((p) => ({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: p.toString('base64') } }));
+  if (blocks.length > 1) {
+    blocks.unshift({ type: 'text', text: `This is ONE long document photographed in ${blocks.length} strips, top to bottom. Neighbouring strips overlap a little — a line that appears at the bottom of one strip and the top of the next is the same line; count it once.` });
+  }
+  return blocks;
+}
 
 /** Sends the image to Claude and returns the parsed fields. */
 async function extract(receipt) {
@@ -139,9 +188,7 @@ async function extract(receipt) {
         role: 'user',
         content: [
           // A PDF (emailed invoice, e-statement settlement) goes as a document; Claude reads every page.
-          receipt.mime === 'application/pdf'
-            ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: Buffer.from(receipt.image).toString('base64') } }
-            : { type: 'image', source: { type: 'base64', media_type: receipt.mime, data: Buffer.from(receipt.image).toString('base64') } },
+          ...(await documentBlocks(receipt)),
           { type: 'text', text: PROMPT(cats.map((c) => `${c.full} (${c.kind})`), payees.map((p) => p.name), history) },
         ],
       }],
