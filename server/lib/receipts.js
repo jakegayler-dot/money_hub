@@ -165,37 +165,47 @@ async function extract(receipt) {
     byPayee.set(r.payee, list);
   }
   const history = [...byPayee].slice(0, 200).map(([name, list]) => `${name} → ${list.join('; ')}`);
-  const res = await fetch(`${process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com'}/v1/messages`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': process.env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      // A long till slip (dozens of lines) needs room; the reply is cut off otherwise.
-      max_tokens: 4096,
-      // A forced tool call: the reply is always the fields, never prose
-      // ("I can't make out this receipt…") that has no JSON in it.
-      tools: [{
-        name: 'record_document',
-        description: 'Record the fields read from the document.',
-        input_schema: { type: 'object', properties: { is_receipt: { type: 'boolean' } }, required: ['is_receipt'], additionalProperties: true },
-      }],
-      tool_choice: { type: 'tool', name: 'record_document' },
-      messages: [{
-        role: 'user',
-        content: [
-          // A PDF (emailed invoice, e-statement settlement) goes as a document; Claude reads every page.
-          ...(await documentBlocks(receipt)),
-          { type: 'text', text: PROMPT(cats.map((c) => `${c.full} (${c.kind})`), payees.map((p) => p.name), history) },
-        ],
-      }],
-    }),
-  });
-  const body = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(body?.error?.message || `Claude API ${res.status}`);
+  const userTurn = {
+    role: 'user',
+    content: [
+      // A PDF (emailed invoice, e-statement settlement) goes as a document; Claude reads every page.
+      ...(await documentBlocks(receipt)),
+      { type: 'text', text: PROMPT(cats.map((c) => `${c.full} (${c.kind})`), payees.map((p) => p.name), history) },
+    ],
+  };
+  // The fields come back as a record_document tool call. Not forced
+  // (tool_choice "tool" isn't supported on every model): the prompt asks
+  // for it, and a reply in words instead gets one nudge to call it.
+  const send = async (messages) => {
+    const res = await fetch(`${process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com'}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        // A long till slip (dozens of lines) needs room; the reply is cut off otherwise.
+        max_tokens: 4096,
+        tools: [{
+          name: 'record_document',
+          description: 'Record the fields read from the document. Always call this, even when the document is hard to read.',
+          input_schema: { type: 'object', properties: { is_receipt: { type: 'boolean' } }, required: ['is_receipt'], additionalProperties: true },
+        }],
+        messages,
+      }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(body?.error?.message || `Claude API ${res.status}`);
+    return body;
+  };
+  let body = await send([userTurn]);
+  const called = (b) => (b.content || []).some((c) => c.type === 'tool_use');
+  if (!called(body) && body.stop_reason === 'end_turn') {
+    body = await send([userTurn, { role: 'assistant', content: body.content?.length ? body.content : [{ type: 'text', text: '(no answer)' }] },
+      { role: 'user', content: 'Call record_document now with what you can read. Use null for anything unreadable, confidence "low", and say what in notes.' }]);
+  }
   if (body.stop_reason === 'max_tokens') throw new Error('The reply was cut off — too many lines on this document. Read again, or enter it by hand.');
   if (body.stop_reason === 'refusal') throw new Error('The reader declined this image. Enter it by hand.');
   const tool = (body.content || []).find((c) => c.type === 'tool_use' && c.input && typeof c.input === 'object');
