@@ -112,11 +112,16 @@ export async function essentialsModel(today = todayISO(), buckets = null) {
   const full = months.length >= 12;
   const avg = months.length ? months.reduce((s, [, v]) => s + v, 0) / months.length : 0;
   return {
-    basis: full ? 'same month last year' : months.length ? `average of the ${months.length} month${months.length === 1 ? '' : 's'} on file` : 'no history yet',
+    basis: full ? 'same month last year' : months.length ? `average of the ${months.length} month${months.length === 1 ? '' : 's'} on file, weighted toward the same month last year where there is one` : 'no history yet',
     months: months.map(([k, v]) => ({ month: k, amount: r2(v) })),
+    // The same month last year carries weight as history builds: all of it
+    // with a full year, months/12 of it before that (the rest from the
+    // average), so a seasonal month shows up as soon as it's been seen once.
     estimate: (key) => {
       const ly = byMonth.get(shiftMonth(key, -12));
-      return r2(full && ly > 0.005 ? ly : avg);
+      if (!(ly > 0.005)) return r2(avg);
+      const w = full ? 1 : months.length / 12;
+      return r2(w * ly + (1 - w) * avg);
     },
   };
 }
@@ -187,8 +192,19 @@ export async function personalPlan(year, { tax = null, today = todayISO() } = {}
     { key: 'essentials', label: 'Essentials for the year', amount: -essentials },
   ].map((s) => ({ ...s, amount: r2(s.amount) })).filter((s) => Math.abs(s.amount) >= 0.005 || ['profit', 'tax', 'savings', 'essentials'].includes(s.key));
 
+  // Pace: the last two complete months against a month of the limit. Two
+  // in a row more than 15% over means the budget isn't what's happening.
+  const monthBudget = limit / 12;
+  const lastTwo = monthKeys.filter((k) => k < curKey).slice(-2).map((k) => ({ month: k, spent: r2(discSpent.get(k)) }));
+  const overBoth = lastTwo.length === 2 && monthBudget > 0 && lastTwo.every((m) => m.spent > monthBudget * 1.15);
+  const pace = {
+    budget_month: r2(monthBudget), last_two: lastTwo, over: overBoth,
+    over_pct: overBoth ? Math.round(((lastTwo[0].spent + lastTwo[1].spent) / 2 / monthBudget - 1) * 100) : null,
+    actual_month: lastTwo.length ? r2(lastTwo.reduce((t, m) => t + m.spent, 0) / lastTwo.length) : null,
+  };
+
   return {
-    year, as_of: today, tax_available: !!basis,
+    year, as_of: today, tax_available: !!basis, pace,
     steps, before_cap: r2(before), cap, limit: r2(limit), capped: cap != null && before > cap,
     savings_pct: pct, savings: r2(savings),
     discretionary: {

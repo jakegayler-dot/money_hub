@@ -30,9 +30,10 @@ import calendarRoute from './routes/calendar.js';
 import receiptsRoute, { receiptUpload } from './routes/receipts.js';
 import { readPending, matchPending } from './lib/receipts.js';
 import { pairAllCardPayments, splitAllLoanPayments, syncLoanPieceOwners, settleAllVendorAccounts, reorderLoanPayments } from './lib/postings.js';
-import { withTransaction } from './db.js';
+import { withTransaction, pool } from './db.js';
 import { authRouter, requireSignIn, authEnabled } from './lib/appAuth.js';
 import sentinelReadRoute from './routes/sentinelRead.js';
+import { applyContractRules } from './lib/contracts.js';
 import sentinelActionsRoute from './routes/sentinelActions.js';
 import sentinelRoute from './routes/sentinel.js';
 import { sentinelWriteTrigger, startSentinelSync } from './lib/sentinel.js';
@@ -143,5 +144,9 @@ app.listen(port, () => {
     .catch((e) => console.error('Loan reorder failed:', e.message)), 3000);
   // Vendor accounts settle oldest first: credit with a vendor pays its bills as they're billed.
   setTimeout(() => settleAllVendorAccounts(withTransaction), 3500);
+  // Contracts: delivered once their delivery date passes; payment dates on the rule (lib/contracts.js).
+  const contractRules = () => applyContractRules(pool).catch((e) => console.error('Contract rules failed:', e.message));
+  setTimeout(contractRules, 4000);
+  setInterval(contractRules, 6 * 60 * 60 * 1000);
   setInterval(() => settleAllVendorAccounts(withTransaction), 6 * 60 * 60 * 1000);
 });

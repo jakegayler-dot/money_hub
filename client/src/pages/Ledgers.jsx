@@ -227,7 +227,7 @@ export default function Ledgers() {
       is_capex: form.is_capex,
       splits: form.is_split ? piecesPayload(pieces) : [],
       needs_review: form.needs_review, review_note: form.needs_review ? form.review_note : null,
-      ...ownerPayload(form),
+      ...(form.is_transfer ? {} : ownerPayload(form)),
     };
     if (form.ledger) body.ledger = form.ledger;
     if (!(editing.credit_card_id && editing.account_id)) body.is_transfer = !onCard && form.is_transfer;
@@ -285,7 +285,7 @@ export default function Ledgers() {
         cleared: onCard || !form.paid_by_check,
         splits: form.is_split ? piecesPayload(pieces) : [],
         needs_review: form.needs_review, review_note: form.needs_review ? form.review_note : null,
-        ...ownerPayload(form),
+        ...(form.is_transfer ? {} : ownerPayload(form)),
         ...linkPayload(),
       }),
     });
@@ -488,8 +488,10 @@ export default function Ledgers() {
                   )}
                 </div>
               )}
-              {!pairedTransfer && <OwnerFields state={form} setState={setForm} />}
-              {!pairedTransfer && form.payee_id && (() => {
+              {form.is_transfer && !onCard
+                ? <span className="split-lines">A transfer belongs to each account’s owner — nothing to choose.</span>
+                : !pairedTransfer && <OwnerFields state={form} setState={setForm} />}
+              {!pairedTransfer && !form.is_transfer && form.payee_id && (() => {
                 const py = payees.find((x) => String(x.id) === String(form.payee_id));
                 if (!py) return null;
                 const rule = ruleOf(py);

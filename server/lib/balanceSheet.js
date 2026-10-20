@@ -38,7 +38,9 @@ export async function loadBalanceSheet() {
     pool.query(`SELECT * FROM loans`),
     pool.query(`SELECT loan_id, due_date, principal_amount, paid FROM loan_payments`),
     pool.query(`SELECT * FROM inventory_items ORDER BY item_class, commodity`),
-    pool.query(`SELECT commodity, unit, quantity, price_per_unit FROM sale_contracts WHERE status = 'open' AND quantity IS NOT NULL`),
+    // Bushels still to haul on each open contract (hauled ones have left the bin).
+    pool.query(`SELECT commodity, unit, GREATEST(quantity - GREATEST(COALESCE(quantity_delivered, 0), COALESCE(settlement_quantity, 0)), 0) AS quantity, price_per_unit
+                FROM sale_contracts WHERE status = 'open' AND quantity IS NOT NULL`),
     pool.query(`SELECT * FROM credit_cards WHERE status = 'active'`),
   ]);
 

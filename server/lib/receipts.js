@@ -18,6 +18,7 @@ import { applyVendorOwnerToBill, payeeId, refreshContract, linkBillToTransaction
 import { SEGMENT_COLUMNS } from './segments.js';
 import { closedMonth } from './periods.js';
 import sharp from 'sharp';
+import { confirmFromTicket } from './contracts.js';
 import { OWNERS } from './segments.js';
 
 // Handwritten receipt books and cheque stubs need a strong reader; the small
@@ -321,6 +322,9 @@ export async function matchReceipt(id, client = pool) {
   const type = docType(ex);
 
   if (type === 'sales_ticket') {
+    // The ticket confirms its contract the moment it's read — before the
+    // money arrives: delivered, at the ticket's net, paid in a few days.
+    try { await confirmFromTicket(client, id, ex); } catch (e) { console.error('Ticket → contract failed', id, e.message); }
     const list = await candidates(client, ex, r2(ex.total), 3, 45);
     if (list.length === 1) { await attachReceipt(id, list[0].id, client); return list[0].id; }
     if (list.length > 1) await toReview(client, id, list);

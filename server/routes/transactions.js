@@ -248,7 +248,8 @@ router.post('/', ah(async (req, res) => {
   let fallbackOwner = {};
   if (account_id) fallbackOwner = (await pool.query('SELECT * FROM accounts WHERE id = $1', [account_id])).rows[0] || {};
   else fallbackOwner = card;
-  const owner = ownerOf(req.body, fallbackOwner);
+  // A transfer is its account's owner's money; a purchase can be anyone's.
+  const owner = req.body.is_transfer && account_id ? ownerOf({}, fallbackOwner) : ownerOf(req.body, fallbackOwner);
   const ledger = req.body.ledger || ledgerForOwner(owner, fallbackOwner.ledger || 'business');
   const { splits, error } = normalizeSplits(pieces, Number(amount), owner, ledger);
   if (error) return res.status(400).json({ error });
@@ -339,8 +340,17 @@ router.patch('/:id', ah(async (req, res) => {
       const err = validateSegment(b);
       if (err) return { status: 400, body: { error: err } };
     }
-    const owner = ownerSent ? ownerOf(b, {}) : ownerOf(tx);
-    const ledger = b.ledger || (ownerSent ? ledgerForOwner(owner, tx.ledger) : tx.ledger);
+    let owner = ownerSent ? ownerOf(b, {}) : ownerOf(tx);
+    // A transfer belongs to its account's owner on each side: money moving
+    // from the farm's account to Jake's is the farm's going out and Jake's
+    // coming in. There's nothing to choose.
+    const willBeTransfer = b.is_transfer !== undefined ? !!b.is_transfer : tx.is_transfer;
+    let transferLedger = null;
+    if (willBeTransfer && newAccount) {
+      const { rows: [acct] } = await client.query('SELECT * FROM accounts WHERE id = $1', [newAccount]);
+      if (acct) { owner = ownerOf({}, acct); transferLedger = acct.ledger; }
+    }
+    const ledger = b.ledger || (transferLedger || (ownerSent ? ledgerForOwner(owner, tx.ledger) : tx.ledger));
 
     // Splits: replaced when sent ([] or null = not split any more). If the
     // amount changes on a split transaction, its pieces must be re-sent.

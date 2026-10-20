@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { personalPlan } from '../lib/personal.js';
+import { ownerCheck } from '../lib/ownerCheck.js';
 import { todayISO } from '../lib/dates.js';
 
 const router = Router();
@@ -38,6 +39,16 @@ router.put('/categories/:id', ah(async (req, res) => {
   const { rowCount } = await pool.query('UPDATE expense_categories SET personal_bucket = $2 WHERE id = $1', [req.params.id, bucket]);
   if (!rowCount) return res.status(404).json({ error: 'not found' });
   res.json(await personalPlan(Number(todayISO().slice(0, 4))));
+}));
+
+// Spending counted as farm that's probably household (lib/ownerCheck.js).
+router.get('/owner-check', ah(async (req, res) => { res.json(await ownerCheck()); }));
+
+// A person settled this entry's owner (after setting it, or "farm is right").
+router.post('/owner-check/:id/confirm', ah(async (req, res) => {
+  const { rowCount } = await pool.query('UPDATE transactions SET owner_confirmed = true WHERE id = $1', [req.params.id]);
+  if (!rowCount) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
 }));
 
 export default router;

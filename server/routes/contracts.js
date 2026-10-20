@@ -9,6 +9,7 @@ import { toISODate } from '../lib/dates.js';
 import { todayISO } from '../lib/dates.js';
 import { ledgerForSegment } from '../lib/segments.js';
 import { requireIngestKey } from '../lib/ingestAuth.js';
+import { PAYMENT_DAYS, contractStatus, applyContractRules, contractParts } from '../lib/contracts.js';
 
 const router = Router();
 const setSetting = (db, key, value) => db.query(
@@ -39,7 +40,7 @@ function addDays(dateStr, days) {
 //   3. No delivery scheduled yet → the last day of the contract period,
 //      the latest date the delivery window allows, so the forecast leans
 //      conservative until a delivery date firms up.
-const DEFAULT_PAYMENT_TERMS_DAYS = 7;
+const DEFAULT_PAYMENT_TERMS_DAYS = PAYMENT_DAYS; // buyers pay about two weeks after delivery
 function resolvePaymentDate({ expected_payment_date, delivery_date, contract_period_end, payment_terms_days }) {
   if (expected_payment_date) return expected_payment_date;
   if (delivery_date) return addDays(delivery_date, payment_terms_days ?? DEFAULT_PAYMENT_TERMS_DAYS);
@@ -75,6 +76,8 @@ router.get('/', ah(async (req, res) => {
       ...c,
       remaining: Number(c.remaining),
       deposits: c.deposits.map((d) => ({ ...d, date: toISODate(d.date), amount: Number(d.amount) })),
+      // What's still to come, as the forecast counts it (lib/contracts.js).
+      parts: ['open', 'delivered'].includes(c.status) ? contractParts(c) : [],
     });
   }
   res.json(out);
@@ -248,10 +251,19 @@ router.post('/ingest', requireIngestKey, ah(async (req, res) => {
   for (const item of items) {
     const {
       source = 'ingest', external_id, commodity, quantity = null, unit = null,
-      price_per_unit = null, counterparty = null, delivery_date = null,
+      price_per_unit = null, counterparty = null,
       contract_period_end = null, expected_payment_date = null, payment_terms_days = null,
-      status = 'open', segment = 'grain', notes = null,
+      segment = 'grain', notes = null,
     } = item;
+    // Delivered: the source says so in its own words ("filled",
+    // "completed"…), or every bushel is hauled. A partly hauled contract
+    // stays open with quantity_delivered; the hauled part is owed now.
+    const rawStatus = item.status ?? 'open';
+    let status = contractStatus(rawStatus);
+    const qtyDelivered = item.quantity_delivered ?? item.delivered_quantity ?? null;
+    const deliveredOn = item.delivered_on ?? item.last_delivery_date ?? item.delivered_date ?? null;
+    const delivery_date = item.delivery_date ?? (status === 'delivered' ? deliveredOn : null);
+    if (status === 'open' && quantity != null && qtyDelivered != null && Number(quantity) > 0 && Number(qtyDelivered) >= Number(quantity) * 0.995) status = 'delivered';
     const total = resolveTotal(item);
     // For AUTOMATED pushes the rule always wins: delivery + terms, else the
     // contract period's last day. A pushed expected_payment_date is only a
@@ -262,22 +274,25 @@ router.post('/ingest', requireIngestKey, ah(async (req, res) => {
     // a human typing a date means it.)
     const paymentDate =
       resolvePaymentDate({ expected_payment_date: null, delivery_date, contract_period_end, payment_terms_days })
-      ?? expected_payment_date;
+      ?? expected_payment_date
+      ?? (status === 'delivered' ? addDays(new Date().toISOString().slice(0, 10), PAYMENT_DAYS) : null);
 
     if (!external_id || !commodity || !paymentDate || total == null) {
       results.push({ external_id: external_id || null, ok: false, error: 'external_id, commodity, total_value (or quantity + price_per_unit), and one of expected_payment_date / delivery_date / contract_period_end are required' });
       continue;
     }
-    if (!['open', 'delivered', 'cancelled'].includes(status)) {
-      results.push({ external_id, ok: false, error: `status must be open, delivered, or cancelled — "settled" can only happen here, when the money is actually received` });
+    if (!status) {
+      results.push({ external_id, ok: false, error: `Unknown status "${rawStatus}". Send open, delivered (or filled / completed) or cancelled.` });
       continue;
     }
 
     const { rows } = await pool.query(
       `INSERT INTO sale_contracts
         (source, external_id, commodity, quantity, unit, price_per_unit, total_value,
-         counterparty, delivery_date, contract_period_end, expected_payment_date, status, segment, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+         counterparty, delivery_date, contract_period_end, expected_payment_date, status, segment, notes,
+         quantity_delivered, delivered_on)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
+               CASE WHEN $12::contract_status = 'delivered' THEN COALESCE($16::date, $9::date, CURRENT_DATE) ELSE $16::date END)
        ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL
        DO UPDATE SET
          commodity = EXCLUDED.commodity,
@@ -289,16 +304,24 @@ router.post('/ingest', requireIngestKey, ah(async (req, res) => {
          delivery_date = EXCLUDED.delivery_date,
          contract_period_end = EXCLUDED.contract_period_end,
          expected_payment_date = EXCLUDED.expected_payment_date,
-         status = EXCLUDED.status,
+         -- Money Hub's own knowledge (a settlement ticket in, a passed delivery
+         -- date) isn't undone by a source that still says "open".
+         status = CASE WHEN sale_contracts.status = 'delivered' AND EXCLUDED.status = 'open' THEN sale_contracts.status ELSE EXCLUDED.status END,
          segment = EXCLUDED.segment,
-         notes = EXCLUDED.notes
+         notes = EXCLUDED.notes,
+         quantity_delivered = COALESCE(EXCLUDED.quantity_delivered, sale_contracts.quantity_delivered),
+         delivered_on = COALESCE(sale_contracts.delivered_on, EXCLUDED.delivered_on,
+           CASE WHEN EXCLUDED.status = 'delivered' THEN CURRENT_DATE END,
+           CASE WHEN EXCLUDED.quantity_delivered > COALESCE(sale_contracts.quantity_delivered, 0) THEN CURRENT_DATE END)
        WHERE sale_contracts.status != 'settled'
        RETURNING id, status`,
       [source, external_id, commodity, quantity, unit, price_per_unit, total,
-       counterparty, delivery_date || null, contract_period_end || null, paymentDate, status, segment, notes]
+       counterparty, delivery_date || null, contract_period_end || null, paymentDate, status, segment, notes,
+       qtyDelivered == null ? null : Number(qtyDelivered), deliveredOn || null]
     );
-    results.push({ external_id, ok: true, skipped_settled: rows.length === 0, id: rows[0]?.id ?? null });
+    results.push({ external_id, ok: true, skipped_settled: rows.length === 0, id: rows[0]?.id ?? null, status: rows[0]?.status ?? null });
   }
+  await applyContractRules(pool);
   res.json({ received: items.length, results });
 }));
 

@@ -27,6 +27,7 @@ import { farmIncomeTax, gstReport, gstPeriods } from './tax.js';
 import { personalTax } from './taxRates.js';
 import { billDates } from './billDates.js';
 import { personalFlows } from './personal.js';
+import { contractParts } from './contracts.js';
 
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const pad = (n) => String(n).padStart(2, '0');
@@ -86,8 +87,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
        FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
        WHERE NOT lp.paid AND NOT lp.is_adjustment AND lp.due_date < $1 ORDER BY lp.due_date`, [endStr]),
     pool.query(
-      `SELECT id, commodity, counterparty, quantity, unit, price_per_unit, expected_payment_date AS due_date, segment, status,
-              GREATEST(total_value - received_amount, 0) AS amount
+      `SELECT *, expected_payment_date AS due_date, GREATEST(total_value - received_amount, 0) AS amount
        FROM sale_contracts WHERE status IN ('open', 'delivered') ORDER BY expected_payment_date, id`),
     pool.query(
       `SELECT s.due_date, GREATEST(s.statement_balance - COALESCE(s.paid_amount, 0), 0) AS amount, cc.id AS card_id, cc.name AS card, cc.segment
@@ -131,16 +131,22 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
   const flows = [];
   const add = (f) => { if (Math.abs(f.amount) >= 0.005) flows.push({ estimate: false, taxable: 0, ref: {}, ...f, amount: r2(f.amount), taxable: r2(f.taxable || 0) }); };
 
-  // Contracts: what's still to come, at the expected payment date (zero-rated: no GST).
+  // Contracts: what's still to come (zero-rated: no GST), in pieces
+  // (lib/contracts.js): a settlement ticket's net a few days after it, a
+  // hauled load two weeks after delivery, the rest at the payment date.
+  const PART_NOTE = { ticketed: 'settlement in', hauled: 'delivered — awaiting payment', open: null };
   for (const c of contractRows.rows) {
-    const d = toISODate(c.due_date);
-    if (d >= endStr) continue;
     const farm = businessShare({ segment: c.segment });
-    add({
-      key: `contract:${c.id}`, kind: 'contract', label: [c.commodity, c.counterparty].filter(Boolean).join(' — '), date: d,
-      amount: Number(c.amount), farm, taxable: Number(c.amount) * farm, overdue: d < today,
-      ref: { contract_id: c.id, commodity: norm(c.commodity) },
-    });
+    const base = [c.commodity, c.counterparty].filter(Boolean).join(' — ');
+    for (const p of contractParts(c, today)) {
+      if (p.date >= endStr) continue;
+      add({
+        key: `contract:${c.id}${p.part === 'open' ? '' : `:${p.part}`}`, kind: 'contract',
+        label: PART_NOTE[p.part] ? `${base} (${PART_NOTE[p.part]})` : base, date: p.date,
+        amount: p.amount, farm, taxable: p.amount * farm, overdue: p.date < today,
+        ref: { contract_id: c.id, commodity: norm(c.commodity), part: p.part },
+      });
+    }
   }
 
   // Estimates (each occurrence from today) and uncontracted inventory sales.
@@ -254,7 +260,13 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     }
     const r = await personalFlows({ meta: win.meta, today, tax: taxY0, known: (k) => knownOut.get(k) || 0 });
     for (const f of r.flows) add(f);
-    personal = { limit: r.plan.limit, per_month: r.plan.discretionary.per_month, essentials_basis: r.plan.essentials.basis };
+    const discMonths = r.flows.filter((f) => f.ref?.bucket === 'discretionary').length;
+    const pace = r.plan.pace;
+    personal = {
+      limit: r.plan.limit, per_month: r.plan.discretionary.per_month, essentials_basis: r.plan.essentials.basis,
+      // Spending over budget two months running: what the forecast would lose at that pace.
+      pace: pace.over ? { ...pace, shortfall: r2(Math.max(0, pace.actual_month - r.plan.discretionary.per_month) * discMonths), months: discMonths } : null,
+    };
   } catch (e) {
     console.error('Personal plan unavailable for the forecast:', e.message);
   }

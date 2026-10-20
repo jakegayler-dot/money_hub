@@ -151,7 +151,7 @@ export default function LedgerGrid({ rows: sortedRows, sort, onSort, accounts, c
                   )}
                 </td>
                 <td>
-                  {t.is_split ? <span className="grid-fixed">Split</span> : (
+                  {t.is_split ? <span className="grid-fixed">Split</span> : t.is_transfer ? <span className="grid-fixed" title="A transfer belongs to each account’s owner">Transfer</span> : (
                     <select data-r={r} data-c={5} value={own} disabled={closed} aria-label="Owner" onKeyDown={(e) => nav(e, r, 5)}
                       onChange={(e) => (e.target.value === 'split' ? onOpen(t)
                         : save(t, { segment: e.target.value, is_segment_split: false }, { segment: e.target.value, is_segment_split: false }))}>

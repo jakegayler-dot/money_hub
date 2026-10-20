@@ -353,18 +353,14 @@ ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS contract_period_end DATE;
 
 -- Boot-time enforcement of the payment-date rule for INGESTED contracts
 -- (manual entries are a human's explicit dates and are left alone):
--- payment = delivery + 7 days, else the contract period's last day. This
+-- payment = delivery + 14 days, else the contract period's last day. This
 -- runs on every deploy, so rows stored under an older rule — or pushed by
 -- an exporter that fabricated a payment date — are corrected without
 -- waiting for the source system to push again. Idempotent: rows already
 -- matching the rule are untouched. Settled/cancelled rows are history and
 -- are never rewritten.
-UPDATE sale_contracts
-SET expected_payment_date = COALESCE(delivery_date + 7, contract_period_end)
-WHERE source != 'manual'
-  AND status IN ('open', 'delivered')
-  AND COALESCE(delivery_date + 7, contract_period_end) IS NOT NULL
-  AND expected_payment_date IS DISTINCT FROM COALESCE(delivery_date + 7, contract_period_end);
+-- (The rule itself now lives in lib/contracts.js, applyContractRules, run
+-- at startup and after every contract push: delivery + 14 days.)
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sale_contracts_source_ext
   ON sale_contracts (source, external_id) WHERE external_id IS NOT NULL;
@@ -1400,3 +1396,17 @@ CREATE TABLE IF NOT EXISTS quicken_imports (
   accounts     JSONB,
   warnings     JSONB
 );
+
+-- A person looked at this entry's owner and settled it (lib/ownerCheck.js):
+-- it stays off the "check the owner" list.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS owner_confirmed BOOLEAN NOT NULL DEFAULT false;
+
+-- Contract delivery and settlement (lib/contracts.js): bushels hauled so
+-- far, when it was marked delivered, and the settlement tickets read for it
+-- (their net and quantity add up, one ticket per load).
+ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS quantity_delivered NUMERIC(14,3);
+ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS delivered_on DATE;
+ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS settlement_net NUMERIC(14,2);
+ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS settlement_quantity NUMERIC(14,3);
+ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS settlement_date DATE;
+ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS settlement_receipts INTEGER[] NOT NULL DEFAULT '{}';

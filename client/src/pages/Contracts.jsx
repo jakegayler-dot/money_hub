@@ -13,12 +13,18 @@ const emptyForm = {
 const SEGMENT_LABELS = OWNER_LABELS;
 const STATUS_BADGE = {
   open: <span className="badge warn">OPEN</span>,
-  delivered: <span className="badge warn">DELIVERED</span>,
+  delivered: <span className="badge warn">AWAITING PAYMENT</span>,
+  confirmed: <span className="badge pass">SETTLEMENT IN</span>,
   partial: <span className="badge warn">PARTLY PAID</span>,
   settled: <span className="badge pass">SETTLED</span>,
   cancelled: <span className="badge fail">CANCELLED</span>,
 };
-const statusOf = (c) => ((c.status === 'open' || c.status === 'delivered') && Number(c.received_amount) > 0 ? 'partial' : c.status);
+const statusOf = (c) => {
+  if ((c.status === 'open' || c.status === 'delivered') && Number(c.received_amount) > 0) return 'partial';
+  if (c.status === 'delivered' && c.settlement_net != null) return 'confirmed';
+  return c.status;
+};
+const PART_LABEL = { ticketed: 'Settlement in', hauled: 'Hauled — awaiting payment', open: 'Still to haul' };
 const isOpen = (c) => c.status === 'open' || c.status === 'delivered';
 
 export default function Contracts() {
@@ -217,6 +223,12 @@ export default function Contracts() {
                     <td>
                       <strong className="contract-name">{c.commodity}</strong>{c.counterparty ? <span className="contract-buyer"> · {c.counterparty}</span> : null}
                       {c.delivery_date && <div className="split-lines">Delivery {c.delivery_date.slice(0, 10)}</div>}
+                      {c.quantity && Number(c.quantity_delivered) > 0 && c.status === 'open' && (
+                        <div className="split-lines">Hauled {Number(c.quantity_delivered).toLocaleString('en-CA')} of {Number(c.quantity).toLocaleString('en-CA')} {c.unit || ''}</div>
+                      )}
+                      {(c.parts || []).length > 1 || (c.parts || []).some((p) => p.part !== 'open') ? (c.parts || []).map((p) => (
+                        <div className="split-lines" key={p.part}>{PART_LABEL[p.part]}: {money(p.amount)} · {p.date}</div>
+                      )) : null}
                     </td>
                     <td className="nowrap">{c.quantity ? `${Number(c.quantity)} ${c.unit || ''}${c.price_per_unit ? ` @ ${unitPrice(Number(c.price_per_unit))}` : ''}` : '—'}</td>
                     <td className="num nowrap">{money(Number(c.total_value))}</td>

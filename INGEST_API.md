@@ -24,11 +24,15 @@ Committed money in. Array of contracts (no snapshot mode — cancel explicitly).
 | `commodity` | yes | `"Canola"` — must match the inventory commodity name for automatic netting |
 | `total_value` | yes* | *or send `quantity` + `price_per_unit` |
 | `quantity`, `unit` | recommended | Needed so Money Hub can net contracted grain out of bin inventory |
-| `delivery_date` | when confirmed | Payment is derived as **delivery + 7 days** |
+| `delivery_date` | when known | The haul date (or the scheduled one). Payment is derived as **delivery + 14 days**. A delivery date that has passed marks the contract delivered. |
 | `contract_period_end` | always | Last day of the delivery window; payment date when no delivery is scheduled |
 | `expected_payment_date` | only if actually known | Ignored whenever a delivery date or period end is present |
-| `status` | | `open` · `delivered` · `cancelled` (never `settled` — that happens in Money Hub when cash lands) |
+| `status` | | `open` · `delivered` · `cancelled`. Quarter Section's own words are fine: `filled`, `completed`, `fulfilled`, `closed`, `hauled` all mean delivered. (`settled` happens in Money Hub when the cash lands.) |
+| `quantity_delivered` | while hauling | Bushels hauled so far. The hauled part is owed 14 days after it's hauled; the rest stays in inventory. All of it hauled = delivered. |
+| `delivered_on` | | Date it was filled, if there's no `delivery_date` |
 | `counterparty`, `segment`, `notes` | | `segment` defaults to `grain` |
+
+**How Money Hub carries a contract:** *open* — the grain is in the bin (inventory, at the contract price), money at the period end. *Delivered* — the grain is gone and the money is owed to the farm (a receivable), expected 14 days after delivery. *Settlement in* — a settlement ticket uploaded through Receipts confirms it: its net replaces the contract value, expected 3 days after the ticket's date (one ticket per load; they add up). *Settled* — the deposit is linked. A contract Money Hub knows is delivered stays delivered even if a later push still says `open`.
 
 ## 2. Inventory — `POST /api/inventory/ingest`
 
@@ -293,7 +297,7 @@ A transfer: `"category": "[Other Account Name]"` (Quicken's own form) or `"trans
 > - **Unharvested production as estimates** (`POST /api/estimates/ingest`, snapshot mode, `"source": "quarter-section"`): one per crop with bushels still in the field — `external_id` like `"2026-canola-unharvested"`, `commodity` (same spelling as inventory), `direction: "inflow"`, `amount` = unharvested uncontracted bushels × your price, `start_date` = the date you expect that crop to be sold. **Binned grain of the same crop is forecast to sell on this same date**, so keep it meaningful. Lower `amount` as bins fill; when a crop is fully harvested, leave it out of the push (don't send `amount: 0`).
 > - If you have a sale date for a specific bin, send it as `expected_sale_date` on that inventory item — it overrides the crop's date.
 > - **Livestock Manager** follows the same spec with `"source": "livestock-manager"` and `"scope": ["market_livestock", "breeding_livestock"]`, one item per herd group, `unit: "head"`, its own per-head estimate as `price_per_unit`, and — for calves/feeders it will sell — `expected_sale_date` when known (otherwise Money Hub's fallback sell-by date is used).
-> - Contracts keep going to `/api/contracts/ingest` as before — inventory and contracts are separate pushes.
+> - Contracts keep going to `/api/contracts/ingest` — inventory and contracts are separate pushes. **Push a contract again the moment it changes**: when a load is hauled send `quantity_delivered` (bushels hauled so far) and `delivery_date` (the haul date); when it's filled send `status: "delivered"` (or `"filled"`). Push the bin counts in the same run, so Money Hub never sees the bins empty before it knows the grain was sold.
 
 
 ---

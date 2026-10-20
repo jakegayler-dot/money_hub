@@ -5,7 +5,7 @@
 // CURRENT ASSETS (turn into cash within a year)
 //   Cash and bank             accounts with money in them
 //   Investment accounts       marketable — Wealthsimple and the like
-//   Accounts receivable       contracts delivered and not paid in full
+//   Accounts receivable       grain hauled and not paid for (settlement net once the ticket is in)
 //   GST receivable            refunds on returns not yet settled
 //   Deposits and prepayments  money paid to vendors and not used yet
 //   Grain and feed inventory  on hand: under an open contract at the
@@ -46,6 +46,7 @@ import { todayISO, toISODate, addMonths } from './dates.js';
 import { loadBalanceSheet, inventoryOwnerRow } from './balanceSheet.js';
 import { gstReport } from './tax.js';
 import { billDate, rawOwing } from './vendorAccount.js';
+import { contractParts } from './contracts.js';
 
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
@@ -118,8 +119,7 @@ export async function loadStatement(today = todayISO()) {
     pool.query(`SELECT amount, segment, is_segment_split, segment_grain_pct, segment_livestock_pct, segment_jake_pct, segment_ashley_pct
                 FROM transaction_lines WHERE account_id IS NOT NULL`),
     pool.query('SELECT loan_id, due_date, principal_amount, interest_amount, paid, is_adjustment, is_extra FROM loan_payments'),
-    pool.query(`SELECT id, commodity, counterparty, status, total_value, received_amount, delivery_date, segment
-                FROM sale_contracts WHERE status IN ('open', 'delivered')`),
+    pool.query(`SELECT * FROM sale_contracts WHERE status IN ('open', 'delivered')`),
     pool.query(`SELECT b.*, p.name AS payee_name, COALESCE((SELECT SUM(amount) FROM credit_applications WHERE bill_id = b.id), 0) AS applied
                 FROM bills b LEFT JOIN payees p ON p.id = b.payee_id WHERE b.status = 'unpaid'`),
     pool.query(`SELECT vc.*, p.name AS payee_name, p.segment, p.is_segment_split, p.segment_grain_pct, p.segment_livestock_pct,
@@ -155,11 +155,14 @@ export async function loadStatement(today = todayISO()) {
   }
 
   // Receivables and customer deposits.
+  // Hauled grain not paid for is owed to the farm (at the settlement's net
+  // once the ticket is in); what's still to haul is in inventory.
   for (const c of contracts.rows) {
-    const left = Number(c.total_value) - Number(c.received_amount);
     const name = [c.commodity, c.counterparty].filter(Boolean).join(' — ');
-    if (c.status === 'delivered' && left > 0) add('receivables', name, left, { segment: c.segment });
-    if (c.status === 'open' && Number(c.received_amount) > 0) add('customer_deposits', name, Number(c.received_amount), { segment: c.segment });
+    const owed = contractParts(c, today).filter((p) => p.part !== 'open').reduce((t, p) => t + p.amount, 0);
+    if (owed > 0) add('receivables', `${name}${c.settlement_net != null ? ' (settlement in)' : ''}`, owed, { segment: c.segment });
+    const hauled = c.status === 'delivered' || Number(c.quantity_delivered) > 0 || c.settlement_net != null;
+    if (!hauled && Number(c.received_amount) > 0) add('customer_deposits', name, Number(c.received_amount), { segment: c.segment });
   }
 
   // GST: every return not settled, at its filed net if filed, else the ledger's net so far.

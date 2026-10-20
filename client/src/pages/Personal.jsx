@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import MetricCard from '../components/MetricCard.jsx';
 import { money } from '../format.js';
 import { cents } from '../components/SplitEditor.jsx';
+import OwnerCheck from '../components/OwnerCheck.jsx';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const monthName = (key) => MONTHS[Number(key.slice(5, 7)) - 1];
@@ -54,6 +55,16 @@ export default function Personal() {
           sub={`${money(d.spent)} of ${money(plan.limit)} spent · ${d.months_left} month${d.months_left === 1 ? '' : 's'} left`} />
         <MetricCard label="Essentials this year" value={money(plan.essentials.year)} sub={`Spent so far plus forecast — ${plan.essentials.basis}`} />
       </div>
+
+      {plan.pace?.over && (
+        <p className="pace-warn" role="status">
+          Discretionary spending has run {plan.pace.over_pct}% over budget two months running
+          ({plan.pace.last_two.map((m) => `${monthName(m.month)} ${money(m.spent)}`).join(', ')} against {money(plan.pace.budget_month)} a month).
+          Cash Flow spends the budget, so it's showing more cash than you'll have at this pace.
+        </p>
+      )}
+
+      <OwnerCheck onChanged={load} />
 
       <div className="panel personal-plan">
         <div className="panel-header">How the discretionary limit is worked out</div>

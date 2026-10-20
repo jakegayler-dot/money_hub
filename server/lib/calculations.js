@@ -266,6 +266,7 @@ export async function liquidityFloor({ months = 12, scope = 'everything', accoun
     passes: floorMonth.balance >= requiredFloor,
     reserve: reserve ? { startingBalance: reserve.opening, balances: reserve.trajectory.map((t) => t.balance) } : null,
     tax: ctx.tax.available ? { y0: ctx.win.y0, net: ctx.tax.netY0, total: ctx.tax.taxY0, instalment: ctx.tax.instalmentY0 } : null,
+    personal: ctx.personal || null,
   };
 }
 
