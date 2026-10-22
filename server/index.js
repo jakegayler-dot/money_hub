@@ -15,6 +15,8 @@ import billsRoute from './routes/bills.js';
 import contractsRoute from './routes/contracts.js';
 import entityRoute from './routes/entity.js';
 import balanceSheetRoute from './routes/balanceSheet.js';
+import financialsRoute from './routes/financials.js';
+import { recordInventory } from './lib/financials.js';
 import quickenRoute from './routes/quicken.js';
 import assetsRoute from './routes/assets.js';
 import inventoryRoute from './routes/inventory.js';
@@ -81,6 +83,7 @@ app.use('/api/bills', billsRoute);
 app.use('/api/contracts', contractsRoute);
 app.use('/api/entity-summary', entityRoute);
 app.use('/api/balance-sheet', balanceSheetRoute);
+app.use('/api/financials', financialsRoute);
 app.use('/api/quicken', quickenRoute);
 app.use('/api/assets', assetsRoute);
 app.use('/api/inventory', inventoryRoute);
@@ -148,5 +151,9 @@ app.listen(port, () => {
   const contractRules = () => applyContractRules(pool).catch((e) => console.error('Contract rules failed:', e.message));
   setTimeout(contractRules, 4000);
   setInterval(contractRules, 6 * 60 * 60 * 1000);
+  // Inventory value once a day, so an income statement has the start of its period (lib/financials.js).
+  const inventoryRecord = () => recordInventory().catch((e) => console.error('Inventory record failed:', e.message));
+  setTimeout(inventoryRecord, 6000);
+  setInterval(inventoryRecord, 6 * 60 * 60 * 1000);
   setInterval(() => settleAllVendorAccounts(withTransaction), 6 * 60 * 60 * 1000);
 });

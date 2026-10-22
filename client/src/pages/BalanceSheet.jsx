@@ -19,7 +19,7 @@ const RATIOS = [
   { key: 'debt_to_equity', label: 'Debt to equity', fmt: (v) => (v == null ? '—' : `${v.toFixed(2)}`), note: 'Under 0.67 is strong', ok: (v) => v == null || v < 0.67, warn: (v) => v == null || v > 1.5 },
 ];
 
-export default function BalanceSheet() {
+export default function BalanceSheet({ embedded = false }) {
   const [entity, setEntity] = useState(() => {
     const e = new URLSearchParams(window.location.search).get('entity');
     return ENTITIES.some(([k]) => k === e) ? e : 'all';
@@ -34,7 +34,8 @@ export default function BalanceSheet() {
       .then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`); return d; })
       .then((d) => { setData(d); setError(null); })
       .catch((e) => setError(e.message));
-    window.history.replaceState(null, '', entity === 'all' ? '/balance-sheet' : `/balance-sheet?entity=${entity}`);
+    const base = embedded ? '/financials?tab=balance' : '/balance-sheet';
+    window.history.replaceState(null, '', entity === 'all' ? base : `${base}${embedded ? '&' : '?'}entity=${entity}`);
   }, [entity]);
 
   const sec = (k) => data?.sections.find((s) => s.key === k);
@@ -43,8 +44,8 @@ export default function BalanceSheet() {
 
   return (
     <>
-      <div className="page-header">
-        <h1 className="page-title">Balance Sheet</h1>
+      <div className={embedded ? 'fs-bar' : 'page-header'}>
+        {!embedded && <h1 className="page-title">Balance Sheet</h1>}
         <span style={{ display: 'inline-flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <span className="seg-toggle" role="group" aria-label="Whose balance sheet">
             {ENTITIES.map(([k, l]) => <button key={k} type="button" aria-pressed={entity === k} className={entity === k ? 'on' : ''} onClick={() => setEntity(k)}>{l}</button>)}

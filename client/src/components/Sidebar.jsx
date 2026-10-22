@@ -7,7 +7,7 @@ const links = [
   { to: '/receipts', label: 'Receipts' },
   { to: '/quicken', label: 'Quicken' },
   { to: '/books', label: 'Books' },
-  { to: '/balance-sheet', label: 'Balance Sheet' },
+  { to: '/financials', label: 'Financials' },
   { to: '/tax', label: 'Tax' },
   { to: '/calendar', label: 'Calendar' },
   { to: '/cash-flow', label: 'Cash Flow' },

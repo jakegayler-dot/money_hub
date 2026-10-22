@@ -1410,3 +1410,19 @@ ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS settlement_net NUMERIC(14,2)
 ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS settlement_quantity NUMERIC(14,3);
 ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS settlement_date DATE;
 ALTER TABLE sale_contracts ADD COLUMN IF NOT EXISTS settlement_receipts INTEGER[] NOT NULL DEFAULT '{}';
+
+-- Inventory value by day (lib/financials.js), for the change in inventory on
+-- the income statement: 'daily' rows are recorded automatically, 'manual'
+-- rows are counts entered by hand (the year-end count). item_class is
+-- 'crop_feed' or 'market_livestock'; owner grain / livestock / jake /
+-- ashley / unassigned.
+CREATE TABLE IF NOT EXISTS inventory_valuations (
+  id          SERIAL PRIMARY KEY,
+  date        DATE NOT NULL,
+  item_class  TEXT NOT NULL CHECK (item_class IN ('crop_feed', 'market_livestock')),
+  owner       TEXT NOT NULL,
+  value       NUMERIC(14,2) NOT NULL,
+  source      TEXT NOT NULL CHECK (source IN ('daily', 'manual')),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_inventory_valuations_date ON inventory_valuations (date, source);

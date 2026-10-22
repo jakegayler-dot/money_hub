@@ -47,7 +47,7 @@ export default function Dashboard() {
           <MetricCard
             label="Net worth"
             value={money(netWorth.total)}
-            sub={<>Assets {money(netWorth.assets)} − liabilities {money(netWorth.liabilities)} · <a href="/balance-sheet">Balance sheet</a></>}
+            sub={<>Assets {money(netWorth.assets)} − liabilities {money(netWorth.liabilities)} · <a href="/financials?tab=balance">Balance sheet</a></>}
             tone={netWorth.total >= 0 ? 'positive' : 'negative'}
           />
         )}

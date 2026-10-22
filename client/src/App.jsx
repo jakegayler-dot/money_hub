@@ -19,7 +19,7 @@ import Tax from './pages/Tax.jsx';
 import Receipts from './pages/Receipts.jsx';
 import Personal from './pages/Personal.jsx';
 import Calendar from './pages/Calendar.jsx';
-import BalanceSheet from './pages/BalanceSheet.jsx';
+import Financials from './pages/Financials.jsx';
 import Quicken from './pages/Quicken.jsx';
 
 export default function App() {
@@ -49,7 +49,8 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/cash-flow" element={<CashFlow />} />
-          <Route path="/balance-sheet" element={<BalanceSheet />} />
+          <Route path="/financials" element={<Financials />} />
+          <Route path="/balance-sheet" element={<Navigate to="/financials?tab=balance" replace />} />
           <Route path="/quicken" element={<Quicken />} />
           <Route path="/personal" element={<Personal />} />
           <Route path="/calendar" element={<Calendar />} />

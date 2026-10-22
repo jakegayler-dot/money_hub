@@ -149,7 +149,7 @@ export default function EntityBar() {
               {data ? money(data.equity.total) : '—'}
             </div>
             <div className="metric-sub">
-              {data ? <>Assets {money(data.equity.assets)} − liabilities {money(data.equity.liabilities)}<br /><a href={`/balance-sheet${data.entity === 'all' ? '' : `?entity=${data.entity}`}`}>Balance sheet</a></> : 'Loading…'}
+              {data ? <>Assets {money(data.equity.assets)} − liabilities {money(data.equity.liabilities)}<br /><a href={`/financials?tab=balance${data.entity === 'all' ? '' : `&entity=${data.entity}`}`}>Balance sheet</a></> : 'Loading…'}
             </div>
           </div>
         </div>

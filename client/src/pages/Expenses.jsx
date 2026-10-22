@@ -1,6 +1,7 @@
 import { MonthlyBars, EntriesPanel } from '../components/IncomeDrill.jsx';
 import { Fragment, useEffect, useState } from 'react';
 import { money } from '../format.js';
+import { IncomeStatement } from '../components/FinancialStatements.jsx';
 import { OWNER_KEYS, OWNER_LABELS } from '../owners.jsx';
 
 const CLASS_LABELS = {
@@ -26,6 +27,9 @@ export default function Expenses() {
   const [notice, setNotice] = useState(null);
   // What's opened up: a month (both sides) or one category's entries.
   const [drill, setDrill] = useState(null);
+  // Spending & income, or the income statement for Grain and Cattle.
+  const [view, setView] = useState(() => (new URLSearchParams(window.location.search).get('view') === 'statement' ? 'statement' : 'spending'));
+  const pickView = (v) => { setView(v); window.history.replaceState(null, '', v === 'statement' ? '/expenses?view=statement' : '/expenses'); };
   useEffect(() => setDrill(null), [owner]);
   const year = new Date().getFullYear();
 
@@ -85,8 +89,12 @@ export default function Expenses() {
     <>
       <div className="page-header">
         <h1 className="page-title">Income &amp; Expenses</h1>
-        <span className="page-meta">FY {year}</span>
+        <span className="seg-toggle" role="tablist" aria-label="View">
+          <button type="button" role="tab" aria-selected={view === 'spending'} className={view === 'spending' ? 'on' : ''} onClick={() => pickView('spending')}>Spending &amp; income · FY {year}</button>
+          <button type="button" role="tab" aria-selected={view === 'statement'} className={view === 'statement' ? 'on' : ''} onClick={() => pickView('statement')}>Income statement</button>
+        </span>
       </div>
+      {view === 'statement' ? <IncomeStatement /> : (<>
 
       {error && <div className="notice" style={{ borderColor: 'var(--negative)', color: 'var(--negative)' }}>{error}</div>}
 
@@ -244,6 +252,7 @@ export default function Expenses() {
           <div className="field" style={{ alignSelf: 'end' }}><button type="submit">Add category</button></div>
         </form>
       </div>
+      </>)}
     </>
   );
 }
