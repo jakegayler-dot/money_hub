@@ -268,10 +268,11 @@ export function deadlineSnapshotItems(deadlines, { from, to, appUrl, today = nul
     const pays = d.amount != null && d.amount < 0;
     items.push(makeItem({
       source_id: d.id, kind: pays ? 'bill' : 'event', category: 'finance',
-      title: d.title, notes: d.notes || null, starts_at: d.date,
+      // Sentinel takes an amount on a bill only: a refund's amount goes in the notes.
+      title: d.title, notes: [d.notes, !pays && d.amount > 0 ? `Refund expected: $${d.amount.toFixed(2)}` : null].filter(Boolean).join(' · ') || null, starts_at: d.date,
       // A date that has passed with nothing to pay is over; an unpaid amount stays open.
       status: d.done || (!pays && today && d.date < today) ? 'done' : pays ? 'open' : 'scheduled',
-      amount_cents: d.amount != null ? Math.abs(Math.round(d.amount * 100)) : null, currency: 'CAD',
+      amount_cents: pays ? Math.abs(Math.round(d.amount * 100)) : null, currency: 'CAD',
       deep_link: linkFor(appUrl, d.link || '/calendar'),
     }));
   }

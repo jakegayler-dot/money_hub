@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSnapshot, toCents, reginaToday, computeWindow, statementItems } from '../lib/sentinelSnapshot.js';
+import { buildSnapshot, toCents, reginaToday, computeWindow, statementItems, deadlineSnapshotItems } from '../lib/sentinelSnapshot.js';
 
 // 18:00 UTC = noon in Regina, Sep 30 2026.
 const NOON = new Date('2026-09-30T18:00:00Z');
@@ -208,3 +208,16 @@ test('a card statement replaced by a newer one is not pushed, and does not stret
   assert.equal(computeWindow({ statements }, today).from, computeWindow({}, today).from);
 });
 
+
+test('a GST refund goes to Sentinel as an event with the amount in its notes; a payment is a bill (Oct 22: Sentinel refused amounts on events)', () => {
+  const [refund, pay] = deadlineSnapshotItems([
+    { id: 'gst:2026-07-01', date: '2026-10-31', title: 'GST return — Q3', amount: 812.4 },
+    { id: 'gst:2026-10-01', date: '2027-01-31', title: 'GST return — Q4', amount: -300 },
+  ], { from: '2026-01-01', to: '2027-12-31', appUrl: null });
+  assert.equal(refund.kind, 'event');
+  assert.equal(refund.amount_cents, undefined);
+  assert.equal(refund.currency, undefined);
+  assert.equal(refund.notes, 'Refund expected: $812.40');
+  assert.equal(pay.kind, 'bill');
+  assert.equal(pay.amount_cents, 30000);
+});
