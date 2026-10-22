@@ -126,7 +126,7 @@ export async function imageStrips(buf) {
 }
 
 /** The document as message content: a PDF as is, a photo upright and in strips when it's long. */
-async function documentBlocks(receipt) {
+export async function documentBlocks(receipt) {
   if (receipt.mime === 'application/pdf') {
     return [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: Buffer.from(receipt.image).toString('base64') } }];
   }
@@ -247,6 +247,8 @@ export async function processReceipt(id) {
     }
     await pool.query(`UPDATE receipts SET status = 'unmatched', extracted = $2, error = NULL WHERE id = $1`, [id, ex]);
     await matchReceipt(id);
+    // A grocery receipt is catalogued line by line (lib/groceries.js) in the background.
+    import('./groceries.js').then((g) => g.catalogueIfGrocery(id)).catch((e) => console.error('Grocery catalogue failed', id, e.message));
   } catch (e) {
     await pool.query(`UPDATE receipts SET status = 'failed', error = $2 WHERE id = $1`, [id, String(e.message).slice(0, 500)]);
   }

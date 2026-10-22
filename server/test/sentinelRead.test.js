@@ -96,6 +96,11 @@ async function seed() {
   await db.query(`INSERT INTO receipts (mime, bytes, image, status, extracted, transaction_id)
     VALUES ('image/png', 4, decode('89504e47', 'hex'), 'matched', $1, $2)`,
   [JSON.stringify({ doc_type: 'receipt', date: T, party: 'Co-op', total: 250, gst: 11.9, card_number: FULL_NUMBER, items: [{ description: 'Diesel', amount: 250 }] }), ids.t1]);
+  ids.grocery = (await one(`INSERT INTO receipts (mime, bytes, image, status, grocery) VALUES ('image/png', 4, decode('89504e47', 'hex'), 'matched', 'catalogued') RETURNING id`)).id;
+  for (const [store, amount, date] of [['Co-op', 6.29, d(-40)], ['Superstore', 5.49, d(-35)], ['Co-op', 6.49, d(-2)]]) {
+    await db.query(`INSERT INTO grocery_items (receipt_id, date, store, printed, item, food_type, qty, size_value, size_unit, unit, unit_price, amount)
+      VALUES ($1, $2, $3, '2% MILK 4L', '2% milk', 'dairy & eggs', 1, 4, 'l', 'l', $4, $5)`, [ids.grocery, date, store, amount / 4, amount]);
+  }
   await db.query(`INSERT INTO gst_returns (period_start, period_end, filed_on, net_amount) VALUES ('2026-01-01', '2026-03-31', '2026-04-20', -812.4)`);
   await db.query(`INSERT INTO closed_periods (month, note) VALUES ('2026-01-01', 'Q1 done')`);
   await db.query(`INSERT INTO vendor_reconciliations (payee_id, statement_date, statement_balance, status) VALUES ($1, $2, 700, 'done')`, [ids.coop, d(-15)]);
@@ -465,7 +470,7 @@ test('no secrets, full account numbers, raw payloads or images; nothing is writt
     assert.ok(!/"(image|payload|candidates|password|api_key|token|external_id)"/.test(all));
     const acct = (await read(`/accounts?id=${ids.farm}`)).body.rows[0];
     assert.equal(acct.last4, '3210');
-    const [rec] = (await read('/receipts')).body.rows;
+    const rec = (await read('/receipts')).body.rows.find((r) => r.party);
     assert.equal(rec.party, 'Co-op');
     assert.equal(rec.items, 1);
     assert.equal(rec.size_kb, 0);

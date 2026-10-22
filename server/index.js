@@ -30,6 +30,7 @@ import taxRoute from './routes/tax.js';
 import personalRoute from './routes/personal.js';
 import calendarRoute from './routes/calendar.js';
 import receiptsRoute, { receiptUpload } from './routes/receipts.js';
+import groceriesRoute from './routes/groceries.js';
 import { readPending, matchPending } from './lib/receipts.js';
 import { pairAllCardPayments, splitAllLoanPayments, syncLoanPieceOwners, settleAllVendorAccounts, reorderLoanPayments } from './lib/postings.js';
 import { withTransaction, pool } from './db.js';
@@ -97,6 +98,7 @@ app.use('/api/forecast', forecastRoute);
 app.use('/api/personal', personalRoute);
 app.use('/api/calendar', calendarRoute);
 app.use('/api/receipts', receiptsRoute);
+app.use('/api/groceries', groceriesRoute);
 
 // In production, this is the only Railway service — it serves the built
 // client alongside the API so there's nothing extra to deploy or wire up.

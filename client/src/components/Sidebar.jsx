@@ -5,6 +5,7 @@ const links = [
   { to: '/', label: 'Dashboard', end: true },
   { to: '/review', label: 'Review', count: true },
   { to: '/receipts', label: 'Receipts' },
+  { to: '/groceries', label: 'Groceries' },
   { to: '/quicken', label: 'Quicken' },
   { to: '/books', label: 'Books' },
   { to: '/financials', label: 'Financials' },

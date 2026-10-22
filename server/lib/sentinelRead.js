@@ -24,6 +24,7 @@ import { farmIncomeTax, gstReport } from './tax.js';
 import { countedLines } from '../routes/expenses.js';
 import { runAndJudge, purchaseFromInput, agentAnswer } from './purchaseCheck.js';
 import { balanceSheetStatement } from './statement.js';
+import { grocerySummary, priceBook, latestAdvice, FOOD_TYPES } from './groceries.js';
 
 export const APP = 'money_hub';
 export const DEFAULT_LIMIT = 50;
@@ -702,6 +703,48 @@ def({
     transaction: r.tx_id ? { id: r.tx_id, date: day(r.tx_date), amount: money(r.tx_amount), description: text(r.tx_description, 200) } : null,
     bill: r.bill, contract: r.contract,
   }),
+});
+
+// ---------- groceries (lib/groceries.js) ----------
+def({
+  name: 'grocery_items', mode: 'sql',
+  description: 'Every line of the catalogued grocery receipts: the item as a plain name, brand, store brand or not, food type, size, price per kg / litre / each, what was paid and the discount. Newest first.',
+  fields: ['id', 'date', 'store', 'item', 'printed', 'brand', 'store_brand', 'food_type', 'qty', 'size', 'unit_price', 'per', 'amount', 'discount', 'receipt_id', 'currency'],
+  search: ['item', 'printed', 'brand', 'store'], date: 'date',
+  filters: [f.eq('food_type', 'food_type', FOOD_TYPES), { name: 'store', type: 'text', doc: 'store (contains)', sql: (v, p) => `x.store ILIKE ${p(like(v))}` }, f.month('date')],
+  base: () => 'SELECT * FROM grocery_items',
+  order: 'x.date DESC, x.id',
+  shape: (r) => ({
+    id: r.id, date: day(r.date), store: r.store, item: r.item, printed: text(r.printed, 120), brand: r.brand, store_brand: r.store_brand,
+    food_type: r.food_type, qty: num(r.qty), size: r.size_value != null ? `${Number(r.size_value)} ${r.size_unit || ''}`.trim() : null,
+    unit_price: r.unit_price == null ? null : Math.round(Number(r.unit_price) * 100) / 100, per: r.unit, amount: money(r.amount), discount: money(r.discount),
+    receipt_id: r.receipt_id, currency: CURRENCY,
+  }),
+});
+def({
+  name: 'grocery_spending', mode: 'js', idType: 'text', summary: true,
+  description: 'SUMMARY. Grocery spending by month (id = YYYY-MM) and by food type from catalogued receipts, with the typical month (median of the last six full months with receipts), the pace this month, the stores used, the store-brand share and the latest cost-cutting suggestions. ledger_groceries is everything filed as Groceries in the books (receipts may not cover it all).',
+  fields: ['id', 'month', 'total', 'by_type', 'discount', 'receipts', 'ledger_groceries', 'typical', 'this_month_pace', 'stores', 'store_brand_share_pct', 'advice', 'currency'],
+  search: [], filters: [],
+  load: async () => {
+    const [s, advice] = await Promise.all([grocerySummary({ months: 12 }), latestAdvice()]);
+    return s.months.slice().reverse().map((m, i) => ({
+      id: m.month, month: m.month, total: m.total, by_type: m.by_type, discount: m.discount, receipts: m.receipts, ledger_groceries: m.ledger_groceries,
+      ...(i === 0 ? { typical: s.typical, this_month_pace: s.this_month.pace, stores: s.stores, store_brand_share_pct: s.store_brand_share,
+        advice: advice ? { headline: advice.headline, suggestions: advice.suggestions, made_on: day(new Date(advice.created_at)) } : null } : {}),
+      currency: CURRENCY,
+    }));
+  },
+});
+def({
+  name: 'grocery_prices', mode: 'js', idType: 'text', summary: true,
+  description: 'SUMMARY. The grocery price book for the last year: each item (id = item|per) with its price per kg, litre or each at every store it was bought at (latest and lowest), the usual store, the cheapest store, how much cheaper (saving_pct) and what buying it there would have saved over the year. Items bought at two or more stores first. Use search for an item ("milk").',
+  fields: ['id', 'item', 'per', 'stores', 'usual_store', 'cheapest_store', 'saving_pct', 'yearly_saving', 'bought', 'spent', 'currency'],
+  search: ['item', 'cheapest_store', 'usual_store'], filters: [],
+  load: async () => (await priceBook({ limit: 400 })).map((p) => ({
+    id: `${p.item}|${p.unit}`, item: p.item, per: p.unit, stores: p.stores.map((s) => ({ store: s.store, latest: Math.round(s.latest * 100) / 100, lowest: Math.round(s.lowest * 100) / 100, times: s.times, last_date: s.last_date })),
+    usual_store: p.usual_store, cheapest_store: p.cheapest_store, saving_pct: p.saving_pct, yearly_saving: p.yearly_saving, bought: p.bought, spent: p.spent, currency: CURRENCY,
+  })),
 });
 
 // ---------- GST returns / closed months / reconciliations / scenarios ----------

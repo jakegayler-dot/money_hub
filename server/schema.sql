@@ -1426,3 +1426,36 @@ CREATE TABLE IF NOT EXISTS inventory_valuations (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_inventory_valuations_date ON inventory_valuations (date, source);
+
+-- Groceries (lib/groceries.js): every line of a grocery receipt, read again
+-- line by line once the receipt is read: the item as a plain name, its food
+-- type, size and price, so spending by food type, typical months and the
+-- cheapest store per item can be worked out. receipts.grocery says where a
+-- receipt stands: catalogued, not_grocery or failed (NULL = not looked at).
+ALTER TABLE receipts ADD COLUMN IF NOT EXISTS grocery TEXT;
+CREATE TABLE IF NOT EXISTS grocery_items (
+  id           SERIAL PRIMARY KEY,
+  receipt_id   INTEGER NOT NULL REFERENCES receipts(id) ON DELETE CASCADE,
+  date         DATE NOT NULL,
+  store        TEXT NOT NULL,
+  printed      TEXT,
+  item         TEXT NOT NULL,
+  brand        TEXT,
+  store_brand  BOOLEAN NOT NULL DEFAULT false,
+  food_type    TEXT NOT NULL,
+  qty          NUMERIC(10,3),
+  size_value   NUMERIC(12,3),
+  size_unit    TEXT,
+  unit         TEXT,
+  unit_price   NUMERIC(12,4),
+  amount       NUMERIC(12,2) NOT NULL,
+  discount     NUMERIC(12,2) NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_grocery_items_date ON grocery_items (date);
+CREATE INDEX IF NOT EXISTS idx_grocery_items_item ON grocery_items (item);
+-- Cost-cutting suggestions from Claude, kept so the page doesn't ask again on every visit.
+CREATE TABLE IF NOT EXISTS grocery_advice (
+  id          SERIAL PRIMARY KEY,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  advice      JSONB NOT NULL
+);
