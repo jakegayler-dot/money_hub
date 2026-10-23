@@ -73,16 +73,24 @@ export default function CashFlowTerminal({ liquidity, scenario = null, scenarioN
   const glideWhat = useGlide(what.map((m) => m.balance));
   const glideFlows = useGlide(what.flatMap((m) => [m.inflow, m.outflow]));
 
-  const floor = liquidity.requiredFloor;
+  // The floor moves: at each month-end it's what must be paid in the
+  // `floorDays` after it (point 0: what today's cash must cover).
+  const floorOf = (m) => (m.floor ?? liquidity.requiredFloor ?? 0);
+  const floorPts = [liquidity.floorNow ?? liquidity.requiredFloor ?? 0, ...base.map(floorOf)];
+  const days = liquidity.floorDays || 60;
   const low = (arr) => arr.reduce((m, x, i) => (x.balance < arr[m].balance ? i : m), 0);
+  const tight = (arr) => arr.reduce((m, x, i) => (x.balance - floorOf(x) < arr[m].balance - floorOf(arr[m]) ? i : m), 0);
   const baseLow = low(base);
   const whatLow = low(what);
+  const baseTight = tight(base);
+  const whatTight = tight(what);
+  const room = (m) => m.balance - floorOf(m);
 
   // ---- ticker ----
   const tick = [
     { label: 'Cash today', v: liquidity.startingBalance },
     { label: `Low point · ${full(base[baseLow])}`, v: base[baseLow].balance, w: active ? what[whatLow].balance : null, whatNote: active && whatLow !== baseLow ? full(what[whatLow]) : null },
-    { label: 'Headroom over floor', v: base[baseLow].balance - floor, w: active ? what[whatLow].balance - floor : null, tone: true },
+    { label: `Least over the floor · ${full(base[baseTight])}`, v: room(base[baseTight]), w: active ? room(what[whatTight]) : null, whatNote: active && whatTight !== baseTight ? full(what[whatTight]) : null, tone: true },
     { label: `End · ${full(base[n - 1])}`, v: base[n - 1].balance, w: active ? what[n - 1].balance : null },
     { label: 'Committed only, end', v: base[n - 1].committedBalance, w: active ? what[n - 1].committedBalance : null },
   ];
@@ -104,7 +112,7 @@ export default function CashFlowTerminal({ liquidity, scenario = null, scenarioN
   const iw = W - pad.left - pad.right;
   const ih = H - pad.top - pad.bottom;
   const vals = [...base.map((m) => m.balance), ...base.map((m) => m.committedBalance), ...(active ? glideWhat : []),
-    ...(reserve ? [reserve.startingBalance, ...reserve.balances] : []), floor, 0, liquidity.startingBalance];
+    ...(reserve ? [reserve.startingBalance, ...reserve.balances] : []), ...floorPts, 0, liquidity.startingBalance];
   const rough = (Math.max(...vals) - Math.min(...vals) || 1) / 5;
   const mag = Math.pow(10, Math.floor(Math.log10(rough)));
   const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= rough);
@@ -120,6 +128,8 @@ export default function CashFlowTerminal({ liquidity, scenario = null, scenarioN
   const whatPts = [start, ...glideWhat];
   const resPts = reserve ? [reserve.startingBalance, ...reserve.balances] : null;
   const area = `${path(estPts)} L${x(n)},${y(yMin)} L${x(0)},${y(yMin)} Z`;
+  const floorArea = `${path(floorPts)} L${x(n)},${y(yMin)} L${x(0)},${y(yMin)} Z`;
+  const hasFloor = floorPts.some((v) => v > 0);
   const grid = [];
   for (let v = yMin; v <= yMax + step / 2; v += step) grid.push(v);
 
@@ -195,7 +205,7 @@ export default function CashFlowTerminal({ liquidity, scenario = null, scenarioN
             <span><i className="sw com" />Committed only</span>
             {active && <span><i className="sw what" />What-if</span>}
             {resPts && <span><i className="sw res" />Farm + personal reserve</span>}
-            <span><i className="sw floor" />Required floor {kfmt(floor)}</span>
+            {hasFloor && <span title={`At each month-end: loan payments, bills, card statements, fees, tax and GST, and household essentials due in the next ${days} days`}><i className="sw floor" />Cash floor · due in the next {days} days</span>}
           </div>
           <div ref={boxRef}>
           <svg ref={svgRef} viewBox={`0 0 ${W} ${H + FH}`} width={W} height={H + FH} className="cft-svg" role="img" tabIndex={0}
@@ -219,10 +229,10 @@ export default function CashFlowTerminal({ liquidity, scenario = null, scenarioN
                 <text x={pad.left - 10} y={y(v) + 4} textAnchor="end" className="cft-axis">{kfmt(v)}</text>
               </g>
             ))}
-            {floor > 0 && (
+            {hasFloor && (
               <>
-                <rect x={pad.left} y={y(floor)} width={iw} height={Math.max(0, y(yMin) - y(floor))} className="cft-danger" />
-                <line x1={pad.left} x2={pad.left + iw} y1={y(floor)} y2={y(floor)} className="cft-floor" />
+                <path d={floorArea} className="cft-danger" />
+                <path d={path(floorPts)} className="cft-floor" fill="none" />
               </>
             )}
 
@@ -289,6 +299,7 @@ export default function CashFlowTerminal({ liquidity, scenario = null, scenarioN
               <span>Committed <b>{money(Math.round(comPts[at + 1]))}</b></span>
               {active && <span>What-if <b>{money(Math.round(what[at].balance))}</b></span>}
               {resPts && <span>With personal reserve <b>{money(Math.round(resPts[at + 1]))}</b></span>}
+              <span title={floorTitle(base[at].floorParts)}>Floor, next {days} days <b className={room(what[at]) < 0 ? 'neg' : ''}>{money(Math.round(floorOf(what[at])))}</b></span>
               <span>In <b className="pos">{signed(what[at].inflow)}</b></span>
               <span>Out <b className="neg">{signed(what[at].outflow)}</b></span>
               {picked == null && <em>Click to open the month</em>}
@@ -302,6 +313,9 @@ export default function CashFlowTerminal({ liquidity, scenario = null, scenarioN
     </div>
   );
 }
+
+const FLOOR_PARTS = [['loans', 'Loan payments'], ['bills', 'Bills'], ['cards', 'Card statements'], ['tax', 'Tax and GST'], ['household', 'Household essentials'], ['fees', 'Fees']];
+const floorTitle = (parts) => (parts ? FLOOR_PARTS.filter(([k]) => parts[k] >= 1).map(([k, l]) => `${l} ${money(Math.round(parts[k]))}`).join('\n') : undefined);
 
 /** Everything behind one month: money in and out, item by item. */
 function MonthLedger({ m, b, active, onClose }) {

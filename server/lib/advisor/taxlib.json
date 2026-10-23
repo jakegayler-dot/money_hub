@@ -1,0 +1,998 @@
+[
+ {
+  "id": "cash-method-farming",
+  "title": "Cash method for farmers (ITA s.28)",
+  "topic": "farm-income",
+  "tax_year": 2026,
+  "text": "Under ITA s.28(1) an individual carrying on a farming business may compute farm income on the cash method instead of accrual. Income is the total of amounts actually received (or deemed received) in the year that would be business income under accrual (28(1)(a)), plus the mandatory and optional inventory amounts (28(1)(b),(c)) and certain add-backs such as recapture under s.13(1) and livestock-deferral inclusions under 80.3(3)/(5) (28(1)(d)). Deductions are amounts actually paid in the year (28(1)(e)), prior-year prepayments that relate to the current year (28(1)(e.1)), reversal of the prior year's inventory amounts (28(1)(f)), CCA and s.30 land-clearing amounts, and 80.3(2)/(4) livestock deferrals (28(1)(g)). Accounts receivable: under the cash method a receivable is not income until collected. Grain delivered in December but paid in January is generally 2027 income for a 2026 delivery, unless the buyer actually pays (or the cheque is received) in 2026. Do not confuse an ordinary receivable with a deferred cash purchase ticket, which has its own rule (s.76(4), see separate entry). Cheques received are income when received, not when deposited. Prepaid expenses: inventory purchases (seed, fertilizer, chemical, feed, purchased livestock) are deductible when paid under 28(1)(e), but the mandatory inventory adjustment can claw that back if it creates a loss. Non-inventory prepaid expenses (e.g., multi-year insurance, rent, service contracts) can only be deducted for the current year and the immediately following year; any portion relating to a year two or more years after payment is deducted in the year it relates to (28(1)(e.1)). CRA's RC4408 example: a $600 three-year contract paid in 2025 gives $400 deductible in 2025 and $200 in 2027. Common mistakes: treating the farm as cash-basis for income tax but booking accrual numbers in the household/farm bookkeeping system without a reconciliation; deducting prepaid land rent for two future years at once; forgetting that the method chosen applies to the whole farming business; AgriStability uses its own rules (accrual adjustments) so tax and program numbers differ. For a combined books-in-one-system household, tag each transaction as farm/personal and record payment date (not invoice date) as the tax date. Application to a Saskatchewan grain/cattle sole proprietor: the cash method lets the operator choose the year income lands by timing grain sales and input purchases around December 31; this flexibility is the main reason to stay on cash, but it must be managed against bunching (see grain-marketing-tax-timing).",
+  "cite": "ITA s.28(1)(a)-(g); CRA guide RC4408 (2025) Ch. 3",
+  "sources": [
+   {
+    "title": "Income Tax Act s.28 (Justice Laws, current to 2026-09-30)",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/i-3.3/section-28.html"
+   },
+   {
+    "title": "CRA RC4408 Chapter 3 - Farming expenses, prepaid expenses",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4408/rc4408-05.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "inventory-adjustments-mia-oia",
+  "title": "Mandatory and optional inventory adjustments (MIA/OIA)",
+  "topic": "inventory",
+  "tax_year": 2026,
+  "text": "Mandatory inventory adjustment (MIA), s.28(1)(c): if a cash-method farmer has a net loss for the year (computed before inventory adjustments), the farmer must add back the lesser of (a) that loss and (b) the value of purchased inventory still on hand at year-end. The MIA can therefore reduce a loss to nil but never creates income. Purchased inventory includes purchased feed, fertilizer, chemicals, seed and purchased livestock that are still owned at year-end; home-raised inventory is not included. Valuation (s.28(1.2); RC4408 MIA charts): \"specified animals\" (horses, and registered bovine cattle if the farmer elects) may be valued at any amount between 70% and 100% of cash cost for animals bought in the year, and for animals bought earlier at not less than 70% of the prior year-end value (plus any further payments), capped at cost. All other purchased inventory, including unregistered purchased cattle, is valued at the lower of cash cost and fair market value. Only amounts actually paid by year-end count. Chart 4 of the CRA form computes MIA as the lesser of the net loss and the total purchased-inventory value. Optional inventory adjustment (OIA), s.28(1)(b): the farmer may also add any amount up to the fair market value of all inventory on hand (purchased and home-grown, including cattle and stored grain) minus the MIA. OIA is voluntary and is typically used to (i) avoid wasting personal credits and low brackets, (ii) smooth income between years, or (iii) preserve RRSP earned income and CPP pensionable earnings. Reversal: both MIA and OIA added in 2026 are deducted in 2027 (s.28(1)(f)). An OIA therefore defers, it does not eliminate, deductions. Interaction with losses: because MIA eliminates the portion of a loss funded by unsold purchased inputs, a cash-basis farmer cannot manufacture a large non-capital loss by prepaying inventory. CRA notes the OIA is added back before computing the farm loss available for carryover, so the loss available to carry back or forward is the after-adjustment figure. Common mistakes: valuing purchased feeder cattle at the 70% floor (that floor is only for specified animals); forgetting to reverse last year's MIA/OIA; omitting MIA when the farm return shows a loss; using an OIA larger than inventory FMV. Saskatchewan grain/cattle example: if 2026 shows a $60,000 loss after prepaying $120,000 of fertilizer and chemical still in the shed at December 31, MIA = $60,000, reducing the loss to nil, and $60,000 is deducted again in 2027.",
+  "cite": "ITA s.28(1)(b),(c),(f), 28(1.2); CRA RC4408 (2025) MIA charts, Ch. 6",
+  "sources": [
+   {
+    "title": "Income Tax Act s.28",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/i-3.3/section-28.html"
+   },
+   {
+    "title": "CRA RC4408 - MIA charts (2025 fiscal period)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4408/rc4408-17.html"
+   },
+   {
+    "title": "CRA RC4408 Chapter 6 - Farm losses",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4408/rc4408-09.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "restricted-farm-losses",
+  "title": "Restricted farm losses and the chief-source test (s.31)",
+  "topic": "loss-rules",
+  "tax_year": 2026,
+  "text": "Section 31(1) applies when a taxpayer's chief source of income for the year is neither farming nor a combination of farming and some other source of income that is subordinate to farming. In that case the farm loss deductible against other income is limited to $2,500 plus the lesser of one-half of the loss over $2,500 and $15,000, for a maximum of $17,500 per year (reached at a net farm loss of $32,500). The excess is a \"restricted farm loss\" (RFL) under s.31(1.1). History: In Canada v. Craig (SCC 2012) the Court held that farming could be combined with a non-subordinate source and still qualify for full deduction. Budget 2013 reversed this, restoring the Moldowan approach: losses are restricted where farming is combined with another source that is not subordinate to farming. Budget 2013 also doubled the cap from $8,750 to $17,500. Both apply to taxation years ending after March 20, 2013. The current statute text confirms the \"subordinate source\" wording. Chief-source factors (CRA): gross and net income from farming vs other sources, capital invested, cash flow, time and personal involvement, and the farm's history and capability of profit. A farm with no reasonable expectation of profit/no commercial manner may be a hobby, with no loss deductible at all. RFL use: carried back 3 and forward 20 years, deductible only against farming income (see farm-loss-carryovers). Unused RFL can also be added to the ACB of farmland to the extent of property taxes and interest on money borrowed to buy the land, reducing a later capital gain (s.53(1)(i)) - CRA mentions RFL reducing the gain on farmland; the precise mechanics were not re-verified here. Application: for a full-time Saskatchewan grain and cattle operator whose time and capital are concentrated on the farm, s.31 normally does not apply, so the full loss offsets other income (e.g., trading-business income) and is a regular non-capital (farm) loss. Risk arises if the online commodities trading business becomes the dominant income source and is not subordinate to farming: documenting hours, capital, and the farm's commercial scale protects full deductibility. Spouse employment income does not affect the farmer's own test (tested per taxpayer).",
+  "cite": "ITA s.31(1), 31(1.1); Budget 2013; CRA RC4408 Ch. 6",
+  "sources": [
+   {
+    "title": "Income Tax Act s.31",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/i-3.3/section-31.html"
+   },
+   {
+    "title": "CRA - Budget 2013 Restricted Farm Losses",
+    "url": "https://www.canada.ca/en/revenue-agency/programs/about-canada-revenue-agency-cra/federal-government-budgets/budget-2013/budget-2013-restricted-farm-losses.html"
+   },
+   {
+    "title": "CRA RC4408 Chapter 6 - Farm losses",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4408/rc4408-09.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "farm-loss-carryovers",
+  "title": "Farm loss and restricted farm loss carryover periods",
+  "topic": "loss-rules",
+  "tax_year": 2026,
+  "text": "Farm losses (fully deductible): a farmer whose chief source of income is farming can deduct a net farm loss against all other income in the year. Any unused portion becomes part of the non-capital loss and, per CRA, farm losses can be carried back 3 years and forward 20 years (20-year carryforward applies to losses arising after 2005). To carry a 2026 loss back to 2023, 2024 or 2025, file Form T1A with the 2026 return; do not amend the earlier returns. Restricted farm losses (RFL): the portion of a loss disallowed by s.31 is also carried back 3 and forward 20 years, but can only be deducted against net farming income of the carryover year (not against employment, investment or trading income). Ordering and planning: losses are applied at the taxpayer's discretion within the carryover rules, but a carryback is most valuable when it recovers tax paid at high marginal rates (e.g., a prior year with big grain sales). Because the cash method gives flexibility, the farmer should first consider whether an OIA (inventory adjustment) or reduced CCA claim produces a better result than creating a loss that must be carried. CCA is discretionary; not claiming CCA preserves UCC instead of generating a loss. MIA interaction: the MIA reduces a cash-basis loss by the value of purchased inventory on hand, so the carryover-eligible loss is the post-MIA figure. CRA also notes the OIA is added back before computing the loss. Common mistakes: carrying a loss back to a year where income was already taxed at the lowest rates (low value); assuming a carryback refunds prior-year CPP (it reduces taxable income under s.111, not the self-employed earnings on which CPP was assessed); missing the T1A; applying an RFL against non-farm income. Saskatchewan grain/cattle context: drought, low yields or a cattle wreck can create a farm loss; the 3-year carryback can recover tax from strong canola years, which often provides cash faster than AgriStability.",
+  "cite": "ITA s.111(1)(a),(c),(d); s.31(1.1); CRA RC4408 Ch. 6; Form T1A",
+  "sources": [
+   {
+    "title": "CRA RC4408 Chapter 6 - Farm losses (2025)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4408/rc4408-09.html"
+   },
+   {
+    "title": "Income Tax Act s.31",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/i-3.3/section-31.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "livestock-tax-deferral-80-3",
+  "title": "Livestock tax deferral for drought/excess moisture (s.80.3)",
+  "topic": "deferrals",
+  "tax_year": 2026,
+  "text": "Rule: a farmer carrying on a farming business in a prescribed drought, excess-moisture or flood region who reduces the breeding herd by at least 15% in the year may deduct part of the net proceeds from sales of breeding animals and include it in a later year (s.80.3(4) and (4.1) deduction, 80.3(5) inclusion; 80.3(2) and (3) are the separate rules for animals destroyed by law), when the income can be offset by the cost of restocking. Tiers (AAFC): herd reduced by at least 15% but less than 30% - 30% of income from net sales of breeding animals may be deferred; herd reduced by 30% or more - 90% may be deferred. Net sales are sales of breeding animals in the year less purchases of breeding animals in the year. The herd reduction is measured by comparing the breeding herd at the end of the year with the breeding herd at the beginning. Regions adjacent to affected areas may also be prescribed. Inclusion: the deferred amount is included in income in the first year after the deferral year that the region is not prescribed (or an earlier year the farmer elects). In consecutive prescribed years the deferral can roll forward until the first non-prescribed year. Prescribed regions - Saskatchewan: the 2025 list (page updated 2026-02-02) includes RM of Star City No. 428 and every neighbouring RM checked: Tisdale 427, Flett's Springs 429, Invergordon 430, Kinistino 459, Willow Creek 458, Connaught 457, Pleasantdale 398, Barrier Valley 397, Bjorkdale 426, Lake Lenore 399, Three Lakes 400, Arborfield 456. The 2026 INITIAL list (announced 2026-09-01) contains NO Saskatchewan regions (only AB, BC, NL, NWT, QC). More regions may be added during the season. Consequence for an RM 428 producer: if a 2025 deferral was claimed and the RM is not added to the 2026 list, the deferred 2025 amount must be included in 2026 income. Plan 2026 heifer retention/cow purchases (deductible under the cash method) and check the final 2026 list before year-end; if restocking, the inclusion is partly offset. Mechanics/common mistakes: claim on Form T1273/T2042 lines for the deferral; only breeding animals count (the definition in s.80.3(1) covers bovine cattle, bison, goats, sheep, deer, elk and certain horses over 12 months kept for breeding - definition not re-verified here); feeder or finished cattle do not qualify; the 15% reduction test is on the breeding herd count, not dollars. A separate s.80.3 proposal (March 2026) would spread Health of Animals Act compensation for the 2024-2025 bovine TB events over 2027-2030 for AB/SK/MB producers - proposed, not law.",
+  "cite": "ITA s.80.3(1), (4), (4.1), (5); AAFC Livestock Tax Deferral Provision; prescribed regions lists 2025 and 2026",
+  "sources": [
+   {
+    "title": "AAFC Livestock Tax Deferral Provision",
+    "url": "https://agriculture.canada.ca/en/agricultural-production/weather/livestock-tax-deferral-provision"
+   },
+   {
+    "title": "AAFC 2025 prescribed regions",
+    "url": "https://agriculture.canada.ca/en/agricultural-production/weather/livestock-tax-deferral-provision/2025-livestock-tax-deferral-prescribed-regions"
+   },
+   {
+    "title": "AAFC 2026 prescribed regions (initial list)",
+    "url": "https://agriculture.canada.ca/en/agricultural-production/weather/livestock-tax-deferral-provision/2026-livestock-tax-deferral-prescribed-regions"
+   },
+   {
+    "title": "AAFC news 2026-09-01 initial 2026 list",
+    "url": "https://www.canada.ca/en/agriculture-agri-food/news/2026/09/minister-macdonald-announces-initial-list-of-2026-livestock-tax-deferral-regions.html"
+   },
+   {
+    "title": "AAFC news 2026-03 bovine TB deferral (proposed)",
+    "url": "https://www.canada.ca/en/agriculture-agri-food/news/2026/03/government-of-canada-announces-extended-tax-deferral-period-for-livestock-producers-affected-by-2024-and-2025-bovine-tuberculosis-events.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "cash-purchase-tickets-76-4",
+  "title": "Deferred cash purchase tickets for grain (s.76(4))",
+  "topic": "deferrals",
+  "tax_year": 2026,
+  "text": "Rule: where a cash purchase ticket (or other prescribed form of settlement under the Canada Grain Act) is issued for grain delivered in a taxation year to a primary elevator or process elevator, and the ticket entitles the holder to payment of the stated purchase price, without interest, at a date after the end of that year, the price is included in income for the year immediately following delivery, not the delivery year (s.76(4)). Eligible grain (s.76(5)): wheat, oats, barley, rye, flaxseed, rapeseed and canola produced in Canada. Pulses (peas, lentils), soybeans, mustard and specialty crops are not listed, so a deferred contract on those is just an ordinary receivable (taxed when received under the cash method). Terms \"cash purchase ticket\", \"operator\", \"primary elevator\" and \"process elevator\" take their Canada Grain Act meanings, so the buyer must be a licensed elevator operator. Conditions: (1) grain is actually delivered for sale (CRA's archived IT-184R says exchanging a storage ticket for a cash ticket is the delivery/sale; the storage ticket alone is not); (2) the ticket is interest-free; (3) the payment date is after year-end. The farmer must be on the cash method. Practical effect: for a cash-basis farmer, a deferred cash ticket issued in December 2026 with a January 2027 payment date is 2027 income even if the elevator offers to pay early. It is effectively a one-year deferral tool, but it does not escape tax; it shifts the income into 2027 alongside 2027's own sales. Risks/common mistakes: counterparty credit risk (deferred tickets are unsecured beyond the elevator's security/licensing arrangements); deferring every year creates a permanent rolling deferral that collapses on retirement/death/incorporation; assuming pulses qualify; assuming a cheque post-dated into January from a non-licensed buyer qualifies. Note the federal government consulted on eliminating this deferral around 2021, but s.76(4) remains in force in the consolidated Act current to 2026. Saskatchewan application: useful for canola, wheat, oats and barley delivered in late December; coordinate with the RRSP/CPP/bracket plan so 2026 lands at the target taxable income.",
+  "cite": "ITA s.76(4), 76(5); CRA IT-184R (archived)",
+  "sources": [
+   {
+    "title": "Income Tax Act s.76",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/i-3.3/section-76.html"
+   },
+   {
+    "title": "CRA IT-184R (archived) Deferred cash purchase tickets",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/it184r/archived-deferred-cash-purchase-tickets-issued-grain.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "cca-basics-and-incentives",
+  "title": "CCA basics, half-year rule, AII reinstatement and immediate expensing",
+  "topic": "capital-cost",
+  "tax_year": 2026,
+  "text": "Basics: depreciable property is deducted through capital cost allowance (CCA) by class at declining-balance rates (Reg. Sch. II). CCA is discretionary: claim any amount up to the maximum. Half-year rule: in the year of acquisition CCA is generally limited to half the net additions, except for accelerated property. Accelerated Investment Incentive (AII) - status: the original AII (acquired after Nov 20, 2018, available for use before 2028) was phasing out for property available for use after 2023. Budget 2025 (Productivity Super-Deduction) and Bill C-15 (Budget 2025 Implementation Act, No. 1, Royal Assent March 26, 2026) reinstated it: \"reaccelerated investment incentive property\" (RIIP) is property acquired after 2024 and available for use before 2034. For property available for use before 2030, the first-year deduction is 3x the normal half-year amount (i.e., 1.5x the full rate, half-year rule suspended) for classes normally subject to the half-year rule; for property available for use in 2030-2033 it drops to 2x; normal rules after 2033. Example: Class 8 equipment (20%) first-year rate 30%; Class 10 truck/tractor (30%) first-year 45%. The property must not have been previously owned/CCA-claimed by anyone or acquired non-arm's length. Immediate expensing (100% first-year): via C-15 for property acquired after 2024 and available for use before 2030 in Class 43 (M&P machinery, moving from Class 53 in 2026), Class 43.1 clean energy equipment, and Classes 54-56 zero-emission vehicles, phasing to 75% (2030-2031) and 55% (2032-2033). Classes 44, 46 and 50 (patents, data network infrastructure, computers) get immediate expensing for property acquired after April 15, 2024 and available for use before 2027. The general $1.5M \"designated immediate expensing property\" regime for individuals and Canadian partnerships of individuals covered property acquired after 2021 and available for use before 2025 (CCPCs: before 2024). It has EXPIRED for 2025+ purchases; for a sole proprietor buying 2026 equipment, use RIIP rates, not 100% expensing. That regime excluded Classes 1-6, 14.1, 17, 47, 49 and 51. Recapture and terminal loss: if proceeds (capped at capital cost) exceed the class UCC, the negative balance is recaptured into farm income (line 9600). If no property remains in a class and UCC remains, a terminal loss is deductible (line 9896). Class 10.1 vehicles never generate recapture or terminal loss (separate class per vehicle; half-year rule on disposal year) - general rule, not re-verified here. Common mistakes: trading in a combine creates proceeds in Class 8/10 that can trigger recapture; claiming full CCA in a low-income year (wasting it - CCA is optional); expecting immediate expensing on 2026 farm equipment.",
+  "cite": "ITA s.20(1)(a), 13(1), 20(16); ITR 1100(2), 1104(3.2), Sch. II; Bill C-15 (S.C. 2026); CRA RC4408 Ch. 5",
+  "sources": [
+   {
+    "title": "CRA RC4408 Chapter 5 - CCA (2025)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4408/rc4408-07.html"
+   },
+   {
+    "title": "CRA Accelerated investment incentive page",
+    "url": "https://www.canada.ca/taxes-accelerated-investment-income"
+   },
+   {
+    "title": "Finance Canada - C-15 Royal Assent 2026-03-26",
+    "url": "https://www.canada.ca/en/department-finance/news/2026/03/legislation-passes-to-implement-budget-2025-canada-strong.html"
+   },
+   {
+    "title": "PwC Tax Insights - Bill C-15 CCA changes (context)",
+    "url": "https://www.pwc.com/ca/en/services/tax/publications/tax-insights/bill-c-15-implements-changes-2025.html"
+   },
+   {
+    "title": "EY - Bill C-15 RIIP details (context)",
+    "url": "https://taxnews.ey.com/news/2025-2564-canada-tables-bill-with-accelerated-capital-cost-allowance-and-other-immediate-expensing-measures"
+   },
+   {
+    "title": "Budget Implementation Act 2022 No.1 - immediate expensing definitions",
+    "url": "https://laws-lois.justice.gc.ca/eng/annualstatutes/2022_10/page-5.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "cca-farm-classes-2026",
+  "title": "CCA classes commonly used on farms and 2026 vehicle limits",
+  "topic": "capital-cost",
+  "tax_year": 2026,
+  "text": "Rates per CRA RC4408 (2025 guide, last modified 2026-04-17), declining balance unless noted: - Class 1 (4%): most buildings acquired after 1987 (non-wood). Class 3 (5%): buildings acquired 1979-1987. - Class 6 (10%): wood, galvanized or portable buildings, fences, greenhouses, water towers, irrigation ponds - typical for pole sheds, corrals and fencing. - Class 8 (20%): farm equipment such as drawn combines, cultivators, drills, grain-drying equipment; tools of $500 or more. Grain bins/aeration usually go here. - Class 10 (30%): trucks, tractors, trailers, wagons, self-propelled combines, chainsaws, and motor vehicles that are not Class 10.1. - Class 10.1 (30%): passenger vehicles costing more than the ceiling; 2026 ceiling $39,000 before tax for vehicles acquired on or after January 1, 2026 (2025: $38,000). Each vehicle is its own class. - Class 12 (100%): tools under $500; application software. - Class 14.1 (5%): quotas and other intangibles (e.g., milk/egg quota) - mostly irrelevant for grain/beef. - Class 17 (8%): paved roads, parking and storage areas (e.g., a paved yard). Clearing land, levelling land and installing land drainage are deductible expenses (s.30), not CCA; s.30 does not cover roads. - Class 43.1: clean-energy generation equipment (e.g., solar PV for farm power); 100% first-year write-off for property acquired after 2024 and available for use before 2030 under C-15 (phase-down 2030-2033). Class 43.2 (50%) applied to property acquired before 2025 per C-15 commentary. - Class 50 (55%): computers and systems software (immediate expensing for property acquired after April 15, 2024 and available for use before 2027). - Class 54 (30%): zero-emission vehicles that would otherwise be Class 10/10.1 - 2026 cost ceiling $61,000 before tax; Class 55 (40%): ZEVs otherwise in Class 16. Both get 100% first-year under C-15 for property acquired after 2024 and available for use before 2030. Other 2026 auto limits: interest deduction $350/month; lease limit $1,100/month before tax; tax-exempt allowance 73 cents/km first 5,000 km, 67 cents thereafter (provinces). Farm practice notes: a 3/4-ton pickup used primarily on the farm is normally Class 10, not 10.1, if it meets the \"motor vehicle\" exceptions (e.g., more than 50% use transporting goods/equipment) - test carefully. Land is not depreciable; allocate purchase price between land, buildings and bins at acquisition. Breeding animals are not depreciable (inventory under cash method).",
+  "cite": "ITR Sch. II; ITA s.13(7)(g), 67.2, 67.3; CRA RC4408 CCA rates table; Finance Canada 2026 automobile limits",
+  "sources": [
+   {
+    "title": "CRA RC4408 - CCA rates table",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4408/rc4408-16.html"
+   },
+   {
+    "title": "CRA RC4408 Ch. 5 - CCA",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4408/rc4408-07.html"
+   },
+   {
+    "title": "Finance Canada - 2026 automobile deduction limits (2026-01-14)",
+    "url": "https://www.canada.ca/en/department-finance/news/2026/01/government-announces-the-2026-automobile-deduction-limits-and-expense-benefit-rates-for-businesses.html"
+   },
+   {
+    "title": "EY - Bill C-15 RIIP/immediate expensing (context)",
+    "url": "https://taxnews.ey.com/news/2025-2564-canada-tables-bill-with-accelerated-capital-cost-allowance-and-other-immediate-expensing-measures"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "farmland-capital-property",
+  "title": "Farmland: non-depreciable capital property and capital gains",
+  "topic": "capital-gains",
+  "tax_year": 2026,
+  "text": "Land is not depreciable property; its cost goes to adjusted cost base (ACB), not a CCA class (CRA RC4408 Ch. 5; land costs reported separately on line 9923, Area F). On sale, gain = proceeds minus ACB and selling costs, of which one-half is taxable (inclusion rate remains 1/2 - see capital-gains-inclusion-lcge). Buildings, bins and fences on the land are depreciable and must be allocated a portion of the price; that allocation drives recapture on sale, so allocate at fair values and document it (appraisal). Purchase allocation: when buying a quarter with a yard, split the price between land (ACB), house (personal/principal residence), and farm buildings (Class 1/6/8). Over-allocating to land saves recapture later but forfeits CCA now; over-allocating to buildings invites CRA challenge. Qualified farm property (QFFP): farmland and buildings owned by the farmer or spouse and used in a farming business can qualify for the lifetime capital gains exemption (LCGE) if the tests are met (24-month ownership; for property acquired after June 17, 1987, a gross-revenue test in at least two years where gross farm income exceeded income from all other sources, or use by a family farm corporation/partnership for 24 months). Land rented to an arm's-length farmer may fail the use tests - critical for retirement planning when land is cash-rented. Land improvements: land clearing, levelling and drainage (tile) costs are generally deductible under s.30 in the year paid or carried forward (CRA RC4408 line 9796); paved surfaces are Class 17. Restricted farm losses and certain carrying costs (property taxes, interest on money to buy land) not deductible because of s.31 may increase ACB of the land (s.53(1)(i)) - mechanics not re-verified here. Sale timing: capital gains are realized on disposition (closing), not on signing; a vendor-take-back mortgage allows a reserve (5-year generally, 10-year for transfers to a child - see capital-gains-reserve). Saskatchewan note: no provincial land transfer tax on income tax returns; Saskatchewan's Farm Security Act ownership restrictions and municipal/school property tax apply (property tax is a deductible farm expense, not an income tax). Sale of farmland that generates a large gain can trigger AMT (see alternative-minimum-tax) even when the LCGE shelters it.",
+  "cite": "ITA s.38, 39, 40, 53(1)(i), 30, 110.6(1) 'qualified farm or fishing property'; CRA RC4408 Ch. 5; T4002 Ch. 6",
+  "sources": [
+   {
+    "title": "CRA RC4408 Chapter 5 - CCA (land not depreciable)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4408/rc4408-07.html"
+   },
+   {
+    "title": "CRA T4002 Chapter 6 - Capital gains (QFFP tests)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/t4002/t4002-9.html"
+   },
+   {
+    "title": "CRA RC4408 Chapter 3 - land clearing line 9796",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4408/rc4408-05.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "principal-residence-farm",
+  "title": "Principal residence exemption on a farm (house plus 1/2 hectare, Method 1/Method 2)",
+  "topic": "capital-gains",
+  "tax_year": 2026,
+  "text": "Rule: a gain on a principal residence is exempt for years it is designated (one property per family unit per year after 1981). The land that can be included with the home is limited to one-half hectare (about 1.24 acres) unless the taxpayer shows more land is necessary for the use and enjoyment of the housing unit (CRA T4002 Ch. 6). On a farm, the remaining land is farm capital property (potentially QFFP). Two methods when farmland including a residence is sold (s.40(2)(c)): - Method 1: split proceeds and ACB between the principal residence (house plus its land) and the farmland; compute each gain separately; exempt the residence gain via designation; the farmland gain is taxable (or eligible for LCGE). - Method 2: compute the gain on the whole property, then reduce it by $1,000 plus $1,000 for each taxation year after 1971 in which the property was the principal residence and the taxpayer was resident in Canada. Method 2 can reduce a gain to nil but cannot create a loss. It favours long ownership with modest gains; Method 1 favours high-value homes on modest land. Reporting: dispositions of a principal residence must be reported on Schedule 3 and the designation form (T2091) even when fully exempt (general CRA requirement - confirm with T4037). Farm-specific points: the farm house is personal-use, so its costs are not deductible except a business-use-of-home portion; claiming CCA on part of the house can taint the exemption for that part. If the yard site is subdivided and sold, the one-half hectare limit applies unless need is shown (e.g., municipal minimum lot size). In Saskatchewan, rural yard sites are often larger than 1.24 acres; the excess is typically treated as farmland. Planning interaction: when transferring farmland to a child under s.73(3), the house portion is not farm property; consider designating it as principal residence and transferring separately. Common mistakes: treating the whole quarter as principal residence; failing to report the designation; mixing house mortgage interest into farm interest (house interest is personal and non-deductible except business-use-of-home).",
+  "cite": "ITA s.40(2)(b),(c), s.54 'principal residence'; CRA T4002 Ch. 6; T4037",
+  "sources": [
+   {
+    "title": "CRA T4002 Chapter 6 - Capital gains (farm principal residence)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/t4002/t4002-9.html"
+   },
+   {
+    "title": "CRA T4037 Capital Gains 2025",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/t4037/capital-gains.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "capital-gains-inclusion-lcge",
+  "title": "Capital gains inclusion rate (1/2) and LCGE for qualified farm property",
+  "topic": "capital-gains",
+  "tax_year": 2026,
+  "text": "Inclusion rate: the 2024 proposal to raise the inclusion rate to two-thirds on gains above $250,000 was cancelled. The Prime Minister announced on March 21, 2025 that the government will \"cancel the proposed hike in the capital gains inclusion rate\" while maintaining the LCGE increase to $1,250,000. For 2026 the inclusion rate is one-half (CRA 2025 capital gains guide uses 50%). Status: law. Lifetime capital gains exemption (LCGE) amount: $1,250,000 for dispositions of qualified farm or fishing property (QFFP) and QSBC shares after June 24, 2024 (2024 dispositions before June 25: $1,016,813). The increase was enacted in Bill C-15 (Royal Assent March 26, 2026); PwC's summary of the enacted bill states indexing applies after 2025. CRA's 2026 indexation page shows the 2026 LCGE at $1,275,000 (= $1,250,000 x 1.02), a maximum deduction of $637,500 (one-half). QFFP definition (s.110.6(1)): real property (land, buildings) and Class 14.1 quota owned by the individual or spouse (or a family farm partnership), shares of a family farm corporation, or interests in a family farm partnership. Tests for property acquired after June 17, 1987: (1) owned by the individual or a related person for the 24 months before sale; and (2) either (a) in at least two years of ownership the gross revenue from the farming business of the individual (or spouse, child, parent) exceeded income from all other sources, and the person was actively engaged on a regular and continuous basis, or (b) used by a family farm corporation or partnership principally in farming throughout 24 months. Property acquired before June 18, 1987 needs to have been used in farming for at least five years (or in the year of sale). Practical tests for this farm: the trading business income must not swamp gross farm revenue for the 2-year gross-revenue test; land leased out at retirement can still qualify if earlier years met the tests (grandfathering via the \"at any time\" structure) - check facts. Each spouse has their own LCGE: joint ownership of land with a spouse (who is actively engaged) can double the shelter. Claims interact with cumulative net investment loss (CNIL), allowable business investment losses, and AMT (30% of LCGE-eligible gains are included in the AMT base).",
+  "cite": "ITA s.38(a), 110.6(1),(2); Bill C-15 (S.C. 2026); CRA line 25400; T4002 Ch. 6",
+  "sources": [
+   {
+    "title": "PMO - cancellation of capital gains increase (2025-03-21)",
+    "url": "https://www.pm.gc.ca/en/news/news-releases/2025/03/21/prime-minister-mark-carney-cancels-proposed-capital-gains-tax-increase"
+   },
+   {
+    "title": "CRA line 25400 - LCGE table",
+    "url": "https://www.canada.ca/line-25400"
+   },
+   {
+    "title": "CRA T4002 Ch. 6 - QFFP tests",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/t4002/t4002-9.html"
+   },
+   {
+    "title": "CRA T4037 Capital Gains 2025",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/t4037/capital-gains.html"
+   },
+   {
+    "title": "PwC - Bill C-15 enacted, LCGE indexing after 2025 (context)",
+    "url": "https://www.pwc.com/ca/en/services/tax/publications/tax-insights/bill-c-15-implements-changes-2025.html"
+   },
+   {
+    "title": "CRA indexation 2026 (2.0%)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/individuals/frequently-asked-questions-individuals/adjustment-personal-income-tax-benefit-amounts.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "intergenerational-farm-rollover",
+  "title": "Transfer of farm property to a child (s.73(3)-(4), 70(9)-(9.3)) and 2024 IBT rules",
+  "topic": "rollovers",
+  "tax_year": 2026,
+  "text": "Inter vivos (s.73(3), 73(3.1)): Canadian land or depreciable property of a prescribed class may be transferred to a child resident in Canada where, before the transfer, it was used principally in a farming business in which the taxpayer, spouse, a child or a parent was actively engaged on a regular and continuous basis. The parent's proceeds are deemed to be the actual consideration, bounded: not more than the greater of FMV and the tax cost (ACB for land; lesser of capital cost and UCC-proportion for depreciable property), and not less than the tax cost. So the parent can elect any amount between cost and FMV - e.g., at cost (full rollover) or at an amount that uses the LCGE. The child inherits that amount as cost; for depreciable property the child keeps the parent's capital cost with the difference treated as prior CCA (recapture exposure passes down). Shares/partnership interests (s.73(4), 73(4.1)): same approach for shares of a family farm corporation or interests in a family farm partnership; a partnership interest can be rolled at cost with no disposition. On death (s.70(9)-(9.31)): farm land/depreciable property used principally in farming, and family farm shares/partnership interests, can pass to a Canadian-resident child at tax cost if they vest indefeasibly within 36 months; the legal representative may elect any amount between cost and FMV (to use the deceased's LCGE). Trust variants (9.1, 9.3) apply after the death of a spouse-beneficiary. A child's transfer back to a parent is covered by 70(9.6). Who is a child (s.70(10), applied by 73(6)): includes grandchildren, great-grandchildren, and a person wholly dependent on and in the custody of the taxpayer before age 19. (Spouses of children are included by s.252 - not re-verified here.) 2024 intergenerational business transfers (s.84.1(2)(e), (2.3)-(2.32)): a sale of family farm corporation or QSBC shares to a corporation controlled by children 18+ can avoid s.84.1 dividend treatment, giving capital gains/LCGE, if conditions are met: immediate transfer (control and management transferred within 36 months, parent and spouse cease holding common shares) or gradual transfer (60 months management, and within 10 years parent's debt/equity must fall to 50% of pre-sale value for farm shares, 30% for QSBC). Joint election required. Applies to transactions after 2023; a 10-year reserve is available (s.40(1.2)). This matters only if the farm is incorporated. Pitfalls: transferring land that has been cash-rented to third parties (fails \"used principally in farming by the family\" test); the child selling soon after (attribution under s.75.1 for sales within 3 years - not re-verified); forgetting AMT on an elected LCGE gain.",
+  "cite": "ITA s.73(3), 73(3.1), 73(4), 73(4.1), 73(6), 70(9)-(9.31), 70(9.6), 70(10), 84.1(2)(e),(2.3)-(2.32), 40(1.2)",
+  "sources": [
+   {
+    "title": "Income Tax Act s.73",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/I-3.3/section-73.html"
+   },
+   {
+    "title": "Income Tax Act s.70",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/I-3.3/section-70.html"
+   },
+   {
+    "title": "Income Tax Act s.84.1",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/I-3.3/section-84.1.html"
+   },
+   {
+    "title": "Income Tax Act s.40",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/i-3.3/section-40.html"
+   },
+   {
+    "title": "CRA T4002 Ch. 6 - transfer of farm property to child",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/t4002/t4002-9.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "capital-gains-reserve",
+  "title": "Capital gains reserve: 5 years, 10 years for farm property to a child",
+  "topic": "capital-gains",
+  "tax_year": 2026,
+  "text": "General reserve (s.40(1)(a)(iii)): where part of the sale proceeds is not receivable until after year-end (e.g., a vendor-take-back mortgage or agreement for sale), the vendor may claim a reasonable reserve. The reserve is capped so that at least 1/5 of the gain is recognized cumulatively each year (the cap multiplies 1/5 of the gain by 4 minus the number of preceding years since the sale), so the gain is fully recognized within 5 years (year of sale plus 4). 10-year reserve (s.40(1.1)): replaces 1/5 with 1/10 and 4 with 9 where (a) the property is disposed of to the taxpayer's child, (b) the child was resident in Canada immediately before the disposition, and (c) the property was Canadian land or prescribed depreciable property used in a farming or fishing business carried on in Canada by the taxpayer, spouse, a child or a parent, or shares of a family farm/fishing corporation or interest in a family farm/fishing partnership, or QSBC shares. Subsections 40(1.2)-(1.4) extend 10-year treatment to qualifying intergenerational business transfers and EOT/cooperative transfers. Restrictions (s.40(2)(a)): no reserve if the vendor is non-resident or tax-exempt at year-end, or the purchaser is a corporation controlled by the vendor or a partnership in which the vendor has a majority interest. Reserves are claimed annually on Form T2017 and are optional each year. How it combines with other tools: a farm sale to a child can use (1) s.73(3) to elect proceeds between cost and FMV, (2) the LCGE to shelter gain, and (3) the 10-year reserve for the portion paid over time. Under AMT, reserves reduce the gain recognized in a year, which can keep large one-time gains below the AMT exposure zone (see alternative-minimum-tax). Common mistakes: claiming a reserve where proceeds were fully paid via bank financing; failing to report interest on the vendor-take-back (interest is income annually); forgetting that recapture on buildings/equipment cannot be reserved (reserve only applies to capital gains). Saskatchewan example: selling three quarters to a son for $1.8M with $300k down and the balance over 10 years - the gain beyond LCGE can be spread over up to 10 years, smoothing marginal rates and OAS clawback in retirement.",
+  "cite": "ITA s.40(1)(a)(iii), 40(1.1)-(1.4), 40(2)(a); Form T2017",
+  "sources": [
+   {
+    "title": "Income Tax Act s.40",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/i-3.3/section-40.html"
+   },
+   {
+    "title": "CRA T4002 Ch. 6 (reserves reference)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/t4002/t4002-9.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "agriinvest",
+  "title": "AgriInvest: matching, limits, deadlines and taxation",
+  "topic": "programs",
+  "tax_year": 2026,
+  "text": "Program (Sustainable CAP, 2023-2027 program years; federally delivered in Saskatchewan): a producer may deposit up to 100% of Allowable Net Sales (ANS) each year; governments match deposits up to 1% of ANS. ANS eligible for matching is capped at $1,000,000 per year, so the maximum matching contribution is $10,000. Minimum ANS to deposit is $25,000 (minimum deposit $250). The account balance cannot exceed 400% of average ANS for the current and two prior program years. Interest accrues to Fund 2. Deadlines (changed from the 2025 program year): initial deadline June 30 and final deadline September 30 of the year after the program year (previously Sept 30/Dec 31). Late filing reduces the maximum matchable deposit by 5% per month (or part month) after the initial deadline. AAFC confirms the final deadline for 2025 forms was September 30, 2026. For the 2026 program year (2026 tax year), expect June 30, 2027 / September 30, 2027 under the same rule. New condition: from the 2025 program year, producers whose average ANS (before the limit) is $1 million or more over the prior 3 years must have a valid agri-environmental risk assessment during the fiscal year to receive matching contributions. Taxation: Fund 1 (the producer's own deposits) was made with after-tax dollars (deposits are not deductible) and withdraws tax-free. Fund 2 (government matching plus all interest) is taxable when withdrawn; withdrawals come from Fund 2 first. A tax slip is issued in February for Fund 2 withdrawals over $100 (the slip is a T4RIF-type information slip; name not re-verified here). Fund 2 withdrawals are farm income in the year withdrawn - a cash-method timing tool: withdraw in low-income years. Allowable net sales for a grain/cattle farm: eligible commodity sales less eligible commodity purchases (e.g., feeder cattle and feed bought deduct from ANS). Supply-managed and non-allowable items are excluded. Advisor use: (1) always deposit at least enough to capture the full 1% match (an immediate 100% return on that deposit); (2) withdraw Fund 2 in years when marginal rate is lowest; (3) the account is an effective disaster reserve separate from the household money - keep it labelled as farm capital in the books.",
+  "cite": "AgriInvest Program Handbook (Sustainable CAP); ITA s.12(10.2) (Fund 2 inclusion - not re-verified)",
+  "sources": [
+   {
+    "title": "AAFC AgriInvest program page (updated 2026-07-24)",
+    "url": "https://agriculture.canada.ca/en/programs/agriinvest"
+   },
+   {
+    "title": "AAFC AgriInvest Program Handbook (Sustainable CAP)",
+    "url": "https://agriculture.canada.ca/en/node/3217"
+   }
+  ],
+  "verified": true,
+  "status": "administrative"
+ },
+ {
+  "id": "agristability-2026",
+  "title": "AgriStability 2026 parameters (Saskatchewan/SCIC)",
+  "topic": "programs",
+  "tax_year": 2026,
+  "text": "Core formula (Sustainable CAP guidelines; AAFC): a payment triggers when the program-year production margin falls below 70% of the reference margin. AgriStability pays 80% of the decline below that 70% threshold (positive and negative margins). The reference margin is generally the Olympic average of the previous five years (drop high and low). Maximum payment per participant per year is the lesser of $3,000,000 and 70% of the difference between reference and program-year margin. Minimum payment $250 (BC delivery page). Reference margin limit: the current guidelines' Olympic-average definition did not show a separate reference-margin limit in the portions reviewed; not verified. Fees: participant fee = contribution reference margin x 0.45% x 70% (i.e., $315 per $100,000 of reference margin) plus a $55 administrative cost share (minimum fee $100 per BC page). Late participation: payments to late participants (including interim) are reduced by 20%. For 2026 in Saskatchewan, producers who missed the April 30, 2026 enrolment deadline could request late participation by October 1, 2026, paying a $300 non-refundable up-front fee ($245 program + $55 admin); further fees are deducted from the benefit. Saskatchewan 2026 program-year specifics (delivered by SCIC): enrolment deadline April 30, 2026; program forms due June 30 of the following year without penalty, final with penalty September 30; fee payment due within the later of 60 days of the notice or December 31, 2026 (20% late penalty on fees unpaid by due date); 2026 interim payment rate raised from 50% to 75% of estimated final benefit; permanent livestock enhancements from 2026: rented/leased pasture used for grazing is an allowable expense and feed inventory valuation uses end-of-year price with opening and closing quantities. Tax treatment: AgriStability benefits are farm income in the year received under the cash method; fees are deductible when paid. Interim payments are income when received (can be bunched with sales in a good-price year). Advisor use for a grain/cattle operation: AgriStability is whole-farm margin protection. Diversified grain/cattle operations have smoother margins and trigger less often; evaluate cost (fee approx. 0.315% of reference margin) against drought/feed-cost scenarios. Keep accrual adjustments (inventory, receivables, payables) for the program form even though tax is on cash.",
+  "cite": "AgriStability Program Guidelines (Sustainable CAP) cl. 2.2, 3.3.1, 3.4.3, 3.7.2, 3.8; SCIC 2026 notices",
+  "sources": [
+   {
+    "title": "AAFC AgriStability program page",
+    "url": "https://agriculture.canada.ca/en/programs/agristability"
+   },
+   {
+    "title": "AAFC AgriStability Sustainable CAP Program Guidelines",
+    "url": "https://agriculture.canada.ca/en/programs/agristability/resources/agristability-sustainable-canadian-agricultural-partnership-program-guidelines"
+   },
+   {
+    "title": "SCIC AgriStability Enhancements 2026",
+    "url": "https://www.scic.ca/agristability/program-overview/agristability-enhancements"
+   },
+   {
+    "title": "SCIC AgriStability deadlines",
+    "url": "https://www.scic.ca/agristability"
+   },
+   {
+    "title": "Government of Saskatchewan 2026 AgriStability changes (2026-03-23)",
+    "url": "https://www.saskatchewan.ca/government/news-and-media/2026/march/23/government-of-saskatchewan-announces-detailed-changes-to-the-2026-agristability-program"
+   },
+   {
+    "title": "BC AgriStability how it works (fee and cap example, context)",
+    "url": "https://www2.gov.bc.ca/gov/content/industry/agriculture-seafood/programs/agriculture-insurance-and-income-protection-programs/agristability/how-it-works"
+   }
+  ],
+  "verified": true,
+  "status": "administrative"
+ },
+ {
+  "id": "advance-payments-program",
+  "title": "Advance Payments Program (APP) 2026",
+  "topic": "programs",
+  "tax_year": 2026,
+  "text": "What it is: a federal loan guarantee program (delivered by administrators such as Agricultural Credit Corporation and Canadian Canola Growers Association) giving cash advances based on the value of eligible commodities in production or in storage. 2026 parameters (AAFC; Minister's announcement April 1, 2026): maximum outstanding advance $1,000,000, calculated on up to 50% of anticipated market value. Interest-free portion for the 2026 program year: first $250,000 for all non-canola advances (the normal level is $100,000; the $250,000 level was also used for 2025). Canola advances: first $500,000 interest-free for the 2025 and 2026 program years (set September 2025 in response to tariffs on Canadian canola). The $350,000 figure sometimes cited is not on AAFC's current page; do not use it. Repayment: repaid as product is sold (proceeds go to the administrator), with up to 18 months for most commodities and up to 24 months for cattle and bison. Advances on products in production, non-storable products and animals need additional security (e.g., BRM program proceeds assignment). On default, security including assigned program payments can be used. Tax treatment: an APP advance is a loan, not income; under the cash method the sale proceeds of the grain or cattle are income when received, regardless of whether part is directed to repay the advance. Interest paid on the interest-bearing portion is deductible farm interest (s.20(1)(c)). This is the key tax planning value: APP lets the farmer hold grain into January (2027 income) while having 2026 cash flow, or spread cattle sales. Advisor cautions: (1) the advance must be repaid from sales of the specific commodity, so stacking APP with deferred cash tickets and a large January sale can bunch 2027 income; (2) the interest-free portion applies to the producer, so related entities may be combined (check administrator rules); (3) keep APP liability in farm debt, separate from household debt.",
+  "cite": "Agricultural Marketing Programs Act; AAFC APP guidelines",
+  "sources": [
+   {
+    "title": "AAFC Advance Payments Program",
+    "url": "https://agriculture.canada.ca/en/programs/advance-payments"
+   },
+   {
+    "title": "AAFC news 2026-04-01 - $250,000 interest-free for 2026",
+    "url": "https://www.canada.ca/en/agriculture-agri-food/news/2026/04/minister-macdonald-announces-interest-free-limit-under-the-advance-payments-program-will-be-set-at-250000-for-2026-for-all-non-canola-advances.html"
+   }
+  ],
+  "verified": true,
+  "status": "administrative"
+ },
+ {
+  "id": "rrsp-2026",
+  "title": "RRSP: 2026 limits, farm earned income, deadline, spousal plans, HBP",
+  "topic": "registered-plans",
+  "tax_year": 2026,
+  "text": "Dollar limit: RRSP dollar limit for 2026 is $33,810 (2025: $32,490; 2027: $35,390) per CRA. The 2026 deduction limit = 18% of 2025 earned income up to $33,810, minus any pension adjustment, plus unused room carried forward (CRA Notice of Assessment shows the figure). To max out 2026 room, 2025 earned income must be about $187,833. Earned income (s.146(1)): includes income from a business carried on alone or as an actively engaged partner, so net farm income (after CCA, MIA/OIA) counts; business losses reduce earned income. Rental income also counts; dividends, interest and capital gains do not. Each spouse's earned income is computed separately. Implication: a cash-basis farmer who drives taxable farm income near zero every year also builds no RRSP room and no CPP pension. Using an OIA to report a modest positive farm income builds RRSP room. Deadline: contributions for 2026 can be made in 2026 or in the first 60 days of 2027 - computed as on or before March 1, 2027 (CRA has not yet posted the 2026 date; for 2025 the deadline was March 2, 2026). Contributions can be made to age 71 (to December 31 of the year turning 71). Spousal RRSP: contributor deducts; spouse is annuitant. Attribution (s.146(8.3)): if the spouse withdraws, the contributor includes the lesser of the withdrawal and contributions the contributor made to any spousal plan in the year of withdrawal or the two preceding years (effectively a 3-calendar-year window). Useful where one spouse has high farm income and the other low income. Home Buyers' Plan: withdrawal limit $60,000 per person; repayments over 15 years. The 5-year deferral of the repayment start (repayments start in the fifth year after the first withdrawal) applies to first withdrawals 2022-2025 and was extended to first withdrawals January 1, 2026 to December 31, 2028 (enacted in Bill C-30, Royal Assent June 19, 2026). The home must be bought/built before October 1 of the year after withdrawal. Advisor use: RRSP deductions are most valuable in high-income years (big grain sales years); because farm income is lumpy, carry undeducted contributions forward and deduct in the high year.",
+  "cite": "ITA s.146(1) 'earned income', 146(8.3), 146.01; CRA MP/RRSP limits table",
+  "sources": [
+   {
+    "title": "CRA - MP, DB, RRSP, DPSP, TFSA limits, YMPE, YAMPE",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/registered-plans-administrators/pspa/mp-rrsp-dpsp-tfsa-limits-ympe.html"
+   },
+   {
+    "title": "Income Tax Act s.146",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/i-3.3/section-146.html"
+   },
+   {
+    "title": "CRA Important dates for RRSPs, HBP, FHSA",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/rrsps-related-plans/important-dates-rrsp-rrif-rdsp.html"
+   },
+   {
+    "title": "CRA Home Buyers' Plan",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/rrsps-related-plans/what-home-buyers-plan.html"
+   },
+   {
+    "title": "Spring Economic Update 2026 tax measures (HBP extension)",
+    "url": "https://budget.canada.ca/update-miseajour/2026/report-rapport/tm-mf-en.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "tfsa-2026",
+  "title": "TFSA: 2026 limit and cumulative room",
+  "topic": "registered-plans",
+  "tax_year": 2026,
+  "text": "2026 TFSA dollar limit: $7,000 (same as 2024 and 2025). Annual limits by year (CRA): 2009-2012 $5,000 each; 2013-2014 $5,500; 2015 $10,000; 2016-2018 $5,500; 2019-2022 $6,000; 2023 $6,500; 2024-2026 $7,000. Cumulative room for someone who was 18 or older and resident in Canada in 2009 and has never contributed: $109,000 as of January 1, 2026. Room formula: current-year limit + unused room from prior years + withdrawals made in the previous year - contributions this year. Withdrawals are added back only on January 1 of the following year; re-contributing in the same year can cause an over-contribution taxed at 1% per month on the highest excess (general rule). Tax treatment: contributions are not deductible; income and growth inside are tax-free; withdrawals are tax-free and do not affect income-tested benefits (CCB, OAS clawback, GIS) - an important advantage for a farm family whose CCB depends on family net income. Farm planning uses: (1) park the operating cash cushion or a \"drought reserve\" in a TFSA in high-interest savings rather than a taxable account; (2) each spouse has their own room; a higher-income spouse can gift funds to the other for the other's TFSA without attribution of TFSA income (attribution does not apply while funds are in the TFSA - general rule, not re-verified); (3) children 18+ receive their own room; paying adult children reasonable wages lets them fund TFSAs. Cautions: do not carry on a business (e.g., active day-trading) inside a TFSA - CRA can tax it as business income; holding the trading business's positions in TFSAs is a known audit area. Non-residents accrue no room.",
+  "cite": "ITA s.146.2, 207.01-207.02; CRA TFSA dollar limit table",
+  "sources": [
+   {
+    "title": "CRA - Before you contribute to a TFSA (annual limits table)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/tax-free-savings-account/contributing/before.html"
+   },
+   {
+    "title": "CRA - Calculate TFSA room",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/tax-free-savings-account/contributing/calculate-room.html"
+   },
+   {
+    "title": "CRA - limits table incl. TFSA",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/registered-plans-administrators/pspa/mp-rrsp-dpsp-tfsa-limits-ympe.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "fhsa-basics",
+  "title": "First Home Savings Account (FHSA) basics",
+  "topic": "registered-plans",
+  "tax_year": 2026,
+  "text": "Limits: participation room in the year the first FHSA is opened is $8,000; lifetime contribution limit $40,000; unused annual room carries forward but the carryforward is capped at $8,000 (so the maximum in any one year is $16,000). Contributions (and RRSP transfers count against room) are deductible by the holder only (no spousal FHSA deduction); deductions can be carried forward. Qualifying withdrawal: tax-free if used to buy a qualifying first home (first-time buyer rules apply). Can be combined with the RRSP Home Buyers' Plan for the same purchase. Maximum participation period: begins when the first FHSA is opened and ends December 31 of the year of the earliest of the 15th anniversary of opening, the year the holder turns 71, or the year after the first qualifying withdrawal. Unused funds can be transferred tax-free to an RRSP/RRIF without using RRSP room. Relevance to this household: for the farm operator and spouse who already own a home, the FHSA is generally not available (first-time buyer requirement). It is relevant for adult children (18+ and resident) - e.g., a child earning farm wages could open an FHSA to save for a home or a farm-yard house; deduct contributions against wage income. A parent can gift funds to an adult child for an FHSA. Common mistakes: opening an FHSA without being eligible (penalty tax); assuming room accrues before the account is opened (it does not - room only starts when first opened, so opening an FHSA early with even $1 starts the clock).",
+  "cite": "ITA s.146.6; CRA FHSA guidance",
+  "sources": [
+   {
+    "title": "CRA - Contributing to your FHSA",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/first-home-savings-account/contributing-your-fhsa.html"
+   },
+   {
+    "title": "CRA Important dates (FHSA participation period)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/rrsps-related-plans/important-dates-rrsp-rrif-rdsp.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "resp-cesg-clb",
+  "title": "RESP, Canada Education Savings Grant and Canada Learning Bond",
+  "topic": "registered-plans",
+  "tax_year": 2026,
+  "text": "RESP: contributions are not deductible; growth is tax-deferred and taxed in the student's hands as Educational Assistance Payments. Lifetime contribution limit $50,000 per beneficiary (2007+); no annual limit. Over-contributions are taxed at 1% per month on the excess. CESG (basic): 20% of the first $2,500 of annual contributions per beneficiary = up to $500/year. Unused grant room carries forward, but no more than $1,000 of CESG can be paid in a calendar year (i.e., catch-up by contributing $5,000). Lifetime maximum CESG $7,200 per beneficiary. Eligible until the end of the calendar year the child turns 17; for ages 16-17 the child must have had at least $2,000 contributed, or at least $100/year in any four years, before the end of the year they turned 15. Additional CESG (2026 income thresholds): adjusted family net income up to $58,523 - extra 20% on the first $500 (max $600/yr total); $58,523 to $117,045 - extra 10% on the first $500 (max $550/yr); above $117,045 - basic only ($500/yr). Canada Learning Bond (CLB): $500 in the first eligible year plus $100 per subsequent eligible year to age 15, lifetime maximum $2,000; no contribution required. For July 1, 2026 - June 30, 2027 the income threshold is adjusted family income of $58,523 or less for 1-3 children ($66,036 for 4; $73,577 for 5). Farm-specific angle: under the cash method a farm family's adjusted family net income can be very low in some years (e.g., drought, heavy input prepayment). In such years the children may qualify for the CLB and additional CESG - and CCB rises. Planning income lumpiness (deferring grain sales) affects these benefits. Best-practice contribution: $2,500 per child per year captures the full basic CESG; a family that fell behind can contribute $5,000 per year to capture $1,000 of grant. Saskatchewan has no provincial RESP grant currently (SAGES was paused in 2018 - not re-verified).",
+  "cite": "Canada Education Savings Act; ITA s.146.1; ESDC CESG/CLB pages",
+  "sources": [
+   {
+    "title": "Canada.ca - How much money benefits could add to the RESP (CESG/CLB)",
+    "url": "https://www.canada.ca/en/services/benefits/education/education-savings/savings-grant.html"
+   },
+   {
+    "title": "CRA - RESP contributions (lifetime limit)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/registered-education-savings-plans-resps/resp-contributions.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "federal-brackets-2026",
+  "title": "Federal 2026 personal tax brackets, rates and basic personal amount",
+  "topic": "personal-tax",
+  "tax_year": 2026,
+  "text": "2026 federal brackets (CRA, indexation factor 2.0%): 14% on taxable income up to $58,523; 20.5% from $58,523.01 to $117,045; 26% from $117,045.01 to $181,440; 29% from $181,440.01 to $258,482; 33% above $258,482. Lowest-rate cut: Bill C-4 (Making Life More Affordable for Canadians Act, Royal Assent March 12, 2026) cut the lowest rate from 15% to 14% effective July 1, 2025, giving a blended 14.5% for 2025 and 14% for 2026 onward. Status: law. Basic personal amount (BPA) 2026: $16,452 where net income is at or below $181,440, phasing down to $14,829 at net income of $258,482 or more. Spouse/common-law partner amount: same maximum ($16,452), reduced by the spouse's net income. Credits are generally worth the lowest rate (14%). Top-Up Tax Credit (Budget 2025, enacted in Bill C-15, 2025-2030): preserves a 15% effective rate on non-refundable credit amounts exceeding the first-bracket threshold, so people with large credits (e.g., big medical, tuition, donations) are not worse off from the rate cut. Other 2026 indexed amounts (CRA): Canada employment amount $1,501; age amount $9,208 (reduced above net income $46,432); Canada caregiver amount $2,740; OAS repayment threshold $95,323. Canada Child Benefit (July 2026-June 2027 benefit year): up to $8,157 per child under 6 and $6,883 per child aged 6-17; phase-out begins at adjusted family net income of $38,237, with a second phase-out threshold at $82,847. Canada Groceries and Essentials Benefit replaces the GST/HST credit (separate legislation, not Bill C-4). Application to a Saskatchewan farm family: combined federal + SK marginal rate on the first ~$54.5k is 24.5% (14% + 10.5%); 2026 combined top rate 47.5% above $258,482 (Grant Thornton SK budget summary). Because the cash method lets the farmer choose income, a common target is to fill the 20.5%/12.5% band (combined 33%) each year rather than spike into 43-47.5% in one year and waste low brackets in another. The CCB phase-out adds an effective marginal rate on family net income, increasing the value of income smoothing.",
+  "cite": "ITA s.117(2), 117.1, 118(1)(c),(a); Bill C-4 (S.C. 2026); Bill C-15 (Top-Up Tax Credit)",
+  "sources": [
+   {
+    "title": "CRA - Tax rates and income brackets for 2026",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/individuals/tax-rates-brackets/current-year.html"
+   },
+   {
+    "title": "CRA - Indexation adjustment for 2026",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/individuals/frequently-asked-questions-individuals/adjustment-personal-income-tax-benefit-amounts.html"
+   },
+   {
+    "title": "Finance Canada - Bill C-4 Royal Assent (2026-03-12)",
+    "url": "https://www.canada.ca/en/department-finance/news/2026/03/legislation-to-make-life-more-affordable-receives-royal-assent.html"
+   },
+   {
+    "title": "Income Tax Act s.117 (current)",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/i-3.3/section-117-20260312.html"
+   },
+   {
+    "title": "Budget 2025 tax measures (Top-Up Tax Credit)",
+    "url": "https://budget.canada.ca/2025/report-rapport/tm-mf-en.html"
+   },
+   {
+    "title": "Grant Thornton - SK Budget 2026 combined rates (context)",
+    "url": "https://www.doanegrantthornton.ca/insights/budgets/saskatchewan-budget-2026/"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "saskatchewan-brackets-2026",
+  "title": "Saskatchewan 2026 brackets, rates and personal credits",
+  "topic": "personal-tax",
+  "tax_year": 2026,
+  "text": "2026 Saskatchewan rates (CRA and Government of Saskatchewan): 10.5% on taxable income up to $54,532; 12.5% on the next $101,273 (i.e., $54,532.01 to $155,805); 14.5% above $155,805. Brackets and credit amounts were indexed by 2.0% for 2026 (2.7% for 2025). Saskatchewan Affordability Act: adds $500 per year to the basic personal amount, spousal amount, dependent child amount and senior supplementary amount for each of the 2025, 2026, 2027 and 2028 taxation years, on top of indexation. Status: law (enacted 2024). 2026 Saskatchewan credit amounts: basic personal amount $20,381; spousal/equivalent amount: $22,419 minus the spouse's net income, to a maximum of $20,381; dependent child amount $8,358 per child aged 18 or under at December 31, 2026; senior supplement $2,569 (age 65+); age amount $5,901 (income threshold $43,927); disability amount $14,266; pension income maximum $1,000; medical expense threshold 3% of net income to a ceiling of $2,735; charitable donations: first $200 at 10.5%, excess at 14.5%. Credits are calculated at 10.5%. Saskatchewan Low-Income Tax Credit increased 5% plus indexation to a maximum of $1,282 for the benefit year starting July 1, 2026 (Grant Thornton summary of SK Budget 2026; confirm on saskatchewan.ca). Planning notes for a grain/cattle family: the SK dependent child amount ($8,358 x 10.5% = about $878 per child) is a meaningful credit; Saskatchewan's middle bracket is wide (to $155,805), so combined marginal rates are 33% from $58,523 to $117,045 and 38.5% from $117,045 to $155,805 (federal 26% + SK 12.5%), then 40.5% to $181,440, 43.5% to $258,482, and 47.5% above. A $25,000 swing in grain sales between years can therefore change tax by $2,000-$3,000 purely from bracket placement.",
+  "cite": "The Income Tax Act, 2000 (Saskatchewan); The Saskatchewan Affordability Act; CRA T1 SK428",
+  "sources": [
+   {
+    "title": "Government of Saskatchewan - 2026 Personal Income Tax Structure",
+    "url": "https://www.saskatchewan.ca/residents/taxes-and-investments/personal-income-tax/personal-income-tax-structure"
+   },
+   {
+    "title": "Government of Saskatchewan - Personal income tax (Affordability Act, indexation)",
+    "url": "https://www.saskatchewan.ca/residents/taxes-and-investments/personal-income-tax"
+   },
+   {
+    "title": "CRA - 2026 rates (Saskatchewan section)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/individuals/tax-rates-brackets/current-year.html"
+   },
+   {
+    "title": "Grant Thornton - SK Budget 2026 (context)",
+    "url": "https://www.doanegrantthornton.ca/insights/budgets/saskatchewan-budget-2026/"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "cpp-self-employed-2026",
+  "title": "CPP contributions for the self-employed farmer (2026)",
+  "topic": "payroll-family",
+  "tax_year": 2026,
+  "text": "2026 parameters (Canada.ca/ESDC): Year's Basic Exemption $3,500 (frozen); Year's Maximum Pensionable Earnings (YMPE) $74,600; Year's Additional Maximum Pensionable Earnings (YAMPE) $85,000. CPP1 (base + first enhancement): 11.9% total for the self-employed (9.9% base + 2% first enhancement; employees and employers 5.95% each). Maximum self-employed CPP1 = 11.9% x ($74,600 - $3,500) = $8,460.90 (employee/employer $4,230.45 each). CPP2 (second additional): 8% for the self-employed (4% each employee/employer) on earnings between $74,600 and $85,000; maximum $832.00 self-employed ($416.00 each). Total 2026 maximum for a self-employed farmer: $9,292.90, reached at net self-employment earnings of $85,000. Deduction vs credit (Schedule 8 / T1 lines 22200, 22215, 31000): the self-employed person deducts the \"employer half\" (5.95% CPP1 portion and 4% CPP2 portion) and the enhanced part of the \"employee half\" (the 1% first enhancement and the full employee CPP2 4%); the base employee portion (4.95%) gives a non-refundable credit at the lowest federal rate. At the 2026 maximum: about $4,941 of CPP1 is deductible (6.95/11.9), $3,519 (4.95% x $71,100) earns the credit, and all $832 of CPP2 is deductible - roughly 62% deduction overall. (Split derived from the 9.9%/2% rate composition; Schedule 8 governs.) Earnings base: net farming (self-employment) income after CCA and inventory adjustments, including the farmer's share of partnership income. Inventory adjustments therefore change CPP. CPP is payable from age 18 to 70 (can elect to stop at 65+ if receiving CPP). Planning: a cash-method farmer who reports near-zero farm income every year pays little CPP but also earns little CPP retirement, disability and survivor coverage - weigh against RRSP and TFSA savings. Paying a spouse wages (with T4) shifts pensionable earnings to the spouse (both employer and employee shares apply). Note CPP contributions cannot be reduced by loss carryforwards from other years. From 2027 the base contribution rate falls from 9.9% to 9.5% (Bill C-30, Royal Assent June 19, 2026).",
+  "cite": "Canada Pension Plan s.10, 11.1, 11.2 (self-employed); ITA s.60(e), 60(e.1), 118.7; CRA Schedule 8",
+  "sources": [
+   {
+    "title": "Canada.ca - Contributions to the CPP (2026)",
+    "url": "https://www.canada.ca/en/services/benefits/publicpensions/cpp/contributions.html"
+   },
+   {
+    "title": "ESDC - CPP 2026 and OAS Oct-Dec 2026 figures",
+    "url": "https://www.canada.ca/en/employment-social-development/programs/pensions/pension/statistics/2026-quarterly-october-december.html"
+   },
+   {
+    "title": "CRA - limits table (YMPE/YAMPE)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/registered-plans-administrators/pspa/mp-rrsp-dpsp-tfsa-limits-ympe.html"
+   },
+   {
+    "title": "Finance Canada: legislation passes to implement Spring Economic Update 2026 measures",
+    "url": "https://www.canada.ca/en/department-finance/news/2026/06/legislation-passes-to-implement-measures-from-the-spring-economic-update-2026.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "paying-family-wages",
+  "title": "Paying a spouse or children wages from the farm",
+  "topic": "payroll-family",
+  "tax_year": 2026,
+  "text": "Deductibility (CRA RC4408 line 9816 and s.67): wages paid to a spouse or child are deductible if (1) actually paid (cheque, cash or in kind), (2) the work was necessary to earn farm income, (3) the amount is reasonable for the age and work, and (4) it is what you would pay an arm's-length person for the same work. A spouse who is a partner in the farm cannot be paid deductible wages. Keep cancelled cheques/e-transfer records; for cash, get a signed receipt; keep timesheets and a description of duties. Payroll obligations: open a payroll account, withhold income tax, CPP and EI as applicable, remit, and issue T4s (T4 information return due the last day of February - March 1, 2027, since February 28, 2027 is a Sunday for 2026 wages). CPP: employees under 18 or over 70 do not contribute; deductions begin with the first pay of the month after the month the employee turns 18. So wages to a 16-year-old carry no CPP; wages to a 19-year-old do (both employee and employer shares). EI: employment of a related person (spouse, children) is not insurable unless CRA is satisfied that a substantially similar contract would have been entered into at arm's length (EI Act 5(3)(b)), based on remuneration, terms, duration and nature/importance of the work. In practice, family employees are often EI-exempt; request a ruling if unsure. Payment in kind: CRA allows wages paid in livestock or grain. The farmer includes the value in gross sales and deducts the same amount as wages; the employee includes the value in income. For non-arm's-length employees, the same reporting applies (RC4408 directs to the line 9815 method). The older special rule allowing a parent to give grain/livestock to a child with no income inclusion until the child sells is not in the current RC4408 text reviewed; do not rely on it without confirming. Income-splitting value: wages to children with no other income use their basic personal amounts (federal $16,452; SK $20,381 in 2026), so roughly $16,000+ per child can be paid with no income tax (CPP applies 18+). Wages also create RRSP room for the child and can fund the child's own TFSA or FHSA once 18. Board and lodging provided to family members is not deductible as wages. Common mistakes: paying a lump sum at year-end with no documentation; paying a 10-year-old adult-level wages; recording \"wages\" as transfers to the child's account that are then used for household expenses; omitting T4s.",
+  "cite": "ITA s.9, 67, 18(1)(a); RC4408 lines 9814-9816; CPP s.12; EI Act s.5(2)(i), 5(3)(b)",
+  "sources": [
+   {
+    "title": "CRA RC4408 Chapter 3 - lines 9815/9816 wages incl. in kind",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4408/rc4408-05.html"
+   },
+   {
+    "title": "CRA - A deeper look at CPP and EI (age 18-70)",
+    "url": "https://www.canada.ca/en/revenue-agency/news/cra-multimedia-library/businesses-video-gallery/transcript-a-deeper-look-canada-pension-plan-employment-insurance.html"
+   },
+   {
+    "title": "CRA - Not dealing at arm's length for EI",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/canada-pension-plan-cpp-employment-insurance-ei-rulings/cpp-ei-explained/meaning-dealing-arms-length-purposes-employment-insurance-act.html"
+   },
+   {
+    "title": "Canada.ca - 2026 tax deadlines (T4 filing)",
+    "url": "https://www.canada.ca/en/services/taxes/resources-for-small-and-medium-businesses/2026-tax-deadlines-canadian-businesses-self-employed-individuals.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "tax-instalments-farmers",
+  "title": "Tax instalments: thresholds, farmers' December 31 rule, interest",
+  "topic": "instalments-deadlines",
+  "tax_year": 2026,
+  "text": "Who must pay (outside Quebec): instalments are required for 2026 if net tax owing is more than $3,000 in 2026 and in either 2025 or 2024 ($1,800 for Quebec residents). CPP contributions on self-employment earnings are generally included in the instalment amounts CRA calculates (general CRA practice; not re-verified here). Farmers and fishers (ITA s.155): an individual whose chief source of income for the year is farming or fishing pays a single instalment on or before December 31 of the year equal to two-thirds of either (a) the estimated tax payable for the year or (b) the instalment base for the preceding year. Other individuals pay quarterly (March 15, June 15, September 15, December 15). For 2026 the farmer's instalment is due December 31, 2026; balance due April 30, 2027. CRA reminder notices may show an amount; paying the reminder amount on time protects against instalment interest. Interest: instalment interest and arrears interest are charged at the prescribed rate for overdue taxes, compounded daily. For October 1 - December 31, 2026 the rate on overdue taxes, CPP and EI is 7%; the rate paid on non-corporate overpayments is 5%; the prescribed rate for taxable benefits and shareholder loans is 3%. Instalment interest over $1,000 can also attract a penalty (general rule, not re-verified). Planning for a grain farmer: because 2026 income may not be known until December, option (a) \"estimated tax\" lets a farmer pay 2/3 of a lower estimate if 2026 is a down year; option (b) \"prior-year base\" protects against interest if 2026 turns out higher. The December 31 date is the same day the farmer decides on final grain deliveries/prepayments, so estimate after those decisions. Interest is non-deductible. Common mistakes: farmer paying quarterly when not required; paying on January 2; forgetting that CRA's no-calc option for farmers is based on prior-year base; treating instalments as farm expenses in the books (they are personal).",
+  "cite": "ITA s.155(1), 156.1, 161(2), 161(2.1); ITR 4301; CRA prescribed rates 2026 Q4",
+  "sources": [
+   {
+    "title": "Income Tax Act s.155, 156.1 (Justice Laws)",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/i-3.3/page-160.html"
+   },
+   {
+    "title": "CRA - Required tax instalments for individuals",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/about-your-tax-return/making-payments-individuals/paying-your-income-tax-instalments.html"
+   },
+   {
+    "title": "CRA - Prescribed interest rates Q4 2026",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/prescribed-interest-rates/2026-q4.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "filing-payment-deadlines",
+  "title": "Filing and payment deadlines for self-employed farmers (2026 year)",
+  "topic": "instalments-deadlines",
+  "tax_year": 2026,
+  "text": "2026 T1 return (self-employed individual or spouse of one): file by June 15, 2027; any balance owing must be paid by April 30, 2027 to avoid arrears interest. (If the business expenditures were primarily in tax shelter investments, the filing deadline is April 30, 2027.) Late-filing penalties apply only if there is a balance owing after April 30; interest on unpaid balances runs from May 1, 2027 at the prescribed rate (7% for Q4 2026; rate reset quarterly). Instalments: farmers whose chief source is farming - single instalment December 31, 2026 (two-thirds rule). Other self-employed: March 15, June 15, September 15, December 15. GST/HST annual filer with December 31 year-end (individual with business income): return due June 15, 2027; payment due April 30, 2027. Payroll: T4 slips and summary for 2026 due last day of February (March 1, 2027, since February 28, 2027 is a Sunday). RRSP: 2026 contributions deductible if made by the 60th day of 2027 (computed March 1, 2027; CRA date not yet posted). AgriInvest 2026 program-year deposit: deadlines June 30 / September 30, 2027 (initial/final). AgriStability 2027 enrolment April 30, 2027; 2026 program forms June 30, 2027 (final September 30, 2027). Farm-specific forms: T1273 (Statement A, Harmonized AgriStability/AgriInvest) is filed with the T1 by Saskatchewan farmers participating in the programs; T1A for loss carrybacks; T2017 for reserves; T657 for LCGE; T691 for AMT. Advisor note: prefer filing by April 30 if refunds or benefits (CCB, Canada Groceries and Essentials Benefit) depend on assessed income; June 15 is only a filing extension, not a payment extension.",
+  "cite": "ITA s.150(1)(d)(ii), 248(1) 'balance-due day', 155; CRA 2026 tax deadlines page",
+  "sources": [
+   {
+    "title": "Canada.ca - 2026 tax deadlines for businesses and self-employed",
+    "url": "https://www.canada.ca/en/services/taxes/resources-for-small-and-medium-businesses/2026-tax-deadlines-canadian-businesses-self-employed-individuals.html"
+   },
+   {
+    "title": "CRA Important dates for RRSPs",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/rrsps-related-plans/important-dates-rrsp-rrif-rdsp.html"
+   },
+   {
+    "title": "AAFC AgriInvest Handbook (deadlines)",
+    "url": "https://agriculture.canada.ca/en/node/3217"
+   },
+   {
+    "title": "SCIC AgriStability deadlines",
+    "url": "https://www.scic.ca/agristability"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "gst-farmers",
+  "title": "GST/HST for farmers: zero-rating, ITCs, registration and filing frequency",
+  "topic": "gst",
+  "tax_year": 2026,
+  "text": "Zero-rated sales (RC4408 GST section): bulk grains, seeds, hay, silage and fodder crops (not wild-bird or pet feed); barley, flaxseed, straw; livestock raised for food or wool; bees; hatching eggs; bulk fertilizer (minimum 500 kg total); quota for zero-rated products; the farmer's share of sharecrop production. Zero-rated means GST at 0%, and the seller can still claim input tax credits (ITCs). Taxable farm supplies (5% GST in Saskatchewan): custom work for another farmer (combining, spraying, trucking, tilling), grain storage in an elevator, AI/stud services, firewood, sod, soil/gravel, horses and other animals not normally raised for food, dead animals unsuitable for food, hides. Custom combining or hauling for neighbours is therefore taxable. Zero-rated farm purchases: large tractors (60 PTO hp+), combines and headers, swathers/mower conditioners, balers, drills/cultivators 8 ft+ wide, field sprayers 300 L+, grain bins up to 181 m3 (5,000 bu), grain dryers, augers within size limits, automated feeding systems, livestock feed (complete feeds, supplements, minerals other than trace mineral salt in bulk or 20 kg+), agricultural pesticides. Trucks, pickups, fuel, repairs and most services carry GST - claim ITCs. Registration: small-supplier threshold $30,000 of taxable supplies (including zero-rated supplies) in a single calendar quarter or over the previous four consecutive quarters, worldwide with associates. Most commercial farms exceed this through grain sales and must register; even small farms should register voluntarily because, with mostly zero-rated sales, they are in a refund position. Reporting periods (CRA): annual taxable supplies up to $1.5 million - assigned annual (may elect quarterly or monthly using Form GST20); over $1.5 million to $6 million - quarterly; over $6 million - monthly. A refund-position farmer often elects quarterly or monthly to receive refunds faster. ITCs: claim GST paid on business inputs and capital property in proportion to commercial use. Personal-use items (house, personal vehicle use) are not eligible. Passenger vehicles: ITC limited to the GST on the Class 10.1 ceiling ($39,000 for 2026) - general rule. Common mistakes: not charging GST on custom work; claiming ITCs on household costs through the combined books; missing the 4-year ITC claim window (general rule, not re-verified).",
+  "cite": "Excise Tax Act Sch. VI Part IV (agriculture and fishing), s.148, 169, 245, 248; CRA RC4408 GST section",
+  "sources": [
+   {
+    "title": "CRA RC4408 - GST/HST rates (farm supplies and purchases)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4408/rc4408-18.html"
+   },
+   {
+    "title": "CRA - When to register for and start charging GST/HST",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/when-register-charge"
+   },
+   {
+    "title": "CRA - Make changes to your GST/HST account (reporting periods)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/gst-hst-account/change-account.html"
+   },
+   {
+    "title": "Canada.ca - 2026 tax deadlines (GST annual filers)",
+    "url": "https://www.canada.ca/en/services/taxes/resources-for-small-and-medium-businesses/2026-tax-deadlines-canadian-businesses-self-employed-individuals.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "incorporating-the-farm",
+  "title": "Incorporating the farm: small business rate, integration, s.85 rollover, LCGE",
+  "topic": "incorporation",
+  "tax_year": 2026,
+  "text": "Corporate rates on active business income (CRA, page modified 2026-10-21): federal net rate 9% on income eligible for the small business deduction (SBD); 15% general rate after the general rate reduction. Saskatchewan: 1% small business rate, 12% general rate, with a $600,000 provincial business limit. The federal business limit is $500,000, so the combined 2026 rate is 10% on the first $500,000, 16% from $500,000 to $600,000 (federal 15% + SK 1%) and 27% above (Grant Thornton SK Budget 2026 summary). The SBD is ground down for associated corporations with large passive investment income or taxable capital (general rules). When it typically pays: a farm earning consistently more than the owners need to live on can retain profits in the corporation taxed at 10% versus personal combined rates of 33%-47.5%, giving a deferral that funds land, equipment and debt repayment faster. Tax is paid again when profits are extracted as dividends or salary; with integration the total is roughly similar to personal tax, so the benefit is primarily deferral, not permanent savings. If all profit is needed for living costs, incorporation adds cost (accounting, T2, legal, AgriStability/AgriInvest set-up) with little gain. Transfer mechanics (s.85): a sole proprietor can transfer inventory, equipment and land to a taxable Canadian corporation for shares and debt at an elected amount between tax cost and FMV (no immediate tax at cost). Cash-basis inventory and receivables have nil cost, and many farmers keep land personally and lease it to the corporation; land used by a family farm corporation in which the owner or family holds shares can still meet the QFFP use test. Land transfer and PST/GST considerations apply (zero-rated farm equipment between registrants, election under s.167 ETA - not re-verified). LCGE implications: shares of a family farm corporation are QFFP if, throughout the 24 months before sale, more than 50% of FMV of its assets was used principally in farming by family members, and at the time of sale all or substantially all (90%) of the value is attributable to such assets (general s.110.6 tests - not re-verified here). Retained excess cash/investments can taint qualification - \"purification\" may be needed. Trade-offs: the cash method is not lost (s.28 applies to any taxpayer carrying on a farming business, including a corporation); dividends to adult family members face TOSI unless an exclusion applies (e.g., excluded business with 20 hours/week involvement); corporate losses cannot offset personal income; intergenerational transfers can use s.73(4)/70(9.2) rollovers and the 2024 IBT rules in s.84.1. Recommendation framework: model 5-year retained earnings; incorporate when sustained retained earnings and expansion financing needs make the deferral material.",
+  "cite": "ITA s.85(1), 123, 124, 125, 110.6(1), 120.4 (TOSI); CRA corporation tax rates; SK Income Tax Act, 2000",
+  "sources": [
+   {
+    "title": "CRA - Corporation tax rates (incl. Saskatchewan 1%/12%, $600,000)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/corporations/corporation-tax-rates.html"
+   },
+   {
+    "title": "Grant Thornton - SK Budget 2026 combined corporate rates (context)",
+    "url": "https://www.doanegrantthornton.ca/insights/budgets/saskatchewan-budget-2026/"
+   },
+   {
+    "title": "Income Tax Act s.84.1 (IBT)",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/I-3.3/section-84.1.html"
+   },
+   {
+    "title": "Income Tax Act s.73 (s.73(4) shares to child)",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/I-3.3/section-73.html"
+   }
+  ],
+  "verified": false,
+  "status": "law"
+ },
+ {
+  "id": "alternative-minimum-tax",
+  "title": "Alternative minimum tax (AMT) after 2024 and farm land sales",
+  "topic": "personal-tax",
+  "tax_year": 2026,
+  "text": "Regime (taxation years beginning after 2023; Budget 2023, enacted, with Budget 2025 confirming it proceeds with the August 2024 refinements): AMT rate 20.5% (s.127.51 factor A). Basic exemption for individuals = the first dollar amount of the fourth federal bracket under s.117(2)(d) (the threshold where the 29% bracket starts). For 2026 that threshold is $181,440, so the 2026 AMT exemption is $181,440 (derived from statute plus CRA's 2026 bracket table; CRA has not been checked publishing it as an AMT figure). Base: adjusted taxable income adds 100% of capital gains (vs 50% regular inclusion), and 30% of capital gains eligible for the LCGE are included in the AMT base. Only 50% of most non-refundable credits reduce AMT. Allowable business investment losses and other items are limited at 50%. AMT paid can be carried forward 7 years and credited against regular tax that exceeds AMT in those years. When it bites a farmer: a one-time sale of farmland or family farm shares sheltered by the LCGE. Example (illustrative, simplified): $1,250,000 gain fully sheltered by LCGE gives regular tax near nil on the gain, but AMT includes 30% x $1,250,000 = $375,000 in adjusted taxable income; less the $181,440 exemption gives about $193,560 x 20.5% = about $39,680 of federal AMT before credits (plus Saskatchewan's provincial minimum tax - SK applies a provincial AMT, rate not re-verified). Much of it may be recovered in later years only if regular tax is high enough, which retiring farmers often do not have. Mitigation: spread dispositions over two tax years (sell some quarters in December, some in January), use the capital gains reserve (5 or 10 years) to recognize gains gradually, split ownership with spouse so each uses their own LCGE and exemption, or transfer to a child under s.73(3) at an elected amount below FMV (only use the LCGE amount needed). AMT does not apply in the year of death. Common mistakes: assuming the LCGE makes a farm sale tax-free; ignoring AMT when electing s.70(9) proceeds on death (AMT does not apply on death, so electing on the terminal return can be efficient).",
+  "cite": "ITA s.127.5, 127.51, 127.52, 127.53, 120.2; s.117(2)(d); Budget 2023 Annex; Budget 2025",
+  "sources": [
+   {
+    "title": "Income Tax Act s.127.51 (AMT rate and exemption reference)",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/I-3.3/section-127.51-20240620.html"
+   },
+   {
+    "title": "Income Tax Act s.117 (brackets)",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/i-3.3/section-117-20260312.html"
+   },
+   {
+    "title": "CRA 2026 tax rates (fourth bracket $181,440)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/individuals/tax-rates-brackets/current-year.html"
+   },
+   {
+    "title": "Budget 2023 tax measures - AMT redesign",
+    "url": "https://www.budget.canada.ca/2023/report-rapport/tm-mf-en.html"
+   },
+   {
+    "title": "Budget 2025 tax measures - AMT proceeds",
+    "url": "https://budget.canada.ca/2025/report-rapport/tm-mf-en.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "carbon-pricing-farm-fuel",
+  "title": "Federal fuel charge, Canada Carbon Rebate and farm fuel (2025-2026)",
+  "topic": "programs",
+  "tax_year": 2026,
+  "text": "Status: the federal consumer fuel charge rate for all fuels was set to zero effective April 1, 2025, and Bill C-4 (Royal Assent March 12, 2026) removed the consumer fuel charge from federal law permanently; provinces are no longer required to have a consumer carbon price. Industrial carbon pricing (output-based pricing for large emitters) continues. Canada Carbon Rebate (households): final quarterly payment issued starting April 22, 2025 (required filing a 2024 return). No rebates for later periods. Farmers: the refundable Return of Fuel Charge Proceeds to Farmers Tax Credit can still be claimed on the 2025 return for Saskatchewan (a designated province): the 2025 payment rate is $2.50 per $1,000 of eligible farming expenses (2024: $2.29), claimed on form T2043. With the fuel charge gone from April 1, 2025, expect no credit for later years. The Canada Carbon Rebate for Small Businesses ends with the 2024-25 payment; the government confirmed these business rebates are tax-free (draft legislation; Budget 2025/Spring Update list the measure as previously announced - verify enactment before amending returns that included them in income). Farm fuel exemption (historical): under the federal regime, qualifying farm fuel (gasoline and diesel delivered to a farm for farming) was exempt with a certificate; this no longer matters while the charge is nil. Saskatchewan fuel tax: holders of a valid Saskatchewan fuel tax exemption permit may buy tax-reduced marked (coloured) diesel for farming. The partial exemption for bulk farm gasoline was eliminated April 1, 2017, so farm gasoline bears full provincial fuel tax. Federal excise tax on gasoline/diesel was temporarily set to $0.00 from April 20 to September 7, 2026 (Spring Economic Update 2026; enacted in Bill C-30, Royal Assent June 19, 2026). Tax treatment: fuel and fuel taxes are deductible farm expenses (business portion); any remaining carbon rebate amounts received are taxable or not per the specific rebate rules above. Advisor use: remove any assumption of fuel-charge credits from 2025/2026 cash-flow models; use 2024 receipts as last year of credit.",
+  "cite": "Greenhouse Gas Pollution Pricing Act Part 1 (consumer fuel charge removed by Bill C-4, 2026); ITA s.127.421 (farmers' credit); Saskatchewan Fuel Tax Act, 2000",
+  "sources": [
+   {
+    "title": "Finance Canada - removing consumer carbon price effective 2025-04-01",
+    "url": "https://www.canada.ca/en/department-finance/news/2025/03/removing-the-consumer-carbon-price-effective-april-1-2025.html"
+   },
+   {
+    "title": "Finance Canada - Bill C-4 Royal Assent (2026-03-12)",
+    "url": "https://www.canada.ca/en/department-finance/news/2026/03/legislation-to-make-life-more-affordable-receives-royal-assent.html"
+   },
+   {
+    "title": "Finance Canada - non-taxability of small business carbon rebates",
+    "url": "https://www.canada.ca/en/department-finance/news/2025/06/government-confirms-non-taxability-of-canada-carbon-rebates-for-small-businesses.html"
+   },
+   {
+    "title": "Government of Saskatchewan - Tax information for farmers (fuel tax)",
+    "url": "https://saskatchewan.ca/business/agriculture-natural-resources-and-industry/agribusiness-farmers-and-ranchers/farm-business-management/tax-information-for-farmers"
+   },
+   {
+    "title": "Spring Economic Update 2026 tax measures (excise)",
+    "url": "https://budget.canada.ca/update-miseajour/2026/report-rapport/tm-mf-en.html"
+   },
+   {
+    "title": "Finance Canada: payment rates, return of fuel charge proceeds to farmers 2024-25 and 2025-26",
+    "url": "https://www.canada.ca/en/department-finance/programs/tax-policy/tax-credit-payment-rates-return-fuel-charge-proceeds-farmers-2024-25-2025-26.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "saskatchewan-specific-taxes",
+  "title": "Saskatchewan-specific: PST on farm machinery vs vehicles, SK capital gains credit, property tax",
+  "topic": "programs",
+  "tax_year": 2026,
+  "text": "Saskatchewan PST: 6% on taxable goods and services consumed or used in Saskatchewan. Farmers are exempt from PST on certain farm implements, farm machinery, farm tools and commodities, including repairs, when used directly in a primary farming activity; some are automatically exempt at the dealer and others require the farmer to certify on the invoice that \"the goods listed on this invoice will be used solely in the operation of my farm\" (dealer keeps the certificate 3 years). Vehicles eligible to be licensed under The Traffic Safety Act (pickups, highway trucks, grain trucks that are plated) are taxable at 6% even when used on the farm; farm buildings and building materials (steel, lumber, bins' building components) are taxable (per PST bulletin wording for farm-type operations). Confirm specific items with the PST farm bulletin. Saskatchewan Farm and Small Business Capital Gains Tax Credit: Government of Saskatchewan page says the credit applies Saskatchewan's lowest statutory tax rate to eligible taxable capital gains from qualified farm property or QSBC shares that exceed the capital gains deduction (LCGE), for taxation years 2001 to present, claimed using CRA Form T1237. Current-year availability was not confirmed on a dated page - verify on the 2025/2026 SK428 package before relying on it. Effect when available: taxable gains above the LCGE from farm property are taxed in Saskatchewan at 10.5% rather than up to 14.5%. Property tax: Saskatchewan municipal and education property taxes on farmland and buildings are not income taxes; the farm portion is a deductible farm expense (house portion is personal, except business-use-of-home). Assessment is by the Saskatchewan Assessment Management Agency; education property tax mill rates are set provincially (not re-verified). Mineral rights tax: annual tax on freehold mineral titles; agricultural corporations may be exempt if they meet criteria in The Mineral Taxation Act, 1983. Saskatchewan small business corporate rate stays at 1% with a $600,000 limit in 2026. Advisor checklist: when buying a new pickup for the farm, budget GST (ITC claimable) plus 6% PST (not recoverable); when buying a combine or drill, expect GST zero-rated and PST exempt; when building a shop, both GST (ITC claimable) and PST (not recoverable) apply.",
+  "cite": "The Provincial Sales Tax Act (Saskatchewan) and regulations; SK Income Tax Act, 2000 (capital gains credit); Form T1237",
+  "sources": [
+   {
+    "title": "Government of Saskatchewan - Provincial Sales Tax (6%)",
+    "url": "https://www.saskatchewan.ca/business/taxes-licensing-and-reporting/provincial-taxes-policies-and-bulletins/provincial-sales-tax"
+   },
+   {
+    "title": "Government of Saskatchewan - Tax information for farmers",
+    "url": "https://saskatchewan.ca/business/agriculture-natural-resources-and-industry/agribusiness-farmers-and-ranchers/farm-business-management/tax-information-for-farmers"
+   },
+   {
+    "title": "Saskatchewan PST bulletin PST-34 (farm-type exemptions and taxable vehicles)",
+    "url": "https://publications.saskatchewan.ca/api/v1/products/7966/formats/11498/download"
+   },
+   {
+    "title": "Government of Saskatchewan - Farm and Small Business Capital Gains Tax Credit",
+    "url": "https://saskatchewan.ca/business/taxes-licensing-and-reporting/tax-incentives/farm-and-small-business-capital-gains-tax-credit"
+   },
+   {
+    "title": "CRA corporation tax rates (SK 1%, $600,000)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/corporations/corporation-tax-rates.html"
+   }
+  ],
+  "verified": false,
+  "status": "law"
+ },
+ {
+  "id": "clean-tech-itcs-individuals",
+  "title": "Clean technology and other investment tax credits for an individual farmer",
+  "topic": "capital-cost",
+  "tax_year": 2026,
+  "text": "Clean economy investment tax credits (Clean Technology ITC 30%, Clean Electricity, CCUS, Clean Hydrogen, Clean Technology Manufacturing): claimants are taxable Canadian corporations (and for some, REITs/certain entities). A partnership can allocate credits only to partners that are eligible claimants. Individuals and sole proprietors are not eligible claimants for any of these credits (RSM summary of the legislation; statute s.127.45 was not retrievable during verification). The Clean Technology ITC is 30% of capital cost for eligible property acquired and available for use from March 28, 2023, phasing down after 2033 (RSM). Budget 2025 enhanced the clean economy ITCs and Bill C-15 enacted those enhancements. What an unincorporated farmer can use instead: - Accelerated CCA: Class 43.1 clean energy equipment (e.g., solar PV for the yard/shop) and Classes 54-56 zero-emission vehicles qualify for a 100% first-year write-off if acquired after 2024 and available for use before 2030 (Bill C-15), phasing down 2030-2033. This is a deduction, not a credit. - SR&ED credits for individuals exist (15% non-refundable for individuals - not re-verified) but are rarely relevant to farm operations. - Saskatchewan does not currently offer a farm equipment investment credit (none identified; SK Budget 2026 lists only the Chemical Fertilizer Incentive for large manufacturers). If the farm incorporates, a corporation could claim the 30% Clean Technology ITC on solar, geothermal or certain heat pump/storage equipment (subject to labour requirements for larger claims), which can materially change a solar project's economics. Bottom line: for the 2026 sole proprietor, the relevant incentive for solar or EVs is accelerated CCA, not an ITC.",
+  "cite": "ITA s.127.45-127.49 (corporate claimants); ITR Sch. II Classes 43.1, 54-56; Bill C-15",
+  "sources": [
+   {
+    "title": "RSM - Profiles of the clean economy ITCs (context)",
+    "url": "https://rsmcanada.com/insights/services/business-tax-insights/profiles-of-the-clean-economy-investment-tax-credits.html"
+   },
+   {
+    "title": "Finance Canada - Bill C-15 enacted clean economy ITC enhancements",
+    "url": "https://www.canada.ca/en/department-finance/news/2026/03/legislation-passes-to-implement-budget-2025-canada-strong.html"
+   },
+   {
+    "title": "EY - Bill C-15 immediate expensing for 43.1 and ZEVs (context)",
+    "url": "https://taxnews.ey.com/news/2025-2564-canada-tables-bill-with-accelerated-capital-cost-allowance-and-other-immediate-expensing-measures"
+   }
+  ],
+  "verified": false,
+  "status": "law"
+ },
+ {
+  "id": "oas-clawback-pension-splitting",
+  "title": "OAS recovery tax threshold 2026 and pension income splitting (later-life context)",
+  "topic": "personal-tax",
+  "tax_year": 2026,
+  "text": "OAS recovery tax (\"clawback\"): a pensioner repays 15% of net world income above the threshold. 2026 income year (affects OAS paid July 2027 - June 2028): threshold $95,323; OAS is fully recovered at an estimated $155,320 (ages 65-74) or $161,320 (75+) - maximums final in October. 2025 income year (July 2026 - June 2027 payments): $93,454, full recovery at $152,062 / $157,923. Farm relevance: a retiring farmer selling land, cattle and machinery, collecting deferred cash tickets and AgriInvest Fund 2, and taking vendor-take-back interest can spike net income in one year and lose OAS. Note that taxable capital gains (the 50% included) count toward net income even if sheltered by the LCGE deduction (the LCGE is a deduction from net income in computing taxable income, so it does not reduce net income for the clawback). Spread sales, use the capital gains reserve, and time Fund 2 withdrawals. Pension income splitting (T1032): up to 50% of eligible pension income can be allocated to a spouse. RRIF, LIF and RRSP-annuity income are eligible only if the transferor is 65+ at year-end (or received due to spouse's death); registered pension plan life annuity payments are eligible at any age. CPP and OAS cannot be split under this election (CPP has separate pension sharing). Both spouses must file the joint election with their returns by the filing due date. Planning: converting part of RRSP to a RRIF at 65 creates eligible pension income for splitting and the pension credit; sole proprietors without an RPP depend on RRSP/RRIF for this. Spousal RRSPs remain useful before 65. Status: all figures are indexed amounts published by ESDC/CRA; law.",
+  "cite": "ITA s.180.2 (OAS recovery), 60.03, 118(3); CRA T1032",
+  "sources": [
+   {
+    "title": "Canada.ca - OAS pension recovery tax (thresholds by income year)",
+    "url": "https://www.canada.ca/en/services/benefits/publicpensions/cpp/old-age-security/recovery-tax.html"
+   },
+   {
+    "title": "CRA - Indexation 2026 (OAS repayment threshold)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/individuals/frequently-asked-questions-individuals/adjustment-personal-income-tax-benefit-amounts.html"
+   },
+   {
+    "title": "CRA - How to split your pension income",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/individuals/topics/pension-income-splitting/you-split-your-pension-income.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "interest-deductibility",
+  "title": "Interest deductibility: the use test and separating farm and personal debt",
+  "topic": "farm-income",
+  "tax_year": 2026,
+  "text": "Rule (s.20(1)(c)(i)): interest is deductible if paid or payable on \"borrowed money used for the purpose of earning income from a business or property\" (excluding money used to acquire exempt income property or a life insurance policy). Deductibility depends on the current direct use of the borrowed funds, not on what collateral secures the loan. A mortgage on farmland used to buy a family vehicle or renovate the house is personal interest (non-deductible); an unsecured line used to buy fertilizer is farm interest (deductible). Case-law principles (summarized; case texts not fetched in this verification): Bronfman Trust (SCC 1987) - look at the direct use of the borrowed money, tracing is required; Singleton (SCC 2001) - a taxpayer may arrange affairs so borrowing is linked to an income-earning use (e.g., withdraw equity from the business to buy a house, then borrow to refill the business account), and the sequence will be respected if the funds are traced; Lipson (SCC 2009) - a Singleton-type structure was attacked under GAAR where it was combined with spousal attribution rules to shift the deduction; the \"debt swap\" itself is generally accepted but aggressive combinations carry GAAR risk. CRA's Income Tax Folio S3-F6-C1 sets out CRA's tracing approach. Commingling: if borrowed funds go into an account that pays both farm and household bills, CRA may apportion or deny. In a single bookkeeping system covering farm and household, maintain (1) a separate farm operating account and line of credit, (2) separate personal accounts, and (3) a documented draw/contribution ledger between them. Pay personal costs from personal funds, and pay farm costs from borrowed farm credit, so that debt naturally ends up on the farm side. Applications: (a) \"cash damming\" - deposit farm revenue to pay down the personal mortgage while paying farm expenses from the farm line of credit, converting non-deductible debt to deductible over time (Singleton-consistent; document carefully); (b) APP interest on the interest-bearing portion and Farm Credit Canada loans for land or machinery are deductible; (c) interest on money borrowed to contribute to an RRSP or TFSA is not deductible; (d) interest on borrowing to buy investments in a non-registered account is deductible (property income use). Common mistakes: deducting the whole mortgage on a quarter that includes the house; deducting interest on a truck loan at 100% when personal use exists (interest on passenger vehicles also capped at $350/month for 2026); deducting late-payment interest charged by CRA (never deductible).",
+  "cite": "ITA s.20(1)(c), 67.2; Bronfman Trust v. The Queen [1987] 1 SCR 32; Singleton v. Canada 2001 SCC 61; Lipson v. Canada 2009 SCC 1; CRA Folio S3-F6-C1",
+  "sources": [
+   {
+    "title": "Income Tax Act s.20(1)(c)",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/I-3.3/section-20.html"
+   },
+   {
+    "title": "Finance Canada - 2026 automobile limits (interest $350/month)",
+    "url": "https://www.canada.ca/en/department-finance/news/2026/01/government-announces-the-2026-automobile-deduction-limits-and-expense-benefit-rates-for-businesses.html"
+   }
+  ],
+  "verified": false,
+  "status": "law"
+ },
+ {
+  "id": "home-office-vehicle-expenses",
+  "title": "Business-use-of-home and vehicle expenses for a farmer",
+  "topic": "farm-income",
+  "tax_year": 2026,
+  "text": "Business-use-of-home (CRA RC4408): a farmer may deduct the farming-use portion of home expenses (heat, power, insurance, maintenance, property taxes, mortgage interest, CCA - though CCA on the house is usually avoided to protect the principal residence exemption) if the workspace is the principal place of business, or is used only to earn farming income and regularly to meet clients/customers. The deduction cannot exceed net farm income before the claim (cannot create or increase a farm loss); excess carries forward. Report on line 9896 \"Other\". Business-use-of-home expenses are non-allowable for AgriStability and AgriInvest. Allocation: typically square footage of the office/space divided by total finished area, applied to eligible costs. For a farm house where the office is the farm's administrative hub (grain marketing, records, payroll), the principal place of business test is commonly met; keep a floor plan and photos. Vehicle expenses (RC4408 line 9819): deduct only the portion related to farming. Business trips include picking up parts or supplies and delivering grain; if the farmer does not live on the farm, travel between home and farm is personal. Keep a record of total kilometres and business kilometres and all running and maintenance costs; CRA's example: 27,000 business km of 30,000 total = 90% business use applied to fuel, insurance, repairs, interest and CCA. Business parking and supplementary business insurance are fully deductible. Logbook: CRA accepts a full-year logbook; a simplified approach (one representative 3-month base-year logbook, then a 1-month sample in later years within 10% of the base) is CRA administrative policy (not re-verified here). Pickups used mostly for hauling farm goods may be \"motor vehicles\" outside Class 10.1 limits; passenger vehicles are subject to the 2026 ceilings ($39,000 CCA, $350/month interest, $1,100/month lease). Farm trucks and equipment used only on the farm (grain trucks, tractors, ATVs used for cattle checks) are 100% business; household vehicles are the typical audit issue. Combined-books practice: tag fuel and vehicle costs per vehicle; record personal use. Saskatchewan marked diesel can only be used in farm equipment/vehicles permitted under the fuel tax exemption permit.",
+  "cite": "ITA s.18(12), 18(1)(a),(h), 13(7)(g), 67.2-67.3; CRA RC4408 Ch. 3 lines 9819, 9896",
+  "sources": [
+   {
+    "title": "CRA RC4408 Chapter 3 - business-use-of-home and motor vehicle expenses",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4408/rc4408-05.html"
+   },
+   {
+    "title": "Finance Canada - 2026 automobile deduction limits",
+    "url": "https://www.canada.ca/en/department-finance/news/2026/01/government-announces-the-2026-automobile-deduction-limits-and-expense-benefit-rates-for-businesses.html"
+   },
+   {
+    "title": "CRA RC4408 CCA rates (Class 10 vs 10.1)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4408/rc4408-16.html"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "grain-marketing-tax-timing",
+  "title": "Grain marketing and tax timing across December 31",
+  "topic": "deferrals",
+  "tax_year": 2026,
+  "text": "Tools available to a cash-basis Saskatchewan grain/cattle sole proprietor (all law unless noted): 1. Sale timing: income is recognized when payment is received (s.28(1)(a)). Delivering grain on contract in December but taking payment in January moves income to 2027. Payment received in December (cheque or e-transfer) is 2026 income regardless of delivery date. 2. Deferred cash purchase tickets (s.76(4)): wheat, oats, barley, rye, flaxseed, rapeseed/canola delivered to a licensed primary or process elevator with an interest-free ticket payable after year-end are included in the following year. Not available for pulses, soybeans or specialty crops. 3. Prepaying inputs (s.28(1)(e),(e.1)): payments for inventory (seed, fertilizer, chemical, feed) are deductible when paid, subject to the MIA if a loss results. Prepaid non-inventory expenses (rent, insurance, service contracts) are deductible only for the current and immediately following year; a prepayment covering two or more years ahead is deducted in the year it relates to. 4. Inventory adjustments (s.28(1)(b),(c)): the OIA can increase 2026 income (up to inventory FMV less MIA) to use low brackets, and reverses as a deduction in 2027. 5. CCA: optional - claim less in low-income years. 6. Livestock deferral (s.80.3) only in prescribed regions (RM 428 was prescribed for 2025, not on the initial 2026 list). 7. AgriInvest Fund 2 withdrawals, AgriStability and crop insurance payments are income when received - schedule withdrawals into lower-income years. 8. APP cash advances are loans, not income: borrow against stored grain to fund 2026 expenses while selling in 2027. Income bunching risk: deferral is not elimination. Rolling deferrals year over year pile income into a future year (e.g., retirement, death, incorporation, a forced sale in a market spike). Each year's target should be to fill the lower brackets (2026: 14%/10.5% to $54,532-$58,523; 33% combined to $117,045; 38.5% to $155,805) rather than minimize tax in one year. Consider CCB and OAS income tests, RRSP earned-income room, and CPP pensionable earnings when choosing the target. Instalments: the December 31 farmer instalment (2/3 of estimated tax or prior-year base) must be set at the same time as the year-end marketing decisions. Common mistakes: post-dating cheques with a non-licensed buyer and calling it a cash ticket; prepaying three years of land rent; deferring so much that the next year jumps to 47.5%; forgetting the MIA on prepaid fertilizer in a loss year.",
+  "cite": "ITA s.28(1)(a),(b),(c),(e),(e.1); 76(4),(5); 80.3; 155",
+  "sources": [
+   {
+    "title": "Income Tax Act s.28",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/i-3.3/section-28.html"
+   },
+   {
+    "title": "Income Tax Act s.76",
+    "url": "https://laws-lois.justice.gc.ca/eng/acts/i-3.3/section-76.html"
+   },
+   {
+    "title": "CRA RC4408 Ch. 3 (prepaid expenses)",
+    "url": "https://www.canada.ca/en/revenue-agency/services/forms-publications/publications/rc4408/rc4408-05.html"
+   },
+   {
+    "title": "CRA 2026 tax rates",
+    "url": "https://www.canada.ca/en/revenue-agency/services/tax/individuals/tax-rates-brackets/current-year.html"
+   },
+   {
+    "title": "AAFC 2026 livestock deferral regions",
+    "url": "https://agriculture.canada.ca/en/agricultural-production/weather/livestock-tax-deferral-provision/2026-livestock-tax-deferral-prescribed-regions"
+   }
+  ],
+  "verified": true,
+  "status": "law"
+ },
+ {
+  "id": "proposed-and-pending-measures-2026",
+  "title": "Proposed or announced measures not yet law (as of 2026-10-23)",
+  "topic": "programs",
+  "tax_year": 2026,
+  "text": "This entry lists measures relevant to the farm household that were announced but, on the evidence reviewed, are not confirmed as enacted. Treat as \"proposed\" until confirmed. 1. Bovine tuberculosis compensation deferral (AAFC, March 2026): the government \"intends to propose\" amending s.80.3 so producers in Alberta, Saskatchewan and Manitoba who received Health of Animals Act compensation in 2025 or 2026 for the 2024-2025 bovine TB events can spread inclusion: at least 83% in 2027 (up to 100% deferred to 2027), at least 9% in 2028, at least 4% in 2029, remaining 4% in 2030. Status: proposed; no bill identified. 2. Spring Economic Update 2026: now LAW, enacted in Bill C-30 (Royal Assent June 19, 2026): the Home Buyers' Plan repayment grace period extended to first withdrawals through 2028; the labour mobility deduction for tradespeople raised to $10,000 for 2026 (120 km test); the permanent $10 million capital gains exemption on sales to employee ownership trusts; the federal excise tax on gasoline and diesel at $0.00 from April 20 to September 7, 2026; immediate expensing for greenhouse buildings. The same Act cuts the CPP base contribution rate from 9.9% to 9.5% starting in 2027 (self-employed pay both shares), which lowers a farmer's CPP cost from 2027. Still to confirm: the Disability Tax Credit certification changes and immediate expensing for manufacturing and processing buildings. 3. Agricultural cooperative patronage dividends paid in shares: Budget 2025 extends the tax deferral to shares issued before the end of 2030 (status of enactment not confirmed in this review). Relevant if receiving patronage shares from a co-op (e.g., Federated Co-op/inputs). 4. LCGE indexation: enacted (Bill C-15); CRA shows $1,275,000 for 2026. 5. Canada Carbon Rebate for Small Businesses: non-taxability announced June 2025 via draft legislation; confirm enactment before amending returns. 6. Livestock tax deferral 2026 list: initial list (September 1, 2026) has no Saskatchewan regions; additions may be announced later in 2026 - monitor AAFC. Confirmed law (for contrast): lowest federal rate 14% (C-4, March 12, 2026); consumer carbon charge removed (C-4); AII/RIIP reinstatement and immediate expensing for Classes 43, 43.1, 54-56 (C-15, March 26, 2026); LCGE $1.25M (C-15); capital gains inclusion stays at 1/2 (increase cancelled March 21, 2025); Top-Up Tax Credit 2025-2030 (C-15).",
+  "cite": "Various: AAFC 2026-03 release; Spring Economic Update 2026 annex; Budget 2025 annex; Bills C-4 and C-15",
+  "sources": [
+   {
+    "title": "AAFC - bovine TB deferral proposal (2026-03)",
+    "url": "https://www.canada.ca/en/agriculture-agri-food/news/2026/03/government-of-canada-announces-extended-tax-deferral-period-for-livestock-producers-affected-by-2024-and-2025-bovine-tuberculosis-events.html"
+   },
+   {
+    "title": "Spring Economic Update 2026 - Tax measures supplementary information",
+    "url": "https://budget.canada.ca/update-miseajour/2026/report-rapport/tm-mf-en.html"
+   },
+   {
+    "title": "Budget 2025 tax measures annex",
+    "url": "https://budget.canada.ca/2025/report-rapport/tm-mf-en.html"
+   },
+   {
+    "title": "Finance Canada - small business carbon rebate non-taxability",
+    "url": "https://www.canada.ca/en/department-finance/news/2025/06/government-confirms-non-taxability-of-canada-carbon-rebates-for-small-businesses.html"
+   },
+   {
+    "title": "AAFC news - initial 2026 livestock deferral list",
+    "url": "https://www.canada.ca/en/agriculture-agri-food/news/2026/09/minister-macdonald-announces-initial-list-of-2026-livestock-tax-deferral-regions.html"
+   },
+   {
+    "title": "Finance Canada: legislation passes to implement Spring Economic Update 2026 measures",
+    "url": "https://www.canada.ca/en/department-finance/news/2026/06/legislation-passes-to-implement-measures-from-the-spring-economic-update-2026.html"
+   }
+  ],
+  "verified": true,
+  "status": "proposed"
+ }
+]

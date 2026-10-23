@@ -4,7 +4,7 @@ import { forecastEstimates } from './inventoryForecast.js';
 import { ownerWeights, businessShare } from './segments.js';
 import { monthIndex, todayISO, toISODate, addMonths, addDays } from './dates.js';
 import { LATEST_STATEMENTS_SQL } from './cardLedger.js';
-import { loadForecast, evaluate, buildTaxFlows, taxesFor, baseNetByYear, requiredFloorFor, scopeShare } from './forecast.js';
+import { loadForecast, evaluate, buildTaxFlows, taxesFor, baseNetByYear, scopeShare } from './forecast.js';
 
 const MONTHS = 12;
 
@@ -236,7 +236,16 @@ export function coverageWithAddedDebt(coverage, addedAnnualService) {
  * payments, card statements, account fees, GST refunds and payments and
  * (by default) income tax — because everything already booked is already
  * inside today's balance. Anything overdue-but-unpaid lands in the current
- * month. The floor is the lowest point in the projection.
+ * month.
+ *
+ * The cash floor is not one number: at each month-end it is what has to be
+ * paid in the next `floorDays` (60 by default) whether or not money comes
+ * in — loan payments, bills, card statements, fees, tax and GST owing, the
+ * household's essentials (lib/forecast.js mustPay). It rises ahead of
+ * input season and land payments and falls once they're paid. The forecast
+ * passes when every month-end covers its floor. floorMonth is the tightest
+ * month (least cash over its floor) and requiredFloor that month's floor;
+ * floorNow is what must be paid from today's cash in the next floorDays.
  *
  * scope: 'everything' (farm and household — a sole proprietorship's one
  * pot), 'farm' (Grain + Cattle shares only) or 'personal'. `accounts`
@@ -248,9 +257,10 @@ export async function liquidityFloor({ months = 12, scope = 'everything', accoun
   const taxes = ctx.tax.available ? taxesFor(baseNetByYear(ctx)) : null;
   const flows = [...ctx.flows, ...(includeTax && taxes ? buildTaxFlows(ctx, taxes) : [])];
   const ev = evaluate(flows, ctx, { scope, accountIds: accounts });
-  const requiredFloor = await requiredFloorFor(ctx.bufferPct);
   const trajectory = ev.trajectory;
-  const floorMonth = trajectory[ev.lowIdx];
+  const floorMonth = trajectory[ev.tightIdx];
+  const lowestMonth = trajectory[ev.lowIdx];
+  const requiredFloor = floorMonth.floor;
   const committedFloor = trajectory.reduce((a, b) => (b.committedBalance < a.committedBalance ? b : a));
   const reserve = scope === 'farm' ? evaluate(flows, ctx, { scope: 'everything' }) : null;
   const pick = accounts ? new Set(accounts.map(Number)) : null;
@@ -260,10 +270,13 @@ export async function liquidityFloor({ months = 12, scope = 'everything', accoun
     accounts: ctx.accounts.map((a) => ({ ...a, included: !pick || pick.has(a.id), counted: (!pick || pick.has(a.id)) ? a.balance * scopeShare(scope, a.farm) : 0 })),
     trajectory,
     floorMonth,
+    lowestMonth,
     committedFloorMonth: { year: committedFloor.year, month: committedFloor.month, balance: committedFloor.committedBalance },
-    bufferPct: ctx.bufferPct,
+    floorDays: ev.floorDays,
     requiredFloor,
-    passes: floorMonth.balance >= requiredFloor,
+    floorNow: ev.floorNow,
+    floorNowParts: ev.floorNowParts,
+    passes: floorMonth.headroom >= 0,
     reserve: reserve ? { startingBalance: reserve.opening, balances: reserve.trajectory.map((t) => t.balance) } : null,
     tax: ctx.tax.available ? { y0: ctx.win.y0, net: ctx.tax.netY0, total: ctx.tax.taxY0, instalment: ctx.tax.instalmentY0 } : null,
     personal: ctx.personal || null,
@@ -324,7 +337,7 @@ export async function allAccountBalances() {
  */
 export async function deployableCapital(year, liquidity, reserve) {
   const cash = (await allAccountBalances()).reduce((s, a) => s + a.balance, 0);
-  return cash - liquidity.requiredFloor - reserve.target;
+  return cash - (liquidity.floorNow ?? liquidity.requiredFloor) - reserve.target;
 }
 
 async function avgMonthlyExpenseValue(year) {

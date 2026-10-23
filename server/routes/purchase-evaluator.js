@@ -33,8 +33,8 @@ router.post('/evaluate', ah(async (req, res) => {
 
   const [liquidity, coverage] = await Promise.all([liquidityFloor(), termDebtCoverage()]);
 
-  // Liquidity gate: does the trough month still clear the buffer after the
-  // purchase amount (business-attributable share only) leaves the account?
+  // Liquidity gate: does the tightest month still cover what falls due after
+  // it once the purchase (business-attributable share only) has been paid?
   const businessShare = is_mixed_use ? price * (Number(mixed_use_business_pct) / 100) : price;
   const projectedFloorAfterPurchase = liquidity.floorMonth.balance - businessShare;
   const liquidity_pass = projectedFloorAfterPurchase >= liquidity.requiredFloor;

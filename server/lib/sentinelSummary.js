@@ -53,23 +53,22 @@ export function cashFlowSummary(cf = {}) {
  */
 export function forecastSummary(liquidity, today) {
   const horizon = addDays(today, FORECAST_DAYS);
-  const floor = cents(liquidity.requiredFloor);
-  const points = [{ date: today, balance_cents: cents(liquidity.startingBalance) }];
+  const floor = cents(liquidity.floorNow ?? liquidity.requiredFloor);
+  const points = [{ date: today, balance_cents: cents(liquidity.startingBalance), floor_cents: floor }];
   for (const m of liquidity.trajectory || []) {
     const start = `${m.year}-${pad(m.month)}-01`;
     const end = monthEnd(m.year, m.month);
     if (start > horizon) break;
     if (end <= today) continue;
-    points.push({ date: end, balance_cents: cents(m.balance) });
+    points.push({ date: end, balance_cents: cents(m.balance), floor_cents: cents(m.floor ?? liquidity.requiredFloor) });
   }
   const min = points.reduce((a, b) => (b.balance_cents < a.balance_cents ? b : a));
-  const firstBreach = points.find((p) => p.balance_cents < floor) || null;
-  const pct = round(Number(liquidity.bufferPct ?? 0.15) * 100, 2);
+  const firstBreach = points.find((p) => p.balance_cents < p.floor_cents) || null;
   return {
     forecast: {
       points,
       floor_cents: floor,
-      floor_rule: `${pct}% buffer`,
+      floor_rule: `what must be paid in the next ${liquidity.floorDays || 60} days`,
       min_balance_cents: min.balance_cents,
       min_date: min.date,
       breaches_floor: !!firstBreach,
@@ -244,8 +243,8 @@ export function buildSummary(inputs, { now = new Date() } = {}) {
   // same pass/fail tests as the Money Hub dashboard (unrounded), so the tile
   // never says all is well while the dashboard shows a problem.
   const liq = inputs.liquidity || {};
-  const floorBreach12 = liq.passes === false || (liq.trajectory || []).some((m) => Number(m.balance) < Number(liq.requiredFloor))
-    ? (liq.trajectory || []).find((m) => Number(m.balance) < Number(liq.requiredFloor)) || liq.floorMonth || null
+  const floorBreach12 = liq.passes === false || (liq.trajectory || []).some((m) => Number(m.balance) < Number(m.floor ?? liq.requiredFloor))
+    ? (liq.trajectory || []).find((m) => Number(m.balance) < Number(m.floor ?? liq.requiredFloor)) || liq.floorMonth || null
     : null;
   const coverageFails = proj.passes === false
     || (proj.ratio != null && Number.isFinite(Number(proj.ratio)) && Number(proj.ratio) < dscr_threshold);

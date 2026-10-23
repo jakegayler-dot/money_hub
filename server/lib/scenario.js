@@ -493,13 +493,15 @@ function outcome(ctx, base, flows, adj, opts) {
   return { ...res, line, interest };
 }
 
-const summarize = (o, ctx, floor) => {
+const summarize = (o, ctx) => {
   const t = o.ev.trajectory;
   const y0 = ctx.win.y0;
   return {
     low: o.ev.low, low_month: monthLabel(t[o.ev.lowIdx]), low_index: o.ev.lowIdx,
     end: o.ev.end, end_month: monthLabel(t[t.length - 1]),
-    months_below_floor: t.filter((m) => m.balance < floor).length,
+    months_below_floor: t.filter((m) => m.headroom < 0).length,
+    tight: t[o.ev.tightIdx].balance, tight_month: monthLabel(t[o.ev.tightIdx]), tight_floor: t[o.ev.tightIdx].floor,
+    tight_headroom: t[o.ev.tightIdx].headroom, floor_now: o.ev.floorNow,
     net_y0: o.net ? o.net[y0] : null, net_y1: o.net ? o.net[y0 + 1] : null,
     tax_y0: o.taxes ? r2(o.taxes[y0]) : null, tax_y1: o.taxes ? r2(o.taxes[y0 + 1]) : null,
     interest: o.interest,
@@ -511,6 +513,7 @@ const trimTrajectory = (ev) => ({
   opening: ev.opening,
   months: ev.trajectory.map((m) => ({
     year: m.year, month: m.month, open: m.open, inflow: m.inflow, outflow: m.outflow, balance: m.balance, committedBalance: m.committedBalance,
+    floor: m.floor, headroom: m.headroom,
     items: m.items.map((it) => ({
       key: it.key, kind: it.kind, label: it.label, date: it.date, amount: it.amount, estimate: !!it.estimate,
       whatif: !!it.whatif, moved: !!it.moved, changed: !!it.changed, overdue: !!it.overdue,
@@ -520,13 +523,14 @@ const trimTrajectory = (ev) => ({
 });
 
 /**
- * Runs a scenario. opts: { scope, accounts, includeTax, floor }.
+ * Runs a scenario. opts: { scope, accounts, includeTax }. Each month carries
+ * its cash floor (lib/forecast.js), so new loan payments raise the
+ * scenario's floor; `floor` is the plan's floor today.
  * Returns plan and scenario trajectories, headline figures for both, and
  * the impact of each group of levers in order.
  */
 export function runScenario(ctx, sc = {}, opts = {}) {
   const o = { scope: opts.scope || 'everything', accounts: opts.accounts || null, includeTax: opts.includeTax !== false };
-  const floor = opts.floor || 0;
   ctx.groupOf = ctx.groupOf || ((item) => {
     const f = ctx.flows.find((x) => x.kind === 'inventory' && x.ref.inventory_id === item.inventory_id);
     return f?.ref.group;
@@ -540,7 +544,8 @@ export function runScenario(ctx, sc = {}, opts = {}) {
 
   const planAdj = freshAdj();
   const plan = outcome(ctx, base, clone(baseFlows), planAdj, o);
-  const planSum = summarize(plan, ctx, floor);
+  const planSum = summarize(plan, ctx);
+  const floor = planSum.floor_now;
 
   const active = activeGroups(sc);
   const adj = freshAdj();
@@ -551,7 +556,7 @@ export function runScenario(ctx, sc = {}, opts = {}) {
     if (!active[g.id]) continue;
     if (g.id === 'opline') adj.opLine = sc.op_line;
     else flows = APPLY[g.id](flows, adj, ctx, sc);
-    const cur = summarize(outcome(ctx, base, flows, adj, o), ctx, floor);
+    const cur = summarize(outcome(ctx, base, flows, adj, o), ctx);
     steps.push({
       id: g.id, label: g.label,
       end: r2(cur.end - prev.end), low: r2(cur.low - prev.low),
@@ -566,7 +571,7 @@ export function runScenario(ctx, sc = {}, opts = {}) {
     scope: o.scope, include_tax: o.includeTax, floor, tax_available: !!ctx.tax.available,
     active: Object.keys(active).filter((k) => active[k]),
     plan: { ...planSum, trajectory: trimTrajectory(plan.ev) },
-    scenario: { ...summarize(scn, ctx, floor), trajectory: trimTrajectory(scn.ev) },
+    scenario: { ...summarize(scn, ctx), trajectory: trimTrajectory(scn.ev) },
     steps,
     purchases: adj.purchases,
     new_debt_annual: newDebtAnnual(sc),

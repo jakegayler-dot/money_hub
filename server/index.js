@@ -39,6 +39,7 @@ import sentinelReadRoute from './routes/sentinelRead.js';
 import { applyContractRules } from './lib/contracts.js';
 import sentinelActionsRoute from './routes/sentinelActions.js';
 import sentinelRoute from './routes/sentinel.js';
+import advisorRoute from './routes/advisor.js';
 import { sentinelWriteTrigger, startSentinelSync } from './lib/sentinel.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -85,6 +86,7 @@ app.use('/api/contracts', contractsRoute);
 app.use('/api/entity-summary', entityRoute);
 app.use('/api/balance-sheet', balanceSheetRoute);
 app.use('/api/financials', financialsRoute);
+app.use('/api/advisor', advisorRoute);
 app.use('/api/quicken', quickenRoute);
 app.use('/api/assets', assetsRoute);
 app.use('/api/inventory', inventoryRoute);

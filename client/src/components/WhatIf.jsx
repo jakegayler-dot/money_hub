@@ -818,7 +818,10 @@ function ScenarioChart({ r }) {
   const H = narrow ? 200 : 240;
   const pad = { t: 16, r: 12, b: 26, l: narrow ? 44 : 60 };
   const iw = W - pad.l - pad.r; const ih = H - pad.t - pad.b;
-  const vals = [...pp, ...sp, r.floor, 0];
+  const fp = [r.plan.floor_now ?? r.floor ?? 0, ...plan.months.map((m) => m.floor ?? r.floor ?? 0)];
+  const fs = [r.scenario.floor_now ?? fp[0], ...scn.months.map((m, i) => m.floor ?? fp[i + 1])];
+  const hasFloor = fs.some((v) => v > 0);
+  const vals = [...pp, ...sp, ...fs, 0];
   const lo = Math.min(...vals); const hi = Math.max(...vals);
   const rough = (hi - lo || 1) / 4; const mag = Math.pow(10, Math.floor(Math.log10(rough)));
   const step = [1, 2, 2.5, 5, 10].map((k) => k * mag).find((v) => v >= rough);
@@ -843,7 +846,7 @@ function ScenarioChart({ r }) {
       <div className="wi-legend" aria-hidden="true">
         <span><i className="sw plan" />Plan</span>
         {!same && <span><i className="sw what" />What-if</span>}
-        {r.floor > 0 && <span><i className="sw floor" />Floor {kfmt(r.floor)}</span>}
+        {hasFloor && <span><i className="sw floor" />Cash floor (what falls due next)</span>}
       </div>
       <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width={W} height={H} role="img" className="wi-svg"
         aria-label={`Cash by month, plan against the what-if. Plan low ${kfmt(r.plan.low)}, what-if low ${kfmt(r.scenario.low)}.`}
@@ -854,7 +857,7 @@ function ScenarioChart({ r }) {
             <text x={pad.l - 8} y={y(v) + 4} textAnchor="end" className="wi-axis">{kfmt(v)}</text>
           </g>
         ))}
-        {r.floor > 0 && <line x1={pad.l} x2={pad.l + iw} y1={y(r.floor)} y2={y(r.floor)} className="wi-floor" />}
+        {hasFloor && <path d={path(fs)} className="wi-floor" fill="none" />}
         {months.map((m, i) => (i % labelEvery === 0 ? (
           <text key={i} x={x(i + 1)} y={H - 6} textAnchor="middle" className="wi-axis">{MONTHS[m.month - 1]}{m.month === 1 || i === 0 ? ` ’${String(m.year).slice(2)}` : ''}</text>
         ) : null))}

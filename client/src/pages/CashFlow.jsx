@@ -274,6 +274,7 @@ export default function CashFlow() {
   if (!data) return <div className="empty-state">Loading…</div>;
 
   const { trajectory, floorMonth, requiredFloor, startingBalance, passes, accounts = [] } = data;
+  const floorOf = (t) => t.floor ?? requiredFloor;
   const end = trajectory[trajectory.length - 1];
   const options = { months, scope, accounts: chosen, includeTax };
 
@@ -320,7 +321,7 @@ export default function CashFlow() {
             <thead>
               <tr>
                 <th>Month</th><th>Contracts</th><th>Est. in</th><th>Bills</th><th>Debt service</th><th>Cards</th><th>Fees</th><th>GST</th><th>Tax</th><th>Personal</th><th>Est. out</th>
-                <th>Committed bal.</th><th>With estimates</th>
+                <th>Committed bal.</th><th>With estimates</th><th title={`What must be paid in the ${data.floorDays || 60} days after the month-end`}>Floor</th>
               </tr>
             </thead>
             <tbody>
@@ -329,7 +330,7 @@ export default function CashFlow() {
                 const v = (num, sign) => (num ? `${sign}${money(Math.round(num))}` : '—');
                 return (
                   <tr key={`${t.year}-${t.month}`} style={isFloor ? { background: 'var(--panel-hover)' } : undefined}>
-                    <td>{monthLabelFull(t)}{isFloor && <> <span className={`badge ${passes ? 'warn' : 'fail'}`}>FLOOR</span></>}</td>
+                    <td>{monthLabelFull(t)}{isFloor && <> <span className={`badge ${passes ? 'warn' : 'fail'}`} title="Least cash over the floor">TIGHTEST</span></>}</td>
                     <td>{v(t.contractInflows, '+')}</td>
                     <td style={{ color: 'var(--text-muted)' }}>{v(t.estimatedInflows, '+')}</td>
                     <td>{v(t.unpaidBillsDue, '−')}</td>
@@ -340,8 +341,9 @@ export default function CashFlow() {
                     <td>{v(t.taxInstalment, '−')}</td>
                     <td style={{ color: 'var(--text-muted)' }}>{v(t.personalSpending, '−')}</td>
                     <td style={{ color: 'var(--text-muted)' }}>{v(t.estimatedOutflows, '−')}</td>
-                    <td style={t.committedBalance < requiredFloor ? { color: 'var(--negative)' } : undefined}>{money(Math.round(t.committedBalance))}</td>
-                    <td style={t.balance < requiredFloor ? { color: 'var(--negative)' } : { fontWeight: 500 }}>{money(Math.round(t.balance))}</td>
+                    <td style={t.committedBalance < floorOf(t) ? { color: 'var(--negative)' } : undefined}>{money(Math.round(t.committedBalance))}</td>
+                    <td style={t.balance < floorOf(t) ? { color: 'var(--negative)' } : { fontWeight: 500 }}>{money(Math.round(t.balance))}</td>
+                    <td style={{ color: 'var(--text-muted)' }}>{money(Math.round(floorOf(t)))}</td>
                   </tr>
                 );
               })}

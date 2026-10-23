@@ -22,6 +22,7 @@ import Personal from './pages/Personal.jsx';
 import Calendar from './pages/Calendar.jsx';
 import Financials from './pages/Financials.jsx';
 import Quicken from './pages/Quicken.jsx';
+import Advisor from './pages/Advisor.jsx';
 
 export default function App() {
   // The owner toggle and the three headline numbers live on the Dashboard
@@ -49,6 +50,7 @@ export default function App() {
         {pathname === '/' && <EntityBar />}
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/advisor" element={<Advisor />} />
           <Route path="/cash-flow" element={<CashFlow />} />
           <Route path="/financials" element={<Financials />} />
           <Route path="/balance-sheet" element={<Navigate to="/financials?tab=balance" replace />} />

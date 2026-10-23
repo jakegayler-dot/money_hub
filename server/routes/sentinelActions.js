@@ -5,11 +5,16 @@
 //   GET  /api/sentinel/actions            what's here and what each takes
 //   POST /api/sentinel/actions/purchase   can we afford it? optionally saved
 //                                         as a what-if on the Cash Flow page
+//   POST /api/sentinel/actions/advisor    a turn with Jake's financial advisor
+//                                         (lib/advisor): Sentinel's question, or
+//                                         Jake's words in a Sentinel thread
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { requireActionKey } from './sentinelRead.js';
 import { runAndJudge, purchaseFromInput, agentAnswer, PURCHASE_FIELDS } from '../lib/purchaseCheck.js';
+import { advise } from '../lib/advisor/advisor.js';
+import { AdvisorToolError } from '../lib/advisor/tools.js';
 
 const router = Router();
 router.use(requireActionKey);
@@ -28,7 +33,40 @@ router.get('/', (req, res) => res.json({
       scope: '"everything" (default, farm and household), "farm" or "personal"',
     },
     example: { label: 'Used S780 combine', price: 485000, trade_in: 150000, deposit: 40000, rate: 6.9, years: 7, per_year: 1, month: '2027-03', save: true },
+  }, {
+    name: 'advisor', method: 'POST', path: '/api/sentinel/actions/advisor',
+    description: 'One turn with Jake\'s financial advisor, the agent in Money Hub that owns everything to do with money (farm, household, debt, tax, investing). It reads all of Money Hub, runs decisions through the forecast and what-ifs, searches a Canadian tax library and cites it, remembers what Jake tells it, and can save a what-if on the Cash Flow page (its only write). Takes 20 seconds to a couple of minutes. The reply is plain text; when author is "sentinel" it is at most about 200 words, answer first.',
+    body: {
+      thread: '{ id, title, kind: "direct"|"group" }: the Sentinel thread this turn belongs to',
+      author: '"sentinel" (Sentinel asking) or "jake" (Jake\'s words in that thread)',
+      text: 'the message',
+      transcript: 'optional: the thread\'s recent messages [{ author: "jake"|"sentinel"|"advisor", body }], oldest first, without this one',
+      depth: '"quick" (a fast check) or "deep" (default: a decision worth thinking through)',
+    },
+    example: { thread: { id: '7f1c…', title: 'Money: Sentinel and the advisor', kind: 'group' }, author: 'sentinel', text: 'Jake asks whether to prepay fertilizer before Dec 31 or wait for the spring price.', depth: 'deep' },
   }],
+}));
+
+router.post('/advisor', ah(async (req, res) => {
+  const b = req.body || {};
+  const t = b.thread || {};
+  if (!t.id || !/^[\w-]{1,80}$/.test(String(t.id))) return res.status(422).json({ error: 'thread.id is required (the Sentinel thread\'s id).' });
+  const author = b.author === 'jake' ? 'jake' : 'sentinel';
+  const text = String(b.text || '').trim();
+  if (!text) return res.status(422).json({ error: 'text is required.' });
+  if (text.length > 8000) return res.status(422).json({ error: 'text is too long (8,000 characters at most).' });
+  try {
+    const out = await advise({
+      threadKey: `sentinel:${t.id}`, threadTitle: String(t.title || 'Sentinel').slice(0, 120), kind: t.kind === 'group' ? 'group' : 'direct',
+      author, text, transcript: Array.isArray(b.transcript) ? b.transcript : null, depth: b.depth === 'quick' ? 'quick' : 'deep',
+    });
+    res.json({ reply: out.reply, model: out.model, cost_usd: out.cost_usd, tools: out.tools, saved: out.saved, remembered: out.remembered,
+      cites: out.cites, sources: out.sources, budget_stopped: !!out.budget });
+  } catch (err) {
+    if (err instanceof AdvisorToolError) return res.status(422).json({ error: err.message });
+    console.error('advisor (Sentinel):', err.message);
+    res.status(502).json({ error: `The advisor couldn't answer: ${err.message}` });
+  }
 }));
 
 router.post('/purchase', ah(async (req, res) => {

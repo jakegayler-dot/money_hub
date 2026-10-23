@@ -1459,3 +1459,46 @@ CREATE TABLE IF NOT EXISTS grocery_advice (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   advice      JSONB NOT NULL
 );
+
+-- The financial advisor (lib/advisor): Jake's own agent for money, in Money
+-- Hub, that Sentinel consults first on anything money. Conversations by
+-- thread (key 'moneyhub:direct' for the chat here; 'sentinel:<id>' for a
+-- Sentinel thread, direct or group), what it has been told to remember
+-- (facts, goals, preferences, decisions), and what it has cost.
+CREATE TABLE IF NOT EXISTS advisor_threads (
+  id          SERIAL PRIMARY KEY,
+  key         TEXT NOT NULL UNIQUE,
+  title       TEXT NOT NULL,
+  kind        TEXT NOT NULL DEFAULT 'direct' CHECK (kind IN ('direct', 'group')),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS advisor_messages (
+  id          SERIAL PRIMARY KEY,
+  thread_id   INTEGER NOT NULL REFERENCES advisor_threads (id) ON DELETE CASCADE,
+  author      TEXT NOT NULL CHECK (author IN ('jake', 'sentinel', 'advisor')),
+  body        TEXT NOT NULL,
+  meta        JSONB NOT NULL DEFAULT '{}',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_advisor_messages_thread ON advisor_messages (thread_id, id);
+CREATE TABLE IF NOT EXISTS advisor_notes (
+  id          SERIAL PRIMARY KEY,
+  kind        TEXT NOT NULL CHECK (kind IN ('fact', 'goal', 'preference', 'decision')),
+  text        TEXT NOT NULL,
+  message_id  INTEGER REFERENCES advisor_messages (id) ON DELETE SET NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  retired_at  TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS advisor_usage (
+  id             SERIAL PRIMARY KEY,
+  model          TEXT NOT NULL,
+  input_tokens   INTEGER NOT NULL DEFAULT 0,
+  output_tokens  INTEGER NOT NULL DEFAULT 0,
+  cache_read     INTEGER NOT NULL DEFAULT 0,
+  cache_write    INTEGER NOT NULL DEFAULT 0,
+  web_searches   INTEGER NOT NULL DEFAULT 0,
+  cost_usd       NUMERIC(10,4) NOT NULL DEFAULT 0,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_advisor_usage_created ON advisor_usage (created_at);

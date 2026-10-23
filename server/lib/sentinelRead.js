@@ -1016,9 +1016,9 @@ const fcFilters = [
 const fcOptions = (q) => ({ months: Number(q.months || 12), scope: q.scope || 'everything', includeTax: q.include_tax !== false });
 def({
   name: 'cash_flow_forecast', mode: 'js', idType: 'text', summary: true,
-  description: 'SUMMARY. The app\'s month-by-month cash forecast (same as its Cash Flow page): starting from today\'s balances, each month\'s money in (+), money out (−), closing balance with estimates, and the committed-only balance. First row (kind "summary") has the required floor and lowest month. id = YYYY-MM.',
-  fields: ['id', 'kind', 'month', 'opening', 'inflow', 'outflow', 'closing_balance', 'committed_only_balance', 'below_floor', 'breakdown', 'largest_items',
-    'starting_balance', 'required_floor', 'buffer_pct', 'lowest_month', 'lowest_balance', 'passes', 'scope', 'currency'],
+  description: 'SUMMARY. The app\'s month-by-month cash forecast (same as its Cash Flow page): starting from today\'s balances, each month\'s money in (+), money out (−), closing balance with estimates, and the committed-only balance. Each month has its cash floor: what must be paid in the floor_days after that month-end (loans, bills, cards, fees, tax, GST, household essentials). First row (kind "summary") has today’s floor, the tightest month and whether every month covers its floor. id = YYYY-MM.',
+  fields: ['id', 'kind', 'month', 'opening', 'inflow', 'outflow', 'closing_balance', 'committed_only_balance', 'floor', 'headroom', 'below_floor', 'breakdown', 'largest_items',
+    'starting_balance', 'floor_today', 'floor_days', 'tightest_month', 'tightest_floor', 'tightest_headroom', 'lowest_month', 'lowest_balance', 'passes', 'scope', 'currency'],
   search: ['month'], date: 'date',
   filters: fcFilters,
   hidden: ['date'],
@@ -1027,12 +1027,13 @@ def({
     const lf = await liquidityFloor(opts);
     const ym = (m) => `${m.year}-${String(m.month).padStart(2, '0')}`;
     const summary = {
-      id: 'summary', kind: 'summary', scope: opts.scope, starting_balance: money(lf.startingBalance), required_floor: money(lf.requiredFloor),
-      buffer_pct: num(lf.bufferPct), lowest_month: ym(lf.floorMonth), lowest_balance: money(lf.floorMonth.balance), passes: lf.passes, currency: CURRENCY,
+      id: 'summary', kind: 'summary', scope: opts.scope, starting_balance: money(lf.startingBalance), floor_today: money(lf.floorNow), floor_days: lf.floorDays,
+      tightest_month: ym(lf.floorMonth), tightest_floor: money(lf.requiredFloor), tightest_headroom: money(lf.floorMonth.headroom),
+      lowest_month: ym(lf.lowestMonth), lowest_balance: money(lf.lowestMonth.balance), passes: lf.passes, currency: CURRENCY,
     };
     return [summary, ...lf.trajectory.map((m) => ({
       id: ym(m), kind: 'month', month: ym(m), date: `${ym(m)}-01`, opening: money(m.open), inflow: money(m.inflow), outflow: money(m.outflow),
-      closing_balance: money(m.balance), committed_only_balance: money(m.committedBalance), below_floor: m.balance < lf.requiredFloor,
+      closing_balance: money(m.balance), committed_only_balance: money(m.committedBalance), floor: money(m.floor), headroom: money(m.headroom), below_floor: m.headroom < 0,
       breakdown: {
         contracts: money(m.contractInflows), estimated_inflows: money(m.estimatedInflows), bills: money(-m.unpaidBillsDue), loan_payments: money(-m.debtServiceDue),
         card_payments: money(-m.creditCardDue), account_fees: money(-m.accountFees), estimated_outflows: money(-m.estimatedOutflows),
@@ -1085,20 +1086,21 @@ def({
 // ---------- liquidity ----------
 def({
   name: 'liquidity', mode: 'js', idType: 'text', summary: true,
-  description: 'SUMMARY (one row). Liquidity position: cash today, the required cash floor (buffer % of average monthly outflow), the lowest forecast month-end with and without estimates, whether the floor holds, the reserve vs its target, and deployable cash (cash − floor − reserve target).',
-  fields: ['id', 'cash_today', 'required_floor', 'buffer_pct', 'lowest_month', 'lowest_balance', 'committed_lowest_month', 'committed_lowest_balance',
+  description: 'SUMMARY (one row). Liquidity position: cash today, the cash floor today (what must be paid in the next floor_days — loans, bills, cards, fees, tax, GST, household essentials), the tightest forecast month-end (least cash over that month’s floor), the lowest month-end with and without estimates, whether every month covers its floor, the reserve vs its target, and deployable cash (cash − today’s floor − reserve target).',
+  fields: ['id', 'cash_today', 'floor_today', 'floor_days', 'tightest_month', 'tightest_floor', 'tightest_balance', 'lowest_month', 'lowest_balance', 'committed_lowest_month', 'committed_lowest_balance',
     'passes', 'reserve', 'reserve_target', 'reserve_target_months', 'reserve_funded_pct', 'deployable_cash', 'currency'],
   search: [], filters: [],
   load: async (q, ctx) => {
     const [lf, rs] = await Promise.all([liquidityFloor(), reserveStatus(Number(ctx.today.slice(0, 4)))]);
     const ym = (m) => `${m.year}-${String(m.month).padStart(2, '0')}`;
     return [{
-      id: 'liquidity', cash_today: money(lf.startingBalance), required_floor: money(lf.requiredFloor), buffer_pct: num(lf.bufferPct),
-      lowest_month: ym(lf.floorMonth), lowest_balance: money(lf.floorMonth.balance),
+      id: 'liquidity', cash_today: money(lf.startingBalance), floor_today: money(lf.floorNow), floor_days: lf.floorDays,
+      tightest_month: ym(lf.floorMonth), tightest_floor: money(lf.requiredFloor), tightest_balance: money(lf.floorMonth.balance),
+      lowest_month: ym(lf.lowestMonth), lowest_balance: money(lf.lowestMonth.balance),
       committed_lowest_month: ym(lf.committedFloorMonth), committed_lowest_balance: money(lf.committedFloorMonth.balance), passes: lf.passes,
       reserve: money(rs.currentReserve), reserve_target: money(rs.target), reserve_target_months: num(rs.targetMonths),
       reserve_funded_pct: rs.fundedPct == null ? null : Math.round(rs.fundedPct * 1000) / 10,
-      deployable_cash: money(lf.startingBalance - lf.requiredFloor - rs.target), currency: CURRENCY,
+      deployable_cash: money(lf.startingBalance - lf.floorNow - rs.target), currency: CURRENCY,
     }];
   },
 });

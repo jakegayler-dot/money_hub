@@ -33,6 +33,36 @@ const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const pad = (n) => String(n).padStart(2, '0');
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const dayNum = (d) => { const [y, m, dd] = toISODate(d).split('-').map(Number); return Date.UTC(y, m - 1, dd) / 86400000; };
+
+// ---- The cash floor --------------------------------------------------------------
+// What has to be paid whether or not any money comes in: loan payments,
+// bills, card statements, account fees, income tax and GST owing, and the
+// household's essential spending. The floor at a month-end is what falls
+// due in the FLOOR_DAYS after it — cash on hand should cover it if nothing
+// arrives in that time. Capital purchases, estimates and discretionary
+// spending can be put off, so they are left out.
+export const FLOOR_DAYS = 60;
+const MAX_FLOOR_DAYS = 90;
+const LOOKAHEAD_MONTHS = 3;
+const MUST_PAY = new Set(['loan', 'bill', 'card', 'fee', 'tax', 'gst']);
+export const mustPay = (f) => f.amount < 0 && (MUST_PAY.has(f.kind) || (f.kind === 'personal' && f.ref?.bucket === 'essential'));
+const FLOOR_PART = { loan: 'loans', bill: 'bills', card: 'cards', fee: 'fees', tax: 'tax', gst: 'tax', personal: 'household' };
+
+/** What must be paid in [from, to) for a scope: total and by part. */
+export function mustPayBetween(flows, from, to, scope) {
+  const parts = { loans: 0, bills: 0, cards: 0, tax: 0, household: 0, fees: 0 };
+  let total = 0;
+  for (const f of flows) {
+    if (f.date < from || f.date >= to || !mustPay(f)) continue;
+    const amt = -f.amount * scopeShare(scope, f.farm ?? 1);
+    if (amt < 0.005) continue;
+    parts[FLOOR_PART[f.kind]] += amt;
+    total += amt;
+  }
+  for (const k of Object.keys(parts)) parts[k] = r2(parts[k]);
+  return { total: r2(total), parts };
+}
+
 export const norm = (s) => String(s || '').toLowerCase().trim();
 export const groupKey = (commodity, unit) => `${norm(commodity)}|${norm(unit)}`;
 
@@ -69,7 +99,12 @@ function estimateCommodity(e, known) {
  */
 export async function loadForecast({ months = 12, today = todayISO() } = {}) {
   const win = windowFor(months, today);
-  const { endStr, y0 } = win;
+  // Flows are loaded a few months past the window so the cash floor of the
+  // last months can see what falls due after them; those extra flows are
+  // kept apart (ctx.lookahead) and never enter a balance.
+  const lwin = windowFor(months + LOOKAHEAD_MONTHS, today);
+  const { endStr } = lwin;
+  const { y0 } = win;
 
   const [accounts, billRows, loanRows, contractRows, cardRows, estimates, inv, sheet, taxY0, settings] = await Promise.all([
     pool.query(`SELECT id, name, ledger, account_type, opening_balance, fee_amount, fee_frequency, segment, is_segment_split,
@@ -98,14 +133,14 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     loadBalanceSheet(),
     farmIncomeTax(y0).catch((e) => { console.error('Tax projection unavailable for the forecast:', e.message); return null; }),
     Promise.all([
-      getSetting('liquidity_buffer_pct', 0.15),
+      getSetting('floor_window_days', FLOOR_DAYS),
       getSetting(`tax_instalment_paid_${y0}`, null),
       getSetting(`tax_prior_year_owing_${y0}`, null),
       getSetting(`tax_instalment_paid_${y0 - 1}`, null),
       getSetting('gst_filing_frequency', 'quarterly'),
     ]),
   ]);
-  const [bufferPct, paidY0, priorOwingY0, paidPrev, gstFreq] = settings;
+  const [floorDaysSetting, paidY0, priorOwingY0, paidPrev, gstFreq] = settings;
 
   // ---- Inventory groups (what the what-if prices and quantities act on) ----
   const groups = new Map();
@@ -235,7 +270,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     if (!fee || !['monthly', 'annual'].includes(a.fee_frequency)) continue;
     const perMonth = a.fee_frequency === 'monthly' ? fee : fee / 12;
     const farm = businessShare(a);
-    win.meta.forEach((m, i) => {
+    lwin.meta.forEach((m, i) => {
       let d = `${m.year}-${pad(m.month)}-28`;
       if (i === 0 && d < today) d = today;
       add({ key: `fee:${a.id}:${m.year}-${m.month}`, kind: 'fee', label: `Account fees — ${a.name}`, date: d, amount: -perMonth, farm, taxable: -perMonth * farm });
@@ -243,7 +278,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
   }
 
   // GST refunds and payments.
-  for (const f of await gstFlows(win)) add(f);
+  for (const f of await gstFlows(lwin)) add(f);
 
   // Personal spending: essentials from what the household actually spends,
   // less what's already here for the household that month (personal bills,
@@ -258,9 +293,9 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
         : ['bill', 'fee', 'estimate_out'].includes(f.kind) ? -f.amount * share : 0;
       if (amt) knownOut.set(f.date.slice(0, 7), (knownOut.get(f.date.slice(0, 7)) || 0) + amt);
     }
-    const r = await personalFlows({ meta: win.meta, today, tax: taxY0, known: (k) => knownOut.get(k) || 0 });
+    const r = await personalFlows({ meta: lwin.meta, today, tax: taxY0, known: (k) => knownOut.get(k) || 0 });
     for (const f of r.flows) add(f);
-    const discMonths = r.flows.filter((f) => f.ref?.bucket === 'discretionary').length;
+    const discMonths = r.flows.filter((f) => f.ref?.bucket === 'discretionary' && f.date < win.endStr).length;
     const pace = r.plan.pace;
     personal = {
       limit: r.plan.limit, per_month: r.plan.discretionary.per_month, essentials_basis: r.plan.essentials.basis,
@@ -279,10 +314,12 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
   // Income tax: this year's projection from the Tax tab; next year assumed
   // like this year unless a scenario says otherwise.
   const netY0 = taxY0 ? taxY0.projected.net_income : null;
+  const inWindow = (d) => toISODate(d) < win.endStr;
+  const floorDays = Math.min(MAX_FLOOR_DAYS, Math.max(14, Number(floorDaysSetting) || FLOOR_DAYS));
   return {
-    win, today, flows, accounts: accountRows, groups, known, personal,
-    bills: billRows.rows, loans: loanRows.rows, contracts: contractRows.rows, estimates,
-    inventory: inv, bufferPct: Number(bufferPct), gstFreq: String(gstFreq || 'quarterly'),
+    win, today, flows: flows.filter((f) => inWindow(f.date)), lookahead: flows.filter((f) => !inWindow(f.date)), accounts: accountRows, groups, known, personal,
+    bills: billRows.rows.filter((b) => inWindow(b.due_date)), loans: loanRows.rows.filter((l) => inWindow(l.due_date)), contracts: contractRows.rows, estimates,
+    inventory: inv, floorDays, gstFreq: String(gstFreq || 'quarterly'),
     tax: {
       available: !!taxY0, netY0, taxY0: taxY0 ? taxY0.projected.tax.total : null,
       paidY0: paidY0 || null, priorOwingY0: priorOwingY0 != null ? Number(priorOwingY0) : null, paidPrev: paidPrev || null,
@@ -462,19 +499,24 @@ export function evaluate(flows, ctx, { scope = 'everything', accountIds = null }
     m.items.sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
     return { ...m, open, inflow, outflow, balance: bal, committedBalance: com };
   });
+  // The floor at each month-end: what must be paid in the days after it.
+  const days = ctx.floorDays || FLOOR_DAYS;
+  const all = [...flows, ...(ctx.lookahead || [])];
+  trajectory.forEach((t, i) => {
+    const next = i + 1 < n ? `${meta[i + 1].year}-${pad(meta[i + 1].month)}-01` : endStr;
+    const f = mustPayBetween(all, next, addDays(next, days), scope);
+    t.floor = f.total;
+    t.floorParts = f.parts;
+    t.headroom = r2(t.balance - f.total);
+  });
+  // Today's floor: everything overdue plus what falls due in the next `days`.
+  const now = mustPayBetween(all, '0000-01-01', addDays(ctx.today || todayISO(), days), scope);
   const lowIdx = trajectory.reduce((k, t, i) => (t.balance < trajectory[k].balance ? i : k), 0);
-  return { opening, trajectory, lowIdx, low: trajectory[lowIdx].balance, end: trajectory[n - 1].balance };
-}
-
-/** Required floor: a buffer on the average monthly outflow of the trailing 12 months. */
-export async function requiredFloorFor(bufferPct) {
-  const { rows: [r] } = await pool.query(
-    `SELECT COALESCE(AVG(monthly_outflow), 0) AS avg FROM (
-       SELECT date_trunc('month', date) AS m, SUM(-amount) AS monthly_outflow
-       FROM transaction_lines
-       WHERE amount < 0 AND is_transfer = false AND date >= CURRENT_DATE - INTERVAL '12 months'
-       GROUP BY m) sub`);
-  return Number(r.avg) * bufferPct;
+  const tightIdx = trajectory.reduce((k, t, i) => (t.headroom < trajectory[k].headroom ? i : k), 0);
+  return {
+    opening, trajectory, lowIdx, low: trajectory[lowIdx].balance, end: trajectory[n - 1].balance,
+    tightIdx, floorDays: days, floorNow: now.total, floorNowParts: now.parts,
+  };
 }
 
 /** Base tax per year (this year from the Tax tab; next years like this year). */

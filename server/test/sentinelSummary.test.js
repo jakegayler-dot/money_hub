@@ -62,7 +62,7 @@ test('forecast: today + month-ends through the month holding day 90, monthly res
   assert.deepEqual(forecast.points.map((p) => p.date), ['2026-09-30', '2026-10-31', '2026-11-30', '2026-12-31']);
   assert.deepEqual(forecast.points.map((p) => p.balance_cents), [5000000, 4000000, 3000000, 2000000]);
   assert.equal(forecast.floor_cents, 300000);
-  assert.equal(forecast.floor_rule, '15% buffer');
+  assert.equal(forecast.floor_rule, 'what must be paid in the next 60 days');
   assert.equal(forecast.min_balance_cents, 2000000);
   assert.equal(forecast.min_date, '2026-12-31');
   assert.equal(forecast.breaches_floor, false);

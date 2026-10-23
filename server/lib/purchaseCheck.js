@@ -18,7 +18,7 @@
 // Any "no" makes it not viable; any "tight" makes it viable but tight.
 
 import { termDebtCoverage, coverageWithAddedDebt, reserveStatus } from './calculations.js';
-import { loadForecast, requiredFloorFor } from './forecast.js';
+import { loadForecast } from './forecast.js';
 import { runScenario } from './scenario.js';
 
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -39,21 +39,23 @@ export async function verdictInputs(year) {
 export function purchaseVerdict(result, { coverage, reserveTarget = 0 }) {
   const p = result.plan;
   const s = result.scenario;
-  const floor = Number(result.floor) || 0;
+  const floor = Number(result.floor) || 0; // what today's cash must cover
   const buys = result.purchases || [];
   const tests = [];
 
-  // Cash floor.
-  const low = { value: r2(s.low), month: s.low_month, before: r2(p.low), before_month: p.low_month, floor: r2(floor) };
+  // Cash floor: at the tightest month-end, does cash cover what must be
+  // paid in the days after it (the new loan's payments included)?
+  const low = { value: r2(s.low), month: s.low_month, before: r2(p.low), before_month: p.low_month,
+    tight_month: s.tight_month, tight_balance: r2(s.tight), floor: r2(s.tight_floor), headroom: r2(s.tight_headroom), headroom_before: r2(p.tight_headroom) };
   if (s.low < 0) {
     tests.push({ id: 'cash', label: 'Cash floor', status: 'fail', ...low,
       detail: `Cash goes overdrawn: ${$(s.low)} in ${s.low_month}${p.low >= 0 ? ` (it was ${$(p.low)} without it)` : ''}.` });
-  } else if (s.low < floor) {
+  } else if (s.tight_headroom < 0) {
     tests.push({ id: 'cash', label: 'Cash floor', status: 'caution', ...low,
-      detail: `Lowest month is ${$(s.low)} in ${s.low_month}, under your ${$(floor)} floor${p.low < floor ? ' (already under it without the purchase)' : ''}.` });
+      detail: `At the end of ${s.tight_month} cash is ${$(s.tight)}, short of the ${$(s.tight_floor)} that falls due in the following weeks${p.tight_headroom < 0 ? ' (already short without the purchase)' : ''}.` });
   } else {
     tests.push({ id: 'cash', label: 'Cash floor', status: 'pass', ...low,
-      detail: `Lowest month is ${$(s.low)} in ${s.low_month}, above your ${$(floor)} floor.` });
+      detail: `Tightest month is ${s.tight_month}: ${$(s.tight)} covers the ${$(s.tight_floor)} falling due after it, with ${$(s.tight_headroom)} to spare.` });
   }
 
   // Term debt coverage with the new loans' annual payments.
@@ -129,8 +131,7 @@ export const needsVerdict = (sc = {}) => (sc.purchases || []).some((x) => Number
  */
 export async function runAndJudge(scenario, opts = {}) {
   const ctx = await loadForecast({ months: opts.months || 12 });
-  const floor = await requiredFloorFor(ctx.bufferPct);
-  const result = runScenario(ctx, scenario || {}, { ...opts, floor });
+  const result = runScenario(ctx, scenario || {}, opts);
   if (needsVerdict(scenario)) result.verdict = purchaseVerdict(result, await verdictInputs(ctx.win.y0));
   return result;
 }
