@@ -10,7 +10,7 @@ import { cents } from './SplitEditor.jsx';
 // or a balance owing, CPP and EI against the year's maximums, and each stub
 // with whether its deposit was found and booked as her wages.
 const WHO = [['ashley', 'Ashley'], ['jake', 'Jake']];
-const MAIN = ['income_tax', 'cpp', 'ei', 'pension'];
+const MAIN = ['income_tax', 'cpp', 'cpp2', 'ei', 'pension', 'holdback'];
 const sumOf = (s, types) => (s.deductions || []).filter((d) => types.includes(d.type)).reduce((a, d) => a + Number(d.amount), 0);
 const other = (s) => (s.deductions || []).filter((d) => !MAIN.includes(d.type)).reduce((a, d) => a + Number(d.amount), 0);
 const shortDate = (iso) => (iso ? new Date(`${iso}T12:00:00`).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' }) : '');
@@ -83,6 +83,8 @@ export default function Paystubs() {
   const name = WHO.find(([k]) => k === owner)[1];
   const t = s?.totals;
   const o = s?.tax_outlook;
+  const h = s?.holdback;
+  const holds = !!h || (s?.stubs || []).some((x) => x.holdback_paid > 0 || sumOf(x, ['holdback']) > 0);
 
   return (
     <div className="panel paystubs">
@@ -112,7 +114,9 @@ export default function Paystubs() {
           <div className="grid personal-cards paystub-cards">
             <MetricCard label="Gross pay this year" value={money(t.gross)}
               sub={`${s.pays_on_file} pay${s.pays_on_file === 1 ? '' : 's'} · ${s.frequency || 'one so far'}${s.employers.length > 1 ? ` · ${s.employers.length} employers` : ''}`} />
-            <MetricCard label="Take-home" value={money(t.net)} sub={t.take_home_pct != null ? `${t.take_home_pct}% of gross` : undefined} />
+            <MetricCard label="Take-home" value={money(t.net)}
+              sub={[t.take_home_pct != null && `${t.take_home_pct}% of gross`, t.holdback > 0 && `${money(t.holdback)} held for summer`,
+                t.holdback_paid > 0 && `${money(t.holdback_paid)} summer pay`].filter(Boolean).join(' · ') || undefined} />
             <MetricCard label="Income tax withheld" value={money(t.income_tax)} sub={`${money(s.per_pay.income_tax)} a pay lately`} />
             <MetricCard label={`Tax outlook for ${year}`}
               value={o.result === 'about even' ? 'About even' : `${o.result === 'refund' ? 'Refund' : 'Owing'} ${money(Math.abs(o.difference))}`}
@@ -127,6 +131,18 @@ export default function Paystubs() {
               <MaxRow label="CPP" m={s.cpp} />
               {s.cpp2 && s.cpp2.paid > 0 && <MaxRow label="CPP2" m={{ ...s.cpp2, reached: s.cpp2.paid >= s.cpp2.max - 0.5 }} />}
               <MaxRow label="EI" m={s.ei} />
+              {h && (
+                <tr>
+                  <td>Summer holdback</td>
+                  <td className="num">{money(h.balance)} held</td>
+                  <td className="split-lines">
+                    {h.school_year} school year: {money(h.saved)} held back so far
+                    {h.pays_to_come > 0 && `, about ${money(h.projected_by_june)} by June with ${h.pays_to_come} more pay${h.pays_to_come === 1 ? '' : 's'}`}
+                    {h.paid_out > 0 && `; ${money(h.paid_out)} paid out`}.
+                    {h.payouts.length > 0 && ` Paid out ${h.payouts.map((p) => `${money(p.amount)} on ${shortDate(p.date)}`).join(' and ')}.`}
+                  </td>
+                </tr>
+              )}
               {(s.retirement.pension > 0 || s.retirement.group_rrsp > 0) && (
                 <tr>
                   <td>Retirement</td>
@@ -142,7 +158,7 @@ export default function Paystubs() {
               <thead>
                 <tr>
                   <th>Paid</th><th>Employer</th><th className="num">Gross</th><th className="num">Tax</th><th className="num">CPP</th>
-                  <th className="num">EI</th><th className="num">Pension</th><th className="num">Other</th><th className="num">Net</th><th>Deposit</th><th />
+                  <th className="num">EI</th><th className="num">Pension</th>{holds && <th className="num">Holdback</th>}<th className="num">Other</th><th className="num">Net</th><th>Deposit</th><th />
                 </tr>
               </thead>
               <tbody>
@@ -150,11 +166,12 @@ export default function Paystubs() {
                   <tr key={x.id}>
                     <td>{shortDate(x.pay_date)}</td>
                     <td>{x.employer}{x.warnings?.length > 0 && <span className="tag" title={x.warnings.join(' ')}>check</span>}</td>
-                    <td className="num">{cents(x.gross)}</td>
-                    <td className="num">{cents(sumOf(x, ['income_tax']))}</td>
-                    <td className="num">{cents(sumOf(x, ['cpp', 'cpp2']))}</td>
-                    <td className="num">{cents(sumOf(x, ['ei']))}</td>
+                    <td className="num">{x.gross > 0 ? cents(x.gross) : '—'}{x.holdback_paid > 0 && <span className="tag tag-link" title={`${cents(x.holdback_paid)} of held-back pay paid out`}>summer pay</span>}</td>
+                    <td className="num">{sumOf(x, ['income_tax']) ? cents(sumOf(x, ['income_tax'])) : '—'}</td>
+                    <td className="num">{sumOf(x, ['cpp', 'cpp2']) ? cents(sumOf(x, ['cpp', 'cpp2'])) : '—'}</td>
+                    <td className="num">{sumOf(x, ['ei']) ? cents(sumOf(x, ['ei'])) : '—'}</td>
                     <td className="num">{sumOf(x, ['pension']) ? cents(sumOf(x, ['pension'])) : '—'}</td>
+                    {holds && <td className="num">{sumOf(x, ['holdback']) ? cents(sumOf(x, ['holdback'])) : x.holdback_paid > 0 ? `+${cents(x.holdback_paid)}` : '—'}</td>}
                     <td className="num" title={(x.deductions || []).filter((d) => !MAIN.includes(d.type)).map((d) => `${d.label || d.type}: ${cents(d.amount)}`).join('\n')}>
                       {other(x) ? cents(other(x)) : '—'}
                     </td>
@@ -174,7 +191,7 @@ export default function Paystubs() {
               <button type="button" className="small-link" onClick={() => setAll(!all)}>{all ? 'Show the latest 6' : `Show all ${s.stubs.length} stubs`}</button>
             </div>
           )}
-          <p>Each stub's net pay is matched to the deposit of the same amount near its pay date and booked as {name}'s wages. The deductions stay here, not as spending.</p>
+          <p>Each stub's net pay is matched to the deposit of the same amount near its pay date and booked as {name}'s wages. The deductions stay here, not as spending.{holds && ' Pay held back September to June is hers: it\'s paid out half in July and half in August, and Cash Flow expects it then instead of regular pays.'}</p>
         </>
       )}
     </div>

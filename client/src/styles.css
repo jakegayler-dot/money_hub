@@ -1210,6 +1210,7 @@ button.metric-card-button.active { border-color: rgba(201, 162, 39, 0.55); backg
   .paystub-table td, .paystub-table th { padding: 6px 10px; font-size: 13px; }
   .paystub-table td:first-child, .paystub-table th:first-child { padding-left: 16px; }
   .paystub-actions { white-space: nowrap; text-align: right; }
+  .paystub-table td:first-child { white-space: nowrap; }
 }
 .paystub-actions > * + * { margin-left: 12px; }
 .paystub-more { padding: 8px 16px 0; }

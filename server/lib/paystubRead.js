@@ -13,7 +13,8 @@ const PROMPT = (owner) => `This is a Canadian paystub (pay statement) for ${owne
   "pay_date": <the date paid / cheque or deposit date, "YYYY-MM-DD">,
   "period_start": <pay period start "YYYY-MM-DD", or null>,
   "period_end": <pay period end "YYYY-MM-DD", or null>,
-  "gross": <THIS period's gross pay (the current column, not year to date)>,
+  "gross": <THIS period's gross earnings (the current column, not year to date), NOT counting a payout of held-back pay; 0 if the stub only pays held-back pay>,
+  "holdback_paid": <held-back pay (holdback, deferred salary, 10/12 summer pay) paid out on THIS stub, or 0>,
   "net": <THIS period's net pay: what was deposited>,
   "deductions": [<every deduction in THIS period's column: {"type": one of ${Object.keys(DEDUCTION_TYPES).join(', ')}, "label": <as printed>, "amount": <positive>}>],
   "ytd": <the year-to-date column if printed: {"gross", "net", "income_tax", "cpp", "cpp2", "ei", "pension", …}, else null>,
@@ -21,7 +22,7 @@ const PROMPT = (owner) => `This is a Canadian paystub (pay statement) for ${owne
   "hourly_rate": <regular rate per hour, or null>,
   "notes": <anything unreadable or odd, else "">
 }
-Federal and provincial income tax are both "income_tax" (list them separately with their labels). CPP2 (second additional CPP) is "cpp2". A pension plan (SHEPP, MEPP, LAPP, PSPP, an RPP) is "pension"; a group RRSP is "rrsp". Health, dental, life and disability premiums are "benefits". A taxable benefit that isn't money (shown as earnings and taken back) is not a deduction: say so in notes.`;
+Federal and provincial income tax are both "income_tax" (list them separately with their labels). CPP2 (second additional CPP) is "cpp2". Pay held back during the school year to be paid in July and August (holdback, deferred salary, summer savings, 10/12) is "holdback". A pension plan (SHEPP, MEPP, LAPP, PSPP, an RPP) is "pension"; a group RRSP is "rrsp". Health, dental, life and disability premiums are "benefits". A taxable benefit that isn't money (shown as earnings and taken back) is not a deduction: say so in notes.`;
 
 async function claude(body) {
   const res = await fetch(`${process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com'}/v1/messages`, {

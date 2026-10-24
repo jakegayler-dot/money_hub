@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { pool } from '../db.js';
-import { normalizeStub, saveStub, paystubSummary, paystubForecastFlows, deductionType, matchAllStubs } from '../lib/paystubs.js';
+import { normalizeStub, saveStub, paystubSummary, paystubForecastFlows, deductionType, matchAllStubs, holdbackPlan } from '../lib/paystubs.js';
 import { employeeTax } from '../lib/taxRates.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -146,4 +146,64 @@ test("an uploaded paystub is read and filed like the agent's (Oct 24: her agent 
   await assert.rejects(fileUploadedPaystub({ ...pdf, owner: 'ashley' }, { send: reply({ is_paystub: false, notes: 'a grocery receipt' }) }),
     (e) => e.status === 422 && /grocery receipt/.test(e.message));
   await assert.rejects(fileUploadedPaystub({ ...pdf, owner: 'ashley' }, { send: reply({ ...read, net: null }) }), (e) => e.status === 422 && /net/.test(e.message));
+});
+
+// Summer holdback (Oct 24): paid ten months; pay held back September to June
+// is paid out half in July and half in August. Jake's stubs here, with fixed
+// dates, so they don't mix with the tests above.
+const fileStub = (pay_date, extra = {}) => {
+  const { stub, warnings, error } = normalizeStub({ owner: 'jake', employer: 'North East School Division', pay_date, gross: 2000, net: 1450,
+    deductions: [{ type: 'income_tax', amount: 250 }, { label: 'Summer holdback', amount: 300 }], ...extra });
+  assert.equal(error, undefined);
+  return saveStub(stub, warnings);
+};
+const biweekly = (from, to) => { const out = []; for (let d = from; d <= to; d = iso(new Date(Date.parse(d) + 14 * 86400000))) out.push(d); return out; };
+
+test('holdback: names map to it, and a summer stub with no gross is a payout', () => {
+  assert.equal(deductionType('Summer holdback'), 'holdback');
+  assert.equal(deductionType('Deferred salary 10/12'), 'holdback');
+  const pay = normalizeStub({ employer: 'NESD', pay_date: '2026-07-24', net: 3300 });
+  assert.equal(pay.error, undefined);
+  assert.equal(pay.stub.holdback_paid, 3300);
+  assert.deepEqual(pay.warnings, []);
+  assert.match(normalizeStub({ employer: 'NESD', pay_date: '2026-03-13', net: 3300 }).error, /gross/);
+});
+
+test('holdback: saved through June, half paid in July and half in August, and no regular summer pays', async () => {
+  for (const d of biweekly('2025-09-05', '2026-04-17')) await fileStub(d);
+  const plan = await holdbackPlan('jake', 2026, { today: '2026-05-01' });
+  assert.equal(plan.saved, 5100); // 17 pays
+  assert.equal(plan.pays_to_come, 5); // May 1 to June 26
+  assert.equal(plan.projected_by_june, 6600);
+  assert.deepEqual(plan.payouts, [{ month: '2026-07', date: '2026-07-24', amount: 3300 }, { month: '2026-08', date: '2026-08-21', amount: 3300 }]);
+
+  const flows = (await paystubForecastFlows({ today: '2026-05-01', endStr: '2026-10-01' })).filter((f) => f.ref.owner === 'jake');
+  const regular = flows.filter((f) => !f.ref.holdback).map((f) => f.date);
+  assert.deepEqual(regular, ['2026-05-01', '2026-05-15', '2026-05-29', '2026-06-12', '2026-06-26', '2026-09-04', '2026-09-18']);
+  assert.ok(flows.filter((f) => !f.ref.holdback).every((f) => f.amount === 1450));
+  assert.deepEqual(flows.filter((f) => f.ref.holdback).map((f) => [f.date, f.amount]), [['2026-07-24', 3300], ['2026-08-21', 3300]]);
+});
+
+test('holdback: after the July payout, August is what is left; the summer gap is not her pay stopping', async () => {
+  for (const d of biweekly('2026-05-01', '2026-06-26')) await fileStub(d);
+  await fileStub('2026-07-24', { gross: 0, net: 3300, deductions: [] });
+  const plan = await holdbackPlan('jake', 2026, { today: '2026-08-10' });
+  assert.equal(plan.saved, 6600);
+  assert.equal(plan.paid_out, 3300);
+  assert.equal(plan.balance, 3300);
+  assert.deepEqual(plan.payouts.map((p) => [p.month, p.amount]), [['2026-08', 3300]]);
+
+  const flows = (await paystubForecastFlows({ today: '2026-08-10', endStr: '2026-10-01' })).filter((f) => f.ref.owner === 'jake');
+  assert.deepEqual(flows.map((f) => [f.date, f.amount, !!f.ref.holdback]),
+    [['2026-09-04', 1450, false], ['2026-09-18', 1450, false], ['2026-08-21', 3300, true]]);
+
+  const s = await paystubSummary({ owner: 'jake', year: 2026, today: '2026-08-10' });
+  assert.equal(s.holdback.summer, 2026);
+  assert.equal(s.holdback.balance, 3300);
+  assert.equal(s.totals.holdback_paid, 3300);
+  assert.equal(s.frequency, 'every two weeks');
+  assert.ok(s.next_pays.every((d) => !['07', '08'].includes(d.slice(5, 7))));
+  // From September it builds toward next summer.
+  const sept = await paystubSummary({ owner: 'jake', year: 2026, today: '2026-09-20' });
+  assert.equal(sept.holdback.summer, 2027);
 });

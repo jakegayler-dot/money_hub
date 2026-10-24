@@ -291,9 +291,10 @@ A transfer: `"category": "[Other Account Name]"` (Quicken's own form) or `"trans
 
 | Field | |
 |---|---|
-| `employer`, `pay_date`, `gross`, `net` | Required. `net` is what was deposited. |
+| `employer`, `pay_date`, `gross`, `net` | Required. `net` is what was deposited. `gross` is this period's earnings, never counting a holdback payout. |
+| `holdback_paid` | Pay held back during the school year and paid out on this stub (July and August). A summer stub can have `gross` 0 with this instead; a July or August stub with no gross is taken as a payout. |
 | `owner` | `"ashley"` (default) or `"jake"`. |
-| `deductions` | `[{ type, label, amount }]`. `type` is one of `income_tax`, `cpp`, `cpp2`, `ei`, `pension`, `rrsp` (group RRSP), `union_dues`, `benefits`, `other`; leave it out and the `label` decides. Or send them as flat fields with those names. |
+| `deductions` | `[{ type, label, amount }]`. `type` is one of `income_tax`, `cpp`, `cpp2`, `ei`, `pension`, `rrsp` (group RRSP), `union_dues`, `benefits`, `holdback` (pay held back for summer), `other`; leave it out and the `label` decides. Or send them as flat fields with those names. |
 | `ytd` | The stub's own year-to-date column, if printed. Used to spot missing stubs. |
 | `hours`, `hourly_rate`, `period_start`, `period_end`, `notes` | Optional. |
 | `external_id` + `source` | Re-sending the same pair updates the stub. Without them, the same employer, date and net updates it. |
@@ -303,6 +304,7 @@ A transfer: `"category": "[Other Account Name]"` (Quicken's own form) or `"trans
 - Finds the deposit of exactly `net`, from 3 days before the pay date to 7 days after, preferring the owner's own accounts, and books it as **Wages & salary**, personal, for that owner, with the employer as payee. A deposit that hasn't arrived yet is matched when it does (checked every six hours). Closed months are left alone.
 - The books stay at net pay. Tax, CPP, EI, pension and the rest live on the stub, not as spending.
 - With two or more recent stubs, her next pays go into the cash forecast as expected personal income, unless an active estimate already stands in for her pay.
+- **Summer holdback:** Ashley is paid ten months a year. Pay held back September to June (deduction type `holdback`) is tracked as hers, not as money lost; it's paid out half in July and half in August (August is whatever July left). The forecast has no regular pays in July and August but the two payouts, from the holdback on file plus her recent holdback per pay for each pay still to come before June 30, dated on her last usual payday of each month.
 
 **Response:** `{ received, results: [{ external_id, ok, id, updated, matched_deposit, warnings } | { ok: false, error }] }`.
 

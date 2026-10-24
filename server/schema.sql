@@ -1576,6 +1576,8 @@ CREATE TABLE IF NOT EXISTS paystubs (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_paystubs_external ON paystubs (source, external_id) WHERE external_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_paystubs_owner_date ON paystubs (owner, pay_date);
+-- A summer payout of pay held back September to June (Ashley is paid ten months of the year).
+ALTER TABLE paystubs ADD COLUMN IF NOT EXISTS holdback_paid NUMERIC(12,2) NOT NULL DEFAULT 0;
 -- Where matched pay deposits are booked: employment income on the personal side.
 INSERT INTO expense_categories (name, class, ledger, kind)
 SELECT 'Wages & salary', 'variable_seasonal', 'personal', 'income'

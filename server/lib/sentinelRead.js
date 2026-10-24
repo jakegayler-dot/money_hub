@@ -740,9 +740,9 @@ def({
 // ---------- paystubs (lib/paystubs.js) ----------
 def({
   name: 'paystubs', mode: 'js', idType: 'text', summary: true,
-  description: 'SUMMARY. Ashley\'s (or Jake\'s) paystubs for a year, from her agent: first row (kind "summary") has year-to-date gross and take-home, income tax, CPP, EI, pension and group RRSP taken off, pay frequency and pays left, the tax outlook (tax withheld for the year against what her pay alone will owe: refund or owing), CPP and EI against the year\'s maximums (and the pay date they max out), and the next pay dates. Then one row per stub (id = stub id): pay date, employer, period, gross, net, each deduction, and whether its deposit was found and booked as her wages.',
+  description: 'SUMMARY. Ashley\'s (or Jake\'s) paystubs for a year, from her agent: first row (kind "summary") has year-to-date gross and take-home, income tax, CPP, EI, pension and group RRSP taken off, pay frequency and pays left, the tax outlook (tax withheld for the year against what her pay alone will owe: refund or owing), CPP and EI against the year\'s maximums (and the pay date they max out), the next pay dates, and her summer holdback (she is paid ten months a year: pay held back September to June is paid out half in July and half in August; holdback = saved so far, projected by June 30, paid out, and the payouts to come). Then one row per stub (id = stub id): pay date, employer, period, gross, net, each deduction, and whether its deposit was found and booked as her wages.',
   fields: ['id', 'kind', 'owner', 'year', 'pay_date', 'employer', 'period', 'gross', 'net', 'deductions', 'matched_deposit',
-    'totals', 'frequency', 'pays_left', 'next_pays', 'tax_outlook', 'cpp', 'cpp2', 'ei', 'retirement', 'check', 'currency'],
+    'totals', 'frequency', 'pays_left', 'next_pays', 'tax_outlook', 'cpp', 'cpp2', 'ei', 'holdback', 'holdback_paid', 'retirement', 'check', 'currency'],
   search: ['employer'], date: 'pay_date',
   filters: [
     { name: 'owner', type: 'enum', values: ['ashley', 'jake'], param: true, doc: 'whose (default ashley)' },
@@ -753,11 +753,11 @@ def({
     if (!s.totals) return [{ id: 'summary', kind: 'summary', owner: s.owner, year: s.year, totals: null, check: 'No paystubs on file for this year.', currency: CURRENCY }];
     return [
       { id: 'summary', kind: 'summary', owner: s.owner, year: s.year, totals: s.totals, frequency: s.frequency, pays_left: s.pays_left, next_pays: s.next_pays,
-        tax_outlook: s.tax_outlook, cpp: s.cpp, cpp2: s.cpp2, ei: s.ei, retirement: s.retirement, check: s.check, currency: CURRENCY },
+        tax_outlook: s.tax_outlook, cpp: s.cpp, cpp2: s.cpp2, ei: s.ei, holdback: s.holdback, retirement: s.retirement, check: s.check, currency: CURRENCY },
       ...s.stubs.slice().reverse().map((x) => ({
         id: String(x.id), kind: 'stub', owner: x.owner, pay_date: x.pay_date, employer: x.employer,
         period: x.period_start && x.period_end ? `${x.period_start} to ${x.period_end}` : null, gross: x.gross, net: x.net,
-        deductions: x.deductions, matched_deposit: x.matched, currency: CURRENCY,
+        deductions: x.deductions, holdback_paid: x.holdback_paid || undefined, matched_deposit: x.matched, currency: CURRENCY,
       })),
     ];
   },
