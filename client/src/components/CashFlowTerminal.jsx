@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { money } from '../format.js';
 import { cents } from './SplitEditor.jsx';
+import MonthBreakdown from './MonthBreakdown.jsx';
 
 // ---------------------------------------------------------------------------
 // Cash flow terminal: the forecast as an instrument.
@@ -309,7 +310,7 @@ export default function CashFlowTerminal({ liquidity, scenario = null, scenarioN
 
       </div>
 
-      {picked != null && <MonthLedger m={what[picked]} b={base[picked]} active={active} onClose={() => setPicked(null)} />}
+      {picked != null && <MonthLedger m={what[picked]} b={base[picked]} active={active} onClose={() => setPicked(null)} floor={floorOf(what[picked])} floorDays={days} />}
     </div>
   );
 }
@@ -317,50 +318,15 @@ export default function CashFlowTerminal({ liquidity, scenario = null, scenarioN
 const FLOOR_PARTS = [['loans', 'Loan and lease payments'], ['bills', 'Bills'], ['cards', 'Card statements'], ['tax', 'Tax and GST'], ['household', 'Household essentials'], ['fees', 'Fees']];
 const floorTitle = (parts) => (parts ? FLOOR_PARTS.filter(([k]) => parts[k] >= 1).map(([k, l]) => `${l} ${money(Math.round(parts[k]))}`).join('\n') : undefined);
 
-/** Everything behind one month: money in and out, item by item. */
-function MonthLedger({ m, b, active, onClose }) {
-  const ins = m.items.filter((x) => x.amount > 0);
-  const outs = m.items.filter((x) => x.amount < 0);
-  const row = (it, i) => (
-    <tr key={i}>
-      <td>
-        {KIND_LINK[it.kind] ? <a href={KIND_LINK[it.kind]}>{it.label}</a> : it.label}
-        <div className="split-lines">
-          {KIND_LABEL[it.kind] !== it.label ? KIND_LABEL[it.kind] : ''}{it.date ? `${KIND_LABEL[it.kind] !== it.label ? ' · ' : ''}${it.date}` : ''}
-          {it.estimate && <span className="tag">Estimate</span>}
-          {it.overdue && <span className="tag">Overdue — counted now</span>}
-          {it.whatif && <span className="tag">What-if</span>}
-          {it.moved && !it.whatif && <span className="tag">Moved by what-if</span>}
-          {it.changed && !it.whatif && !it.moved && <span className="tag">Changed by what-if</span>}
-          {it.kind === 'loan' && it.interest > 0 && <span className="tag">incl. {cents(it.interest)} interest</span>}
-        </div>
-      </td>
-      <td className="num nowrap">{cents(it.amount)}</td>
-    </tr>
-  );
+/** Everything behind one month: money in and out by source, item by item (MonthBreakdown). */
+function MonthLedger({ m, b, active, onClose, floor, floorDays }) {
   return (
     <section className="panel cft-ledger" aria-label={`Cash flow detail for ${full(m)}`}>
       <div className="panel-header cft-ledger-head">
         <span>{full(m)}</span>
         <button type="button" className="small secondary" onClick={onClose}>Close</button>
       </div>
-      <div className="cft-ledger-sum">
-        <span>Opening <b>{money(Math.round(m.open))}</b></span>
-        <span>In <b className="pos">{signed(m.inflow)}</b></span>
-        <span>Out <b className="neg">{signed(m.outflow)}</b></span>
-        <span>Closing <b>{money(Math.round(m.balance))}</b></span>
-        {active && <span>Without the what-if <b>{money(Math.round(b.balance))}</b></span>}
-      </div>
-      <div className="cft-ledger-cols">
-        <div>
-          <h3>Money in</h3>
-          {ins.length ? <table><tbody>{ins.map(row)}</tbody></table> : <p className="split-lines">Nothing expected.</p>}
-        </div>
-        <div>
-          <h3>Money out</h3>
-          {outs.length ? <table><tbody>{outs.map(row)}</tbody></table> : <p className="split-lines">Nothing scheduled.</p>}
-        </div>
-      </div>
+      <MonthBreakdown m={m} floor={floor} floorDays={floorDays} compare={active ? b.balance : null} />
     </section>
   );
 }

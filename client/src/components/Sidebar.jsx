@@ -38,6 +38,7 @@ export const GROUPS = [
   ] },
   { id: 'household', label: 'Household', links: [
     { to: '/personal', label: 'Personal' },
+    { to: '/paystubs', label: 'Paystubs' },
     { to: '/groceries', label: 'Groceries' },
   ] },
 ];

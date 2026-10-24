@@ -18,7 +18,7 @@ import crypto from 'node:crypto';
 import express, { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
-import { normalizeStub, saveStub, paystubSummary, matchAllStubs, DEDUCTION_TYPES, OWNERS } from '../lib/paystubs.js';
+import { normalizeStub, saveStub, paystubSummary, matchAllStubs, setLabelType, DEDUCTION_TYPES, OWNERS } from '../lib/paystubs.js';
 import { todayISO } from '../lib/dates.js';
 import { fileUploadedPaystub } from '../lib/paystubRead.js';
 
@@ -99,6 +99,15 @@ router.get('/', ah(async (req, res) => {
   res.json(await paystubSummary(query(req.query)));
 }));
 router.post('/match', ah(async (req, res) => res.json({ matched: await matchAllStubs() })));
+// What a deduction is, by its label as printed ("STF fees" → union dues): every stub with it, and every one saved from now on.
+router.put('/label-type', ah(async (req, res) => {
+  try {
+    res.json({ changed: await setLabelType(req.body?.label, req.body?.type) });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    throw e;
+  }
+}));
 // What the bytes are (a phone's Content-Type isn't always right). Claude reads PDF, JPEG, PNG and WebP.
 function sniff(buf) {
   if (buf.length < 12) return null;

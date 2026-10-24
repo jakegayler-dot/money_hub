@@ -15,7 +15,7 @@
 import { pool } from '../db.js';
 import { payeeId } from './postings.js';
 import { closedMonth } from './periods.js';
-import { employeeTax } from './taxRates.js';
+import { employeeTax, ratesFor } from './taxRates.js';
 import { toISODate, addDays, todayISO } from './dates.js';
 
 export const OWNERS = ['ashley', 'jake'];
@@ -42,8 +42,8 @@ export function deductionType(raw) {
   if (/\bei\b|employment insurance|\buic\b/.test(s)) return 'ei';
   if (/tax|withholding/.test(s)) return 'income_tax';
   if (/rrsp|registered retirement savings/.test(s)) return 'rrsp';
-  if (/pension|\brpp\b|lapp|saskatchewan teachers|dbp|dcp/.test(s)) return 'pension';
-  if (/union|dues/.test(s)) return 'union_dues';
+  if (/union|dues|\bstf\b|federation|cupe|sgeu|\bsun\b|\bheu\b|\bsea\b/.test(s)) return 'union_dues';
+  if (/pension|\brpp\b|lapp|shepp|mepp|pspp|strp|stsc|superann|teachers.? retire|dbp|dcp/.test(s)) return 'pension';
   if (/benefit|health|dental|life|ltd|disab|insurance|gis/.test(s)) return 'benefits';
   return 'other';
 }
@@ -102,7 +102,40 @@ export function normalizeStub(b = {}) {
 }
 
 /** Saves a stub (an existing one with the same source + external_id, or the same employer, date and net, is updated). */
+/** Labels whose type was set by hand on the Paystubs page ({ "stf fees": "union_dues" }): applied to every stub saved. */
+async function labelTypes(db) {
+  const { rows: [r] } = await db.query(`SELECT value FROM settings WHERE key = 'paystub_label_types'`);
+  const v = r?.value;
+  return (typeof v === 'string' ? JSON.parse(v) : v) || {};
+}
+const labelKey = (l) => String(l || '').trim().toLowerCase();
+
+/**
+ * Sets what a deduction is, by its label as printed, on every stub that has
+ * it (and every stub saved from now on). Returns how many stubs changed.
+ */
+export async function setLabelType(label, type, db = pool) {
+  if (!DEDUCTION_TYPES[type]) throw Object.assign(new Error(`type must be one of ${Object.keys(DEDUCTION_TYPES).join(', ')}.`), { status: 400 });
+  const key = labelKey(label);
+  if (!key) throw Object.assign(new Error('label is required.'), { status: 400 });
+  const map = await labelTypes(db);
+  map[key] = type;
+  await db.query(`INSERT INTO settings (key, value) VALUES ('paystub_label_types', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [JSON.stringify(map)]);
+  const { rows } = await db.query('SELECT id, deductions FROM paystubs');
+  let n = 0;
+  for (const r of rows) {
+    const list = (typeof r.deductions === 'string' ? JSON.parse(r.deductions) : r.deductions) || [];
+    if (!list.some((d) => labelKey(d.label) === key && d.type !== type)) continue;
+    await db.query('UPDATE paystubs SET deductions = $2, updated_at = now() WHERE id = $1',
+      [r.id, JSON.stringify(list.map((d) => (labelKey(d.label) === key ? { ...d, type } : d)))]);
+    n++;
+  }
+  return n;
+}
+
 export async function saveStub(stub, warnings = [], doc = null, db = pool) {
+  const types = await labelTypes(db);
+  stub = { ...stub, deductions: (stub.deductions || []).map((d) => (types[labelKey(d.label)] ? { ...d, type: types[labelKey(d.label)] } : d)) };
   let { rows: [old] } = stub.external_id
     ? await db.query('SELECT id FROM paystubs WHERE source = $1 AND external_id = $2', [stub.source, stub.external_id])
     : { rows: [] };
@@ -259,6 +292,50 @@ export async function holdbackPlan(owner, summer, { today = todayISO() } = {}, d
   };
 }
 
+/** Her typical regular pay: gross and each deduction (by type and label) averaged over the last three regular stubs. */
+export function typicalPay(regular) {
+  const recent = regular.slice(-3);
+  if (!recent.length) return null;
+  const lines = new Map();
+  for (const s of recent) {
+    for (const d of s.deductions || []) {
+      const k = `${d.type}|${labelKey(d.label)}`;
+      const e = lines.get(k) || { type: d.type, label: d.label, amount: 0 };
+      e.amount += Number(d.amount);
+      lines.set(k, e);
+    }
+  }
+  return {
+    gross: r2(recent.reduce((a, x) => a + x.gross, 0) / recent.length),
+    lines: [...lines.values()].map((e) => ({ ...e, amount: r2(e.amount / recent.length) })),
+  };
+}
+
+/**
+ * Estimated stubs on `dates`: her typical pay, except that CPP, CPP2 and EI
+ * stop once the year's maximum is reached — so take-home goes up for the
+ * rest of that year — and start again in January. `sofar` = { year: { cpp,
+ * cpp2, ei } } already taken off this year.
+ */
+export function estimateStubs(regular, dates, sofar = {}) {
+  const typ = typicalPay(regular);
+  if (!typ) return [];
+  const acc = JSON.parse(JSON.stringify(sofar));
+  return dates.map((d) => {
+    const y = Number(d.slice(0, 4));
+    const max = employeeTax(0, {}, y).max;
+    acc[y] = { cpp: 0, cpp2: 0, ei: 0, ...(acc[y] || {}) };
+    const lines = typ.lines.map((l) => {
+      if (!['cpp', 'cpp2', 'ei'].includes(l.type)) return l;
+      const amount = r2(Math.max(0, Math.min(l.amount, max[l.type] - acc[y][l.type])));
+      acc[y][l.type] = r2(acc[y][l.type] + amount);
+      return { ...l, amount };
+    }).filter((l) => l.amount > 0.005);
+    const taken = r2(lines.reduce((a, l) => a + l.amount, 0));
+    return { pay_date: d, estimated: true, gross: typ.gross, holdback_paid: 0, deductions: lines, net: r2(typ.gross - taken) };
+  });
+}
+
 /** Whether she's on a summer holdback: any held back in the last 400 days, or a payout. */
 async function onHoldback(owner, today, db) {
   const { rows } = await db.query(
@@ -293,24 +370,26 @@ export async function paystubSummary({ owner = 'ashley', year = Number(todayISO(
   const recent = (regular.length ? regular : stubs).slice(-3);
   const avg = (f) => r2(recent.reduce((s, x) => s + f(x), 0) / recent.length);
   const perPay = { gross: avg((x) => x.gross), net: avg((x) => x.net), income_tax: avg((x) => sumType([x], 'income_tax')) };
-  const share = regular.length ? left.length / regular.length : 0;
+  // Her pays still to come this year, estimated deduction by deduction.
+  const ahead = estimateStubs(regular, left, { [year]: { cpp: t.cpp, cpp2: t.cpp2, ei: t.ei } });
+  const est = (type) => r2(ahead.reduce((a, x) => a + sumType([x], type), 0));
+  const yearTotal = Object.fromEntries(Object.keys(DEDUCTION_TYPES).map((k) => [k, r2(t[k] + est(k))]));
   const projected = {
-    gross: r2(gross + perPay.gross * left.length),
-    income_tax_withheld: r2(t.income_tax + perPay.income_tax * left.length),
-    rpp: r2(t.pension * (1 + share)), rrsp: r2(t.rrsp * (1 + share)), union: r2(t.union_dues * (1 + share)),
+    gross: r2(gross + ahead.reduce((a, x) => a + x.gross, 0)),
+    income_tax_withheld: yearTotal.income_tax,
+    rpp: yearTotal.pension, rrsp: yearTotal.rrsp, union: yearTotal.union_dues,
   };
   const due = employeeTax(projected.gross, { rpp: projected.rpp, rrsp: projected.rrsp, union: projected.union }, year);
   const diff = r2(projected.income_tax_withheld - due.income_tax);
   // CPP and EI: when the year's maximum is reached, they stop coming off.
+  // CPP and EI: the year's total so far and by year end, against the maximum, and the pay it's reached on.
   const maxOut = (type, max) => {
-    const sofar = t[type];
-    const perStub = avg((x) => sumType([x], type));
     if (!max) return null;
-    if (sofar >= max - 0.5) return { paid: sofar, max, reached: true, on: null };
-    if (!(perStub > 0) || !left.length) return { paid: sofar, max, reached: false, on: null };
+    const sofar = t[type];
     let acc = sofar;
-    for (const d of left) { acc += perStub; if (acc >= max - 0.5) return { paid: sofar, max, reached: false, on: d }; }
-    return { paid: sofar, max, reached: false, on: null };
+    let on = null;
+    for (const x of ahead) { acc = r2(acc + sumType([x], type)); if (!on && acc >= max - 0.5) on = x.pay_date; }
+    return { paid: sofar, max, reached: sofar >= max - 0.5, on, year_end: r2(acc), per_pay: avg((x) => sumType([x], type)) };
   };
   // The summer it's building toward: this year's while it's still to be paid (to August), else next year's.
   let plan = null;
@@ -337,6 +416,27 @@ export async function paystubSummary({ owner = 'ashley', year = Number(todayISO(
     cpp: maxOut('cpp', due.max.cpp), cpp2: due.max.cpp2 ? { paid: t.cpp2, max: due.max.cpp2 } : null, ei: maxOut('ei', due.max.ei),
     retirement: { pension: t.pension, group_rrsp: t.rrsp, note: 'A pension adjustment (on her T4) lowers next year\'s RRSP room; group RRSP contributions use this year\'s.' },
     holdback: plan,
+    year_end: yearTotal,
+    limits: (() => { const R = ratesFor(year); return { ympe: R.cpp.ympe, yampe: R.cpp.yampe, cpp_exemption: R.cpp.exemption, cpp_rate: R.cpp.baseRate + R.cpp.firstAdditional, mie: R.ei?.mie ?? null, ei_rate: R.ei?.rate ?? null, rates_year: R.year }; })(),
+    // Each deduction as printed, year to date and on a typical pay.
+    lines: (() => {
+      const typ = typicalPay(regular);
+      const m = new Map();
+      for (const x of stubs) for (const d of x.deductions || []) {
+        const k = `${d.type}|${labelKey(d.label)}`;
+        const e = m.get(k) || { type: d.type, label: d.label, ytd: 0, stubs: 0, per_pay: 0 };
+        e.ytd = r2(e.ytd + Number(d.amount)); e.stubs++;
+        m.set(k, e);
+      }
+      for (const l of typ?.lines || []) { const e = m.get(`${l.type}|${labelKey(l.label)}`); if (e) e.per_pay = l.amount; }
+      return [...m.values()].sort((a, b) => b.ytd - a.ytd);
+    })(),
+    // Pays still to come this year, estimated (plus the summer holdback payouts dated this year).
+    ahead: [
+      ...ahead,
+      ...(plan?.payouts || []).filter((p) => p.date.startsWith(String(year)) && p.date >= today)
+        .map((p) => ({ pay_date: p.date, estimated: true, gross: 0, holdback_paid: p.amount, deductions: [], net: p.amount })),
+    ].sort((a, b) => a.pay_date.localeCompare(b.pay_date)),
     trend: stubs.map((s) => ({ pay_date: s.pay_date, gross: s.gross, net: s.net, hours: s.hours != null ? Number(s.hours) : null })),
     check: ytdCheck,
     stubs: stubs.map((s) => ({ ...s, has_doc: !!s.has_doc, matched: !!s.transaction_id })),
@@ -380,11 +480,18 @@ export async function paystubForecastFlows({ today, endStr }, db = pool) {
       `SELECT 1 FROM cash_estimates WHERE status = 'active' AND direction = 'inflow'
          AND (name ~* '(pay|wage|salary|paycheque|paycheck)') AND (segment::text = $1 OR name ~* $2) LIMIT 1`, [owner, name]);
     if (dup.length) continue;
-    for (const d of regularPayDates(last, freq, endStr, holdback)) {
-      if (d < today) continue;
-      out.push({ key: `pay:${owner}:${d}`, kind: 'estimate_in', label: `${name}'s pay (from ${her} paystubs)`,
-        date: d, amount: net, farm: 0, taxable: 0, estimate: true, ref: { paystub: true, owner } });
-    }
+    // Each pay estimated: take-home rises once CPP and EI max out for the year.
+    const y0 = today.slice(0, 4);
+    const { rows: thisYear } = await db.query(
+      `SELECT deductions FROM paystubs WHERE owner = $1 AND pay_date >= $2 AND pay_date <= $3`, [owner, `${y0}-01-01`, today]);
+    const sofar = { [Number(y0)]: Object.fromEntries(['cpp', 'cpp2', 'ei'].map((k) => [k, sumType(thisYear, k)])) };
+    const payDates = regularPayDates(last, freq, endStr, holdback);
+    const ests = estimateStubs(regular, payDates, sofar);
+    ests.forEach((e, i) => {
+      if (payDates[i] < today) return;
+      out.push({ key: `pay:${owner}:${payDates[i]}`, kind: 'estimate_in', label: `${name}'s pay (from ${her} paystubs)`,
+        date: payDates[i], amount: e.net || net, farm: 0, taxable: 0, estimate: true, ref: { paystub: true, owner } });
+    });
     if (!holdback) continue;
     // Each summer in the window: the holdback paid out in July and August.
     const firstSummer = Number(today.slice(0, 4)) + (Number(today.slice(5, 7)) >= 9 ? 1 : 0);

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import CashFlowTerminal from '../components/CashFlowTerminal.jsx';
 import WhatIf from '../components/WhatIf.jsx';
+import MonthBreakdown from '../components/MonthBreakdown.jsx';
 import { money } from '../format.js';
 import { OwnerFields, ownerPayload, ownerSummary, emptyOwnerFields } from '../owners.jsx';
 
@@ -231,6 +232,7 @@ export default function CashFlow() {
   const [chosen, setChosen] = useState(() => readPref('accounts', null));
   const [whatIf, setWhatIf] = useState(() => readPref('whatif', null)); // { scenario, name, id } shown on the chart
   const [whatIfResult, setWhatIfResult] = useState(null);
+  const [openMonth, setOpenMonth] = useState(null); // "2026-11" while its breakdown is open
   const [editing, setEditing] = useState(false);
 
   // /cash-flow?whatif=<saved id> opens that what-if (Sentinel links here
@@ -321,7 +323,7 @@ export default function CashFlow() {
       )}
 
       <div className="panel">
-        <div className="panel-header">Month by month</div>
+        <div className="panel-header spend-header"><span>Month by month</span><span className="split-lines">Click a month for everything behind it</span></div>
         <div style={{ overflowX: 'auto' }}>
           <table>
             <thead>
@@ -334,9 +336,14 @@ export default function CashFlow() {
               {trajectory.map((t) => {
                 const isFloor = t.month === floorMonth.month && t.year === floorMonth.year;
                 const v = (num, sign) => (num ? `${sign}${money(Math.round(num))}` : '—');
+                const key = `${t.year}-${t.month}`;
+                const isOpen = openMonth === key;
                 return (
-                  <tr key={`${t.year}-${t.month}`} style={isFloor ? { background: 'var(--panel-hover)' } : undefined}>
-                    <td>{monthLabelFull(t)}{isFloor && <> <span className={`badge ${passes ? 'warn' : 'fail'}`} title="Least cash over the floor">TIGHTEST</span></>}</td>
+                  <Fragment key={key}>
+                  <tr className={`cf-month-row${isOpen ? ' open' : ''}`} style={isFloor ? { background: 'var(--panel-hover)' } : undefined}
+                    onClick={() => setOpenMonth(isOpen ? null : key)} tabIndex={0} aria-expanded={isOpen}
+                    onKeyDown={(e) => { if (e.key === 'Enter') setOpenMonth(isOpen ? null : key); }}>
+                    <td><span className="cf-month-chev" aria-hidden="true">{isOpen ? '▾' : '▸'}</span>{monthLabelFull(t)}{isFloor && <> <span className={`badge ${passes ? 'warn' : 'fail'}`} title="Least cash over the floor">TIGHTEST</span></>}</td>
                     <td>{v(t.contractInflows, '+')}</td>
                     <td style={{ color: 'var(--text-muted)' }}>{v(t.estimatedInflows, '+')}</td>
                     <td>{v(t.unpaidBillsDue, '−')}</td>
@@ -351,6 +358,10 @@ export default function CashFlow() {
                     <td style={t.balance < floorOf(t) ? { color: 'var(--negative)' } : { fontWeight: 500 }}>{money(Math.round(t.balance))}</td>
                     <td style={{ color: 'var(--text-muted)' }}>{money(Math.round(floorOf(t)))}</td>
                   </tr>
+                  {isOpen && (
+                    <tr className="cf-month-detail"><td colSpan={14}><MonthBreakdown m={t} floor={floorOf(t)} floorDays={data.floorDays || 60} /></td></tr>
+                  )}
+                  </Fragment>
                 );
               })}
             </tbody>

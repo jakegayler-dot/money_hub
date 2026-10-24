@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { pool } from '../db.js';
-import { normalizeStub, saveStub, paystubSummary, paystubForecastFlows, deductionType, matchAllStubs, holdbackPlan } from '../lib/paystubs.js';
+import { normalizeStub, saveStub, paystubSummary, paystubForecastFlows, deductionType, matchAllStubs, holdbackPlan, estimateStubs, setLabelType } from '../lib/paystubs.js';
 import { employeeTax } from '../lib/taxRates.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -206,4 +206,30 @@ test('holdback: after the July payout, August is what is left; the summer gap is
   // From September it builds toward next summer.
   const sept = await paystubSummary({ owner: 'jake', year: 2026, today: '2026-09-20' });
   assert.equal(sept.holdback.summer, 2027);
+});
+
+test('estimated pays: CPP and EI stop at the year\'s maximum, so take-home rises, and start again in January', () => {
+  const stub = (d) => ({ pay_date: d, gross: 4000, net: 3000, deductions: [
+    { type: 'income_tax', label: 'Tax', amount: 700 }, { type: 'cpp', label: 'CPP', amount: 230 }, { type: 'ei', label: 'EI', amount: 65.2 }, { type: 'benefits', label: 'LTD', amount: 4.8 }] });
+  const regular = [stub('2026-10-02'), stub('2026-10-16'), stub('2026-10-30')];
+  const est = estimateStubs(regular, ['2026-11-13', '2026-11-27', '2026-12-11', '2027-01-08'], { 2026: { cpp: 3900, ei: 1100, cpp2: 0 } });
+  const cpp = (x) => x.deductions.find((d) => d.type === 'cpp')?.amount || 0;
+  const ei = (x) => x.deductions.find((d) => d.type === 'ei')?.amount || 0;
+  assert.deepEqual(est.map(cpp), [230, 100.45, 0, 230]);
+  assert.deepEqual(est.map(ei), [23.07, 0, 0, 65.2]);
+  assert.equal(est[0].net, 3042.13);
+  assert.equal(est[2].net, 4000 - 700 - 4.8);
+  assert.ok(est.every((x) => x.estimated));
+});
+
+test('a deduction\'s type can be set by its label, on every stub and from then on', async () => {
+  const { stub } = normalizeStub({ owner: 'jake', employer: 'NESD', pay_date: '2026-03-13', gross: 100, net: 90, deductions: [{ label: 'Social Fund', amount: 10 }] });
+  assert.equal(stub.deductions[0].type, 'other');
+  const r = await saveStub(stub);
+  assert.equal(await setLabelType('social fund', 'union_dues'), 1);
+  const row = await one('SELECT deductions FROM paystubs WHERE id = $1', [r.id]);
+  assert.equal(row.deductions[0].type, 'union_dues');
+  const next = normalizeStub({ owner: 'jake', employer: 'NESD', pay_date: '2026-03-27', gross: 100, net: 90, deductions: [{ label: 'SOCIAL FUND', amount: 10 }] }).stub;
+  const r2 = await saveStub(next);
+  assert.equal((await one('SELECT deductions FROM paystubs WHERE id = $1', [r2.id])).deductions[0].type, 'union_dues');
 });

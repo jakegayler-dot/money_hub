@@ -18,6 +18,7 @@ import Books from './pages/Books.jsx';
 import Tax from './pages/Tax.jsx';
 import Receipts from './pages/Receipts.jsx';
 import Groceries from './pages/Groceries.jsx';
+import Paystubs from './pages/Paystubs.jsx';
 import Personal from './pages/Personal.jsx';
 import Calendar from './pages/Calendar.jsx';
 import Financials from './pages/Financials.jsx';
@@ -71,6 +72,7 @@ export default function App() {
           <Route path="/tax" element={<Tax />} />
           <Route path="/receipts" element={<Receipts />} />
           <Route path="/groceries" element={<Groceries />} />
+          <Route path="/paystubs" element={<Paystubs />} />
         </Routes>
       </main>
     </div>
