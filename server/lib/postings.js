@@ -1569,15 +1569,18 @@ export async function reclassifyCardPayments(client, cardId) {
         [-transferPart, true, `${t.description || 'Card payment'} — pays itemized purchases`],
       ]) {
         await client.query(
-          `INSERT INTO transaction_splits (transaction_id, amount, memo, ledger, is_transfer, ${SEG_COLS})
-           VALUES ($1,$2,$3,$4,$5,${SEGMENT_COLUMNS.map((_, i) => `$${6 + i}`).join(',')})`,
-          [t.id, amt, memo, t.ledger, isTransfer, ...SEGMENT_COLUMNS.map((c) => owner[c])]
+          `INSERT INTO transaction_splits (transaction_id, amount, memo, ledger, is_transfer, category_id, ${SEG_COLS})
+           VALUES ($1,$2,$3,$4,$5,$6,${SEGMENT_COLUMNS.map((_, i) => `$${7 + i}`).join(',')})`,
+          [t.id, amt, memo, t.ledger, isTransfer, isTransfer ? null : (t.category_id || card.payment_category_id || null), ...SEGMENT_COLUMNS.map((c) => owner[c])]
         );
       }
     } else {
+      const transfer = transferPart > 0.005 || paid <= 0;
+      // Not itemized: the payment stands in for the purchases — under the card's spending category when it has one.
       await client.query(
-        'UPDATE transactions SET is_transfer = $1, is_split = false WHERE id = $2',
-        [transferPart > 0.005 || paid <= 0, t.id]
+        `UPDATE transactions SET is_transfer = $1, is_split = false,
+           category_id = CASE WHEN $1 THEN category_id ELSE COALESCE(category_id, $3) END WHERE id = $2`,
+        [transfer, t.id, card.payment_category_id || null]
       );
     }
   }

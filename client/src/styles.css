@@ -1583,3 +1583,35 @@ button.bs-line:focus-visible { outline: 1px solid var(--gold); outline-offset: 1
 .doc-x:hover, .doc-x:focus-visible { color: var(--negative); }
 .stmt-doc-x { width: 16px; }
 .stmt-doc-x:hover { color: var(--negative); background: rgba(229, 72, 77, 0.1); }
+
+/* Money with CRA (Tax page) */
+.cra-sub { padding: 10px 16px 4px; font-size: 13px; font-weight: 600; color: var(--text); border-top: 1px solid var(--border); }
+.cra-sub .split-lines { font-weight: 400; }
+.cra-table td, .cra-table th { padding: 7px 12px; font-size: 13px; vertical-align: top; }
+.cra-table td:first-child, .cra-table th:first-child { padding-left: 16px; }
+.cra-table td.num, .cra-table th.num { text-align: right; font-family: var(--font-mono); }
+.cra-table select { width: 270px; max-width: 100%; }
+.cra-interest { display: block; width: 170px; margin-top: 6px; }
+.cra-open { margin-left: 10px; }
+
+/* Category picker: type to search; transfers, card payments and CRA in the same list */
+.catpick { position: relative; display: block; min-width: 0; }
+.catpick input { width: 100%; padding-right: 26px; text-overflow: ellipsis; cursor: pointer; }
+.catpick.open input { cursor: text; }
+.catpick-chev { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); color: var(--text-faint); pointer-events: none; }
+.catpick-list {
+  position: fixed; z-index: 1000; margin: 0; padding: 4px 0; list-style: none; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border-strong); border-radius: 8px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+.catpick-head { padding: 8px 12px 3px; font-size: 11px; color: var(--text-faint); }
+.catpick-opt { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 6px 12px; font-size: 13px; color: var(--text); cursor: pointer; }
+.catpick-opt.active { background: var(--gold-soft); color: var(--gold-bright); }
+.catpick-opt.move span:first-child { color: var(--gold-bright); }
+.catpick-opt.new { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 8px; color: var(--text-muted); }
+.catpick-parent { font-size: 11.5px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; }
+.catpick-muted { color: var(--text-muted); }
+
+/* Dashboard cards open their page */
+a.metric-card-link { display: block; color: inherit; text-decoration: none; cursor: pointer; }
+a.metric-card-link:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+a.metric-card-link:hover .metric-label { color: var(--gold-bright); }

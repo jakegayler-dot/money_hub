@@ -24,6 +24,7 @@ const resettle = async (payees) => {
   }
 };
 import { cardBalances } from '../lib/cardLedger.js';
+import { markTaxMove, unmarkTaxMove } from '../lib/taxMoves.js';
 
 const router = Router();
 const r2 = (n) => Math.round(Number(n) * 100) / 100;
@@ -411,6 +412,11 @@ router.patch('/:id', ah(async (req, res) => {
        splits !== null ? splits.length > 0 : tx.is_split,
        ...SEGMENT_COLUMNS.map((c) => owner[c]), tx.id, payee, gst]
     );
+    // Made ordinary money in or out again (or given a category): no longer a refund or payment with CRA.
+    if (tx.tax_kind && (b.is_transfer === false || (!finalTransfer && b.category_id))) {
+      await client.query('UPDATE transactions SET tax_kind = NULL WHERE id = $1', [tx.id]);
+      up[0].tax_kind = null;
+    }
     if (splits !== null) {
       await client.query('DELETE FROM transaction_splits WHERE transaction_id = $1', [tx.id]);
       for (const s of splits) {
@@ -455,6 +461,25 @@ router.patch('/:id', ah(async (req, res) => {
   });
   if (result.status < 300) await resettle(await creditVendors(req.params.id)); // a payment on account changed
   res.status(result.status).json(result.body);
+}));
+
+// Money with CRA: a GST/HST refund or payment, an income tax refund (with
+// any refund interest), or an income tax instalment or payment. A transfer
+// from then on — never income or spending (lib/taxMoves.js).
+const taxError = (res, e) => {
+  if (e.status) return res.status(e.status).json({ error: e.message });
+  if (e.code === 'PERIOD_CLOSED' || /closed/i.test(e.message)) return res.status(409).json({ error: e.message });
+  throw e;
+};
+router.post('/:id/tax', ah(async (req, res) => {
+  try {
+    res.json(await withTransaction((c) => markTaxMove(c, Number(req.params.id), { kind: req.body?.kind, interest: req.body?.interest })));
+  } catch (e) { taxError(res, e); }
+}));
+router.delete('/:id/tax', ah(async (req, res) => {
+  try {
+    res.json(await withTransaction((c) => unmarkTaxMove(c, Number(req.params.id))));
+  } catch (e) { taxError(res, e); }
 }));
 
 router.post('/:id/clear', ah(async (req, res) => {

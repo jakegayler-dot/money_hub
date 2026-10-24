@@ -15,6 +15,7 @@
 //   4. Otherwise post it as a plain transaction (with its split pieces).
 
 import { looksLikeCraGst } from './gstMatch.js';
+import { looksLikeCraIncomeTax } from './taxMoves.js';
 import { validateSegment } from './segments.js';
 import { toISODate } from './dates.js';
 import { suggestLoanPayment } from './loanMatch.js';
@@ -238,6 +239,11 @@ async function processLineInner(client, { target, source, external_id, payload: 
   // it's approved as one and linked to its quarter, never taxed as income.
   if (!approved && !isCard && kind === 'standard' && looksLikeCraGst(`${p.description || ''} ${p.payee || ''}`)) {
     return hold('Looks like GST/HST with CRA. Approve it as a transfer, then link it to its quarter on the Tax tab — posted as income or spending it would count for income tax.');
+  }
+  // Income tax with CRA (a refund in, an instalment or balance out) is your own money moving, not income or
+  // spending: held so it's approved as a transfer. Marking it on the Tax tab records which it is.
+  if (!approved && !isCard && kind === 'standard' && looksLikeCraIncomeTax(`${p.description || ''} ${p.payee || ''}`)) {
+    return hold(`Looks like an income tax ${amount > 0 ? 'refund from' : 'payment to'} CRA. Approve it as a transfer — posted as income or spending it would count in the farm's income tax. Any refund interest in it is taxable: mark it on the Tax tab to split that off.`);
   }
 
   const where = isCard ? { credit_card_id: T.id } : { account_id: T.id };

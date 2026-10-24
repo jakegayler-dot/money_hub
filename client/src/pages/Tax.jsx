@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { money, localToday } from '../format.js';
 import { cents } from '../components/SplitEditor.jsx';
+import CraMoney from '../components/CraMoney.jsx';
 
 const STATUS = {
   current: <span className="badge">IN PROGRESS</span>,
@@ -46,6 +47,7 @@ export default function Tax() {
       {err && <div className="notice" style={{ borderColor: 'var(--negative)', color: 'var(--negative)' }}>{err}</div>}
 
       {inc && <IncomeTax inc={inc} year={year} whatIf={whatIf} setWhatIf={setWhatIf} reload={loadInc} send={send} />}
+      <CraMoney year={year} onChanged={() => { loadInc(); loadGst(); }} />
       {gst && <Gst gst={gst} reload={loadGst} send={send} />}
     </>
   );
@@ -180,8 +182,6 @@ function IncomeTax({ inc, year, whatIf, setWhatIf, reload, send }) {
 function Gst({ gst, reload, send }) {
   const [filing, setFiling] = useState(null);   // { start, filed_on, net_amount }
   const [linking, setLinking] = useState(null); // { start, candidates }
-  const [unlinked, setUnlinked] = useState([]);
-  useEffect(() => { fetch('/api/tax/gst/unlinked').then((r) => r.json()).then((d) => setUnlinked(Array.isArray(d) ? d : [])).catch(() => {}); }, [gst]);
   const totals = gst.periods.reduce((a, p) => ({ collected: a.collected + p.collected, itc: a.itc + p.itc, missing: a.missing + p.purchases_no_gst }), { collected: 0, itc: 0, missing: 0 });
 
   return (
@@ -195,23 +195,10 @@ function Gst({ gst, reload, send }) {
       </div>
       <p>
         Exact GST from receipts and invoices only. Input tax credits are the farm's share of GST paid; GST collected is
-        on farm sales that carried it (grain and cattle don't). Net below zero is a refund. When it arrives, link the
-        deposit so it isn't counted as income.
+        on farm sales that carried it (grain and cattle don't). Net below zero is a refund. When it arrives, mark the
+        deposit in Money with CRA above so it isn't counted as income; linking it to its quarters here is for the record.
         {totals.missing > 0 && <strong> {totals.missing} farm purchase{totals.missing === 1 ? '' : 's'} this year {totals.missing === 1 ? 'has' : 'have'} no GST recorded — fine for zero-rated inputs (fertilizer, seed, chemical, feed); for anything else the credit is being missed.</strong>}
       </p>
-      {unlinked.length > 0 && (
-        <div className="gst-unlinked" role="status">
-          <strong>{unlinked.length === 1 ? 'This looks' : 'These look'} like GST with CRA but {unlinked.length === 1 ? "isn't" : "aren't"} linked to a quarter</strong>
-          {' '}— until {unlinked.length === 1 ? 'it is' : 'they are'}, {unlinked.length === 1 ? 'it counts' : 'they count'} as farm income or spending.
-          Pick the year it was for above, mark that quarter filed, then link it. One deposit can settle several quarters.
-          <ul>
-            {unlinked.map((t) => (
-              <li key={t.id}>{t.date} · <span className="nowrap">{cents(t.amount)}</span> · {t.account_name} · {t.description}{' '}
-                <a className="small-link" href={`/ledgers?edit=${t.id}`}>Open</a></li>
-            ))}
-          </ul>
-        </div>
-      )}
       <table>
         <thead><tr><th>Period</th><th>GST collected</th><th>Input tax credits</th><th>Net</th><th>Due</th><th>Status</th><th></th></tr></thead>
         <tbody>

@@ -1,4 +1,6 @@
 import { useRef, useState } from 'react';
+import CategorySelect from './CategorySelect.jsx';
+import { TAX_KIND_LABELS, kindsFor, markTax } from './CraMoney.jsx';
 import { OWNER_KEYS, OWNER_LABELS } from '../owners.jsx';
 import { cents } from './SplitEditor.jsx';
 
@@ -12,7 +14,7 @@ import { cents } from './SplitEditor.jsx';
  */
 const COLS = ['date', 'account', 'description', 'payee', 'category', 'owner', 'amount', 'gst'];
 
-export default function LedgerGrid({ rows: sortedRows, sort, onSort, accounts, cards, categories, payees, balance, onPatched, onOpen, onAttach, onDelete, attaching }) {
+export default function LedgerGrid({ rows: sortedRows, sort, onSort, accounts, cards, categories, payees, balance, onPatched, onOpen, onAttach, onDelete, attaching, onReload }) {
   const [status, setStatus] = useState({}); // id → 'saving' | 'saved' | error text
   const tableRef = useRef(null);
   // Rows keep their places while you type: an edited date or amount doesn't
@@ -74,14 +76,31 @@ export default function LedgerGrid({ rows: sortedRows, sort, onSort, accounts, c
     if (out) save(t, out.patch, out.local, el, el.defaultValue); else el.value = el.defaultValue;
   };
 
-  const catOptions = (kind) => {
-    const list = [...categories].sort((a, b) => (a.full_name || a.name).localeCompare(b.full_name || b.name));
-    const order = kind === 'income' ? ['income', 'expense'] : ['expense', 'income'];
-    return order.map((k) => (
-      <optgroup key={k} label={k === 'income' ? 'Income' : 'Expenses'}>
-        {list.filter((c) => (c.kind || 'expense') === k).map((c) => <option key={c.id} value={c.id}>{c.full_name || c.name}</option>)}
-      </optgroup>
-    ));
+  // What isn't a category, offered in the same picker: a transfer, a payment on one of the cards, money with CRA.
+  const movesFor = (t, amt) => {
+    if (!t.account_id || t.credit_card_id || t.pays || t.transfer_peer_id) return [];
+    return [
+      ...(!t.is_transfer ? [{ key: 'transfer', label: 'Transfer between my accounts' }] : []),
+      ...(amt < 0 ? (cards || []).filter((c) => c.status !== 'closed').map((c) => ({ key: `card:${c.id}`, label: `Card payment → ${c.name}${c.last4 ? ` ••${c.last4}` : ''}` })) : []),
+      ...kindsFor(amt).filter((k) => k !== t.tax_kind).map((k) => ({ key: `tax:${k}`, label: TAX_KIND_LABELS[k], hint: 'CRA' })),
+    ];
+  };
+  const move = async (t, m) => {
+    if (m.key === 'transfer') {
+      save(t, { is_transfer: true, category_id: null, splits: [] }, { is_transfer: true, category_id: null, category_name: null, is_split: false });
+      return;
+    }
+    setStatus((s) => ({ ...s, [t.id]: 'saving' }));
+    let err = null;
+    if (m.key.startsWith('card:')) {
+      const r = await fetch(`/api/transactions/${t.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ link_card_id: Number(m.key.slice(5)), category_id: null }) }).catch(() => null);
+      if (!r?.ok) err = (await r?.json().catch(() => ({})))?.error || 'Not saved';
+    } else {
+      err = await markTax(t.id, m.key.slice(4), 0);
+    }
+    setStatus((s) => ({ ...s, [t.id]: err || 'saved' }));
+    if (!err) { onReload?.(); window.dispatchEvent(new Event('review-changed')); }
   };
 
   return (
@@ -139,15 +158,19 @@ export default function LedgerGrid({ rows: sortedRows, sort, onSort, accounts, c
                   {t.is_split ? (
                     <button type="button" className="grid-split" data-r={r} data-c={4} onClick={() => onOpen(t)} onKeyDown={(e) => nav(e, r, 4)}>Split — {t.splits?.length || 2} piece{(t.splits?.length || 2) === 1 ? '' : 's'}</button>
                   ) : (
-                    <select key={`c${t.category_id}`} data-r={r} data-c={4} defaultValue={t.category_id || ''} disabled={closed} aria-label="Category" onKeyDown={(e) => nav(e, r, 4)}
-                      onChange={(e) => {
-                        const id = e.target.value ? Number(e.target.value) : null;
+                    <CategorySelect data-r={r} data-c={4} value={t.category_id || ''} disabled={closed} aria-label="Category" onKeyDown={(e) => nav(e, r, 4)}
+                      categories={categories} preferKind={amt > 0 ? 'income' : 'expense'} payeeId={t.payee_id || null}
+                      emptyLabel={t.tax_kind ? TAX_KIND_LABELS[t.tax_kind] : t.pays ? t.pays : t.is_transfer ? 'Transfer' : '—'}
+                      moves={movesFor(t, amt)}
+                      onMove={(m) => move(t, m)}
+                      onChange={(v) => {
+                        const id = v ? Number(v) : null;
                         const c = categories.find((x) => x.id === id);
-                        save(t, { category_id: id }, { category_id: id, category_name: c ? c.name : null }, e.target, String(t.category_id || ''));
-                      }}>
-                      <option value="">—</option>
-                      {catOptions(amt > 0 ? 'income' : 'expense')}
-                    </select>
+                        // A category makes a plain transfer ordinary spending or income again (a card payment stays one).
+                        const untransfer = t.is_transfer && !(t.account_id && t.credit_card_id) && id;
+                        save(t, { category_id: id, ...(untransfer ? { is_transfer: false } : {}) },
+                          { category_id: id, category_name: c ? c.name : null, ...(untransfer ? { is_transfer: false, tax_kind: null } : {}) });
+                      }} />
                   )}
                 </td>
                 <td>

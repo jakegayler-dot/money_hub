@@ -1582,3 +1582,23 @@ ALTER TABLE paystubs ADD COLUMN IF NOT EXISTS holdback_paid NUMERIC(12,2) NOT NU
 INSERT INTO expense_categories (name, class, ledger, kind)
 SELECT 'Wages & salary', 'variable_seasonal', 'personal', 'income'
 WHERE NOT EXISTS (SELECT 1 FROM expense_categories WHERE lower(name) = 'wages & salary');
+
+-- Money with CRA (Jake, 2026-10-24): a transaction marked as a GST/HST
+-- refund or payment, an income tax refund, or an income tax instalment or
+-- payment is a transfer — never income or spending (lib/taxMoves.js).
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS tax_kind TEXT;
+ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_tax_kind_check;
+ALTER TABLE transactions ADD CONSTRAINT transactions_tax_kind_check
+  CHECK (tax_kind IS NULL OR tax_kind IN ('gst_refund', 'gst_payment', 'income_tax_refund', 'income_tax_payment'));
+-- Deposits already linked to a GST quarter are GST refunds or payments.
+UPDATE transactions t SET tax_kind = CASE WHEN t.amount > 0 THEN 'gst_refund' ELSE 'gst_payment' END
+WHERE t.tax_kind IS NULL AND EXISTS (SELECT 1 FROM gst_returns g WHERE g.settlement_transaction_id = t.id);
+-- Refund interest from CRA is taxable: booked here, on Jake's or Ashley's side.
+INSERT INTO expense_categories (name, class, ledger, kind)
+SELECT 'Interest income', 'variable_seasonal', 'personal', 'income'
+WHERE NOT EXISTS (SELECT 1 FROM expense_categories WHERE lower(name) = 'interest income');
+
+-- What a card that isn't itemized spends on (Jake, 2026-10-24): its payments
+-- stand in for the purchases, so they're booked under this category instead
+-- of showing as uncategorized spending. NULL = no category.
+ALTER TABLE credit_cards ADD COLUMN IF NOT EXISTS payment_category_id INTEGER REFERENCES expense_categories(id) ON DELETE SET NULL;

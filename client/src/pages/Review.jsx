@@ -4,6 +4,7 @@ import CategorySelect from '../components/CategorySelect.jsx';
 import { ReceiptRow } from './Receipts.jsx';
 import PayeeSelect, { usePayees } from '../components/PayeeSelect.jsx';
 import SplitEditor, { cents, newPiece, piecesPayload } from '../components/SplitEditor.jsx';
+import { TAX_KIND_LABELS, kindsFor, markTax } from '../components/CraMoney.jsx';
 
 const KIND_LABELS = {
   standard: 'Purchase / income',
@@ -22,6 +23,16 @@ const CANDIDATE_KEY = {
 };
 
 const NO_LINKS = { bills: [], loan_payments: [], contracts: [], cards: [] };
+
+// What isn't a category, offered in the category picker: a transfer, a payment on a card, money with CRA.
+const movesFor = (amount, accountId, links, cra) => (!accountId ? [] : [
+  { key: 'transfer', label: 'Transfer between my accounts' },
+  ...(amount < 0 ? (links.cards || []).map((c) => ({ key: `card:${c.id}`, label: `Card payment → ${c.name}${c.last4 ? ` ••${c.last4}` : ''}` })) : []),
+  ...(cra ? kindsFor(amount).map((k) => ({ key: `tax:${k}`, label: TAX_KIND_LABELS[k], hint: 'CRA' })) : []),
+]);
+const whatFromMove = (m, what) => (m.key === 'transfer' ? { ...what, type: 'transfer', target: '' }
+  : m.key.startsWith('card:') ? { ...what, type: 'card', target: m.key.slice(5) }
+    : { ...what, type: 'tax', target: m.key.slice(4) });
 
 /**
  * "What it is" for one review item: regular spending/income, a transfer
@@ -45,8 +56,23 @@ function WhatItIs({ amount, accountId, date, accounts, links, value, onChange })
           {out && accountId && <option value="loan">Loan payment</option>}
           {out && accountId && links.cards.length > 0 && <option value="card">Credit card payment</option>}
           {!out && accountId && <option value="contract">Contract payment (grain / cattle sale)</option>}
+          {accountId && value.taxOk && <option value="tax">Refund or payment with CRA (GST or income tax)</option>}
         </select>
       </div>
+      {value.type === 'tax' && (
+        <div className="field">
+          <label>Which</label>
+          <select value={value.target || kindsFor(amount)[0]} onChange={(e) => set({ target: e.target.value })}>
+            {kindsFor(amount).map((k) => <option key={k} value={k}>{TAX_KIND_LABELS[k]}</option>)}
+          </select>
+        </div>
+      )}
+      {value.type === 'tax' && (value.target || kindsFor(amount)[0]) === 'income_tax_refund' && (
+        <div className="field">
+          <label>Refund interest in it (taxable)</label>
+          <input type="number" min="0" step="0.01" placeholder="0 if none" value={value.interest || ''} onChange={(e) => set({ interest: e.target.value })} />
+        </div>
+      )}
       {value.type === 'transfer' && (
         <div className="field">
           <label>{out ? 'Going into' : 'Coming from'}</label>
@@ -357,7 +383,8 @@ function ReviewItem({ line, categories, accounts, links, payees, onDone }) {
           <div className="field">
             <label>Category{Number(line.amount) > 0 ? ' (required for money in)' : ''}</label>
             <CategorySelect categories={categories} value={categoryId} onChange={setCategoryId}
-              preferKind={Number(line.amount) > 0 ? 'income' : 'expense'}
+              preferKind={Number(line.amount) > 0 ? 'income' : 'expense'} payeeId={payeeValue || null}
+              moves={movesFor(Number(line.amount), line.account_id, links, false)} onMove={(m) => setWhat(whatFromMove(m, what))}
               emptyLabel={p.category ? `Keep "${p.category}"` : 'No category'} />
           </div>
           <div className="field">
@@ -430,12 +457,23 @@ function FlaggedItem({ tx, categories, accounts, links, payees, onDone }) {
   const amount = Number(tx.amount);
   // Already a bill/loan/card payment, or already a paired transfer: nothing to re-assign here.
   const canAssign = !tx.pays && !tx.transfer_peer_id && !(tx.credit_card_id && tx.account_id);
-  const [what, setWhat] = useState({ type: tx.is_transfer ? 'transfer' : '', target: '' });
+  const [what, setWhat] = useState({ type: tx.is_transfer ? 'transfer' : '', target: '', taxOk: true });
   const [payeeId, setPayeeId] = useState(tx.payee_id ? String(tx.payee_id) : '');
   const needsIncomeCategory = amount > 0 && !tx.is_split && what.type === '' && !categoryId;
 
   const resolve = async () => {
     if (needsIncomeCategory && what.type !== 'contract') { setErr('This is money in — pick an income category first.'); return; }
+    if (canAssign && what.type === 'tax') {
+      setBusy(true); setErr(null);
+      const e = await markTax(tx.id, what.target || kindsFor(amount)[0], what.interest);
+      if (!e && payeeId !== (tx.payee_id ? String(tx.payee_id) : '')) {
+        await fetch(`/api/transactions/${tx.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ payee_id: payeeId ? Number(payeeId) : null }) });
+      }
+      setBusy(false);
+      if (e) { setErr(e); return; }
+      onDone();
+      return;
+    }
     const body = { needs_review: false, payee_id: payeeId ? Number(payeeId) : null };
     if (canAssign) {
       if (what.type === 'transfer') {
@@ -493,12 +531,13 @@ function FlaggedItem({ tx, categories, accounts, links, payees, onDone }) {
           accounts={accounts} links={links} value={what} onChange={setWhat} />
       )}
       {tx.pays && <div className="review-meta">Already linked — {tx.pays}</div>}
-      {!tx.is_split && what.type !== 'transfer' && (
+      {!tx.is_split && what.type !== 'transfer' && what.type !== 'tax' && (
         <div className="review-fields">
           <div className="field">
             <label>Category</label>
             <CategorySelect categories={categories} value={categoryId} onChange={setCategoryId}
-              preferKind={amount > 0 ? 'income' : 'expense'} />
+              preferKind={amount > 0 ? 'income' : 'expense'} payeeId={payeeId || null}
+              moves={canAssign ? movesFor(amount, tx.account_id, links, true) : []} onMove={(m) => setWhat(whatFromMove(m, what))} />
           </div>
           <div className="field">
             <label>Belongs to</label>

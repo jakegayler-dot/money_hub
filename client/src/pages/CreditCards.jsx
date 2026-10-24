@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { money, pct, localToday } from '../format.js';
 import { OWNER_LABELS } from '../owners.jsx';
+import CategorySelect from '../components/CategorySelect.jsx';
 
 const emptyForm = {
   name: '', issuer: '', last4: '', credit_limit: '', apr_purchase: '', apr_cash_advance: '',
@@ -33,11 +34,16 @@ export default function CreditCards() {
   const [calcResult, setCalcResult] = useState(null);
   const [cardTx, setCardTx] = useState({}); // cardId -> recent transactions charged to / paid on it
   const [ledgerForm, setLedgerForm] = useState({ start_date: '', opening_balance: '' });
+  const [categories, setCategories] = useState([]);
 
   const load = () => { fetch('/api/credit-cards').then((r) => r.json()).then((d) => setCards(Array.isArray(d) ? d : [])); };
   useEffect(() => {
     load();
     fetch('/api/accounts').then((r) => r.json()).then(setAccounts);
+    const cats = () => fetch('/api/expenses').then((r) => r.json()).then((d) => setCategories(Array.isArray(d) ? d : [])).catch(() => {});
+    cats();
+    window.addEventListener('categories-changed', cats);
+    return () => window.removeEventListener('categories-changed', cats);
   }, []);
 
   const refreshAll = () => { load(); setStatements({}); };
@@ -77,6 +83,7 @@ export default function CreditCards() {
       annual_fee: c.annual_fee, annual_fee_month: c.annual_fee_month ?? '', grace_period_days: c.grace_period_days,
       status: c.status, segment: c.segment || 'grain', notes: c.notes || '',
       current_balance: c.current_balance ?? '', current_balance_as_of: c.current_balance_as_of?.slice(0, 10) || '',
+      payment_category_id: c.payment_category_id ? String(c.payment_category_id) : '',
     });
     setError(null);
   };
@@ -96,6 +103,7 @@ export default function CreditCards() {
         grace_period_days: Number(editForm.grace_period_days) || 21,
         current_balance: editForm.current_balance !== '' ? Number(editForm.current_balance) : null,
         current_balance_as_of: editForm.current_balance_as_of || null,
+        payment_category_id: editForm.payment_category_id ? Number(editForm.payment_category_id) : null,
       }),
     });
     if (!res.ok) {
@@ -355,6 +363,7 @@ export default function CreditCards() {
                       {c.name}
                       <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>
                         {c.issuer}{c.last4 ? ` …${c.last4}` : ''} · {SEGMENT_LABELS[c.segment] || 'Unassigned'}
+                        {c.itemized ? ' · itemized' : ` · payments count as ${categories.find((x) => x.id === c.payment_category_id)?.full_name || 'uncategorized spending'}`}
                         {c.status === 'closed' && <> · <span className="badge">CLOSED</span></>}
                       </div>
                     </td>
@@ -432,6 +441,13 @@ export default function CreditCards() {
                               <input type="date" value={editForm.current_balance_as_of} onChange={(e) => setEditForm({ ...editForm, current_balance_as_of: e.target.value })} /></div>
                             <div className="field"><label>Notes</label>
                               <input value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} /></div>
+                            {!c.itemized && (
+                              <div className="field" style={{ gridColumn: 'span 2' }}><label>Payments count as</label>
+                                <CategorySelect categories={categories} value={editForm.payment_category_id} emptyLabel="Uncategorized spending"
+                                  onChange={(v) => setEditForm({ ...editForm, payment_category_id: v })} />
+                                <span className="split-lines">Not itemized, so each payment stands in for what was bought on it. Payments with no category take this one.</span>
+                              </div>
+                            )}
                           </div>
                           <div style={{ marginTop: 8 }}>
                             <button className="small" onClick={() => saveEdit(c.id)}>Save changes</button>

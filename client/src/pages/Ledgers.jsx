@@ -9,6 +9,7 @@ import SplitEditor, { cents, newPiece, piecesPayload, pieceFrom } from '../compo
 import CategorySelect from '../components/CategorySelect.jsx';
 import PayeeSelect, { usePayees } from '../components/PayeeSelect.jsx';
 import LedgerGrid from '../components/LedgerGrid.jsx';
+import { TAX_KIND_LABELS, kindsFor, markTax } from '../components/CraMoney.jsx';
 
 // Column sorting. Ties fall back to newest first, so equal amounts or
 // names keep a sensible order.
@@ -52,7 +53,7 @@ function ConfirmBadge({ t }) {
 const emptyForm = {
   source: 'account', account_id: '', credit_card_id: '', ledger: '', date: '', amount: '', description: '',
   category_id: '', is_mixed_use: false, mixed_use_business_pct: '', is_capex: false, is_transfer: false,
-  paid_by_check: false, is_split: false, needs_review: false, review_note: '', transfer_account_id: '', pays: '', payee_id: '', gst_amount: '',
+  paid_by_check: false, is_split: false, needs_review: false, review_note: '', transfer_account_id: '', pays: '', payee_id: '', gst_amount: '', tax_kind: '', tax_interest: '',
   ...emptyOwnerFields,
 };
 
@@ -69,7 +70,7 @@ export default function Ledgers() {
   const [form, setForm] = useState(emptyForm);
   const [pieces, setPieces] = useState([newPiece(), newPiece()]);
   const [filter, setFilter] = useState('all');
-  const [outstandingOnly, setOutstandingOnly] = useState(false);
+  const [outstandingOnly, setOutstandingOnly] = useState(() => !!new URLSearchParams(window.location.search).get('outstanding'));
   const [reviewOnly, setReviewOnly] = useState(false);
   const [unconfirmedOnly, setUnconfirmedOnly] = useState(() => !!new URLSearchParams(window.location.search).get('unconfirmed'));
   const [search, setSearch] = useState('');
@@ -207,7 +208,10 @@ export default function Ledgers() {
       is_split: split, needs_review: !!t.needs_review, review_note: t.review_note || '',
       payee_id: t.payee_id ? String(t.payee_id) : '',
       gst_amount: t.gst_amount != null ? String(Number(t.gst_amount)) : '',
+      tax_kind: t.tax_kind || '',
+      tax_interest: t.tax_kind ? String((t.splits || []).find((s) => !s.is_transfer)?.amount ?? '') : '',
       ...ownerFieldsFrom(t),
+      ...(t.tax_kind ? { is_transfer: true, is_split: false } : {}),
     });
     setPieces(split
       ? t.splits.map(pieceFrom)
@@ -220,6 +224,11 @@ export default function Ledgers() {
   const cancelEdit = () => { setEditing(null); setForm(emptyForm); setPieces([newPiece(), newPiece()]); setError(null); };
 
   const saveEdit = async () => {
+    // No longer money with CRA: undo the mark first, then save what it is now.
+    if (editing.tax_kind && !form.tax_kind) {
+      const r = await fetch(`/api/transactions/${editing.id}/tax`, { method: 'DELETE' });
+      if (!r.ok) { const b = await r.json().catch(() => ({})); setError(b.error || `Could not save (${r.status}).`); return; }
+    }
     const body = {
       description: form.description,
       payee_id: form.payee_id ? Number(form.payee_id) : null,
@@ -247,6 +256,10 @@ export default function Ledgers() {
       const b = await r.json().catch(() => ({}));
       setError(b.error || `Could not save (${r.status}).`);
       return;
+    }
+    if (form.tax_kind) {
+      const e = await markTax(editing.id, form.tax_kind, form.tax_interest);
+      if (e) { setError(e); return; }
     }
     await saveRule();
     cancelEdit();
@@ -395,12 +408,28 @@ export default function Ledgers() {
           {!onCard && (
             <div className="field">
               <label>
-                <input type="checkbox" checked={form.is_transfer} onChange={(e) => setForm({ ...form, is_transfer: e.target.checked, is_split: false })} />
+                <input type="checkbox" checked={form.is_transfer} onChange={(e) => setForm({ ...form, is_transfer: e.target.checked, is_split: false, ...(e.target.checked ? {} : { tax_kind: '' }) })} />
                 {' '}Transfer — money moving between accounts, a loan advance, etc. (not income or spending)
               </label>
             </div>
           )}
-          {canPair && (
+          {editing && !onCard && amt !== 0 && !editing.pays && (
+            <div className="field">
+              <label>Refund or payment with CRA</label>
+              <select value={form.tax_kind} onChange={(e) => setForm({ ...form, tax_kind: e.target.value, ...(e.target.value ? { is_transfer: true, is_split: false, transfer_account_id: '' } : {}) })}>
+                <option value="">No</option>
+                {kindsFor(amt).map((k) => <option key={k} value={k}>{TAX_KIND_LABELS[k]}</option>)}
+              </select>
+            </div>
+          )}
+          {form.tax_kind === 'income_tax_refund' && (
+            <div className="field">
+              <label>Refund interest in it (taxable)</label>
+              <input type="number" min="0" step="0.01" placeholder="0 if none" value={form.tax_interest}
+                onChange={(e) => setForm({ ...form, tax_interest: e.target.value })} />
+            </div>
+          )}
+          {canPair && !form.tax_kind && (
             <div className="field">
               <label>{otherLabel}</label>
               <select value={form.transfer_account_id} onChange={(e) => setForm({ ...form, transfer_account_id: e.target.value })}>
@@ -483,6 +512,17 @@ export default function Ledgers() {
                 <div className="field">
                   <label>Category</label>
                   <CategorySelect categories={categories} value={form.category_id} preferKind={amt > 0 ? 'income' : 'expense'}
+                    payeeId={form.payee_id || null}
+                    moves={[
+                      ...(!onCard ? [{ key: 'transfer', label: 'Transfer between my accounts' }] : []),
+                      ...(canLink && !onCard && amt < 0 ? linkOptions.cards.map((c) => ({ key: `card:${c.id}`, label: `Card payment → ${c.name}${c.last4 ? ` ••${c.last4}` : ''}` })) : []),
+                      ...(editing && !onCard && amt !== 0 && !editing.pays ? kindsFor(amt).map((k) => ({ key: `tax:${k}`, label: TAX_KIND_LABELS[k], hint: 'CRA' })) : []),
+                    ]}
+                    onMove={(m) => setForm((f) => {
+                      if (m.key === 'transfer') return { ...f, is_transfer: true, is_split: false, category_id: '', tax_kind: '' };
+                      if (m.key.startsWith('card:')) return { ...f, pays: m.key, category_id: '' };
+                      return { ...f, tax_kind: m.key.slice(4), is_transfer: true, is_split: false, category_id: '', transfer_account_id: '' };
+                    })}
                     onChange={(v) => setForm((f) => ({ ...f, category_id: v }))} />
                   {amt > 0 && !form.category_id && (
                     <span className="split-lines" style={{ color: 'var(--gold-bright)' }}>Money in needs an income category, or it waits on Review.</span>
@@ -659,7 +699,7 @@ export default function Ledgers() {
         ) : view === 'grid' ? (
           <LedgerGrid rows={visible} sort={sort}
             onSort={(key) => setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'date' || key === 'amount' ? 'desc' : 'asc' }))}
-            accounts={accounts} cards={cards} categories={categories} payees={payees} balance={balance}
+            accounts={accounts} cards={cards} categories={categories} payees={payees} balance={balance} onReload={load}
             onPatched={(id, patch) => {
               setTransactions((ts) => ts.map((x) => (x.id === id ? { ...x, ...patch } : x)));
               if (patch.needs_review === false) window.dispatchEvent(new Event('review-changed'));
@@ -693,7 +733,7 @@ export default function Ledgers() {
                   </td>
                   <td>
                     {t.description}
-                    {t.is_transfer && <span className="tag">Transfer</span>}
+                    {t.tax_kind ? <span className="tag tag-link">{TAX_KIND_LABELS[t.tax_kind]}</span> : t.is_transfer && <span className="tag">Transfer</span>}
                     {t.pays && <span className="tag tag-link">{t.pays}</span>}
                     {(t.documents || []).map((d, i) => (
                       <span key={d.id} className="tag doc-tag">

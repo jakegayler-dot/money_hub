@@ -22,6 +22,32 @@ router.get('/', ah(async (req, res) => {
   res.json(rows);
 }));
 
+// What the category picker suggests before anything is typed: the
+// categories each payee was last given (newest first, up to 3) and the most
+// used categories for money in and money out over the last year.
+router.get('/usage', ah(async (req, res) => {
+  const [{ rows: byPayee }, { rows: top }] = await Promise.all([
+    pool.query(
+      `SELECT payee_id, (array_agg(category_id ORDER BY last DESC))[1:3] AS ids FROM (
+         SELECT t.payee_id, l.category_id, max(l.date) AS last
+         FROM transaction_lines l JOIN transactions t ON t.id = l.transaction_id
+         WHERE t.payee_id IS NOT NULL AND l.category_id IS NOT NULL AND l.date > CURRENT_DATE - 730
+         GROUP BY t.payee_id, l.category_id) x
+       GROUP BY payee_id`),
+    pool.query(
+      `SELECT c.kind, l.category_id, count(*) AS n
+       FROM transaction_lines l JOIN expense_categories c ON c.id = l.category_id
+       WHERE l.date > CURRENT_DATE - 365 AND NOT l.is_transfer
+       GROUP BY c.kind, l.category_id ORDER BY n DESC`),
+  ]);
+  const most = { income: [], expense: [] };
+  for (const r of top) {
+    const k = r.kind === 'income' ? 'income' : 'expense';
+    if (most[k].length < 8) most[k].push(r.category_id);
+  }
+  res.json({ by_payee: Object.fromEntries(byPayee.map((r) => [r.payee_id, r.ids])), most_used: most });
+}));
+
 // Actual spending this year by category, rolled up to parents. Reads the
 // same split-aware lines as every other report: a split piece counts under
 // its own category and owner. Excluded: transfers (moving money isn't

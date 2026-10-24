@@ -4,7 +4,7 @@ import { ah } from '../lib/asyncHandler.js';
 import { validateSegment } from '../lib/segments.js';
 import { todayISO, toISODate } from '../lib/dates.js';
 import { cardBalances } from '../lib/cardLedger.js';
-import { payCard, recomputeCardStatement, removeTransaction, upsertCardStatement, anchorCard } from '../lib/postings.js';
+import { payCard, recomputeCardStatement, removeTransaction, upsertCardStatement, anchorCard, reclassifyCardPayments } from '../lib/postings.js';
 
 const router = Router();
 const round2 = (n) => Math.round(n * 100) / 100;
@@ -117,15 +117,35 @@ router.patch('/:id', ah(async (req, res) => {
     `UPDATE credit_cards SET
        name = $1, issuer = $2, last4 = $3, credit_limit = $4, apr_purchase = $5, apr_cash_advance = $6,
        annual_fee = $7, annual_fee_month = $8, grace_period_days = $9, status = $10, segment = $11,
-       notes = $12, current_balance = $13, current_balance_as_of = $14
+       notes = $12, current_balance = $13, current_balance_as_of = $14, payment_category_id = $16
      WHERE id = $15 RETURNING *`,
     [merged.name, merged.issuer || null, merged.last4 || null, merged.credit_limit || null,
      Number(merged.apr_purchase), merged.apr_cash_advance === '' ? null : merged.apr_cash_advance,
      Number(merged.annual_fee) || 0, merged.annual_fee_month === '' ? null : merged.annual_fee_month,
      Number(merged.grace_period_days) || 21, merged.status, merged.segment || null, merged.notes || null,
      merged.current_balance === '' ? null : merged.current_balance, merged.current_balance_as_of || null,
-     req.params.id]
+     req.params.id, merged.payment_category_id ? Number(merged.payment_category_id) : null]
   );
+  // A new spending category re-files the payments that had the old one (or none), then re-runs the split
+  // between spending and transfer.
+  const oldCat = cur[0].payment_category_id;
+  const newCat = rows[0].payment_category_id;
+  if (oldCat !== newCat) {
+    await withTransaction(async (client) => {
+      await client.query(
+        `UPDATE transactions SET category_id = $2 WHERE credit_card_id = $1 AND account_id IS NOT NULL AND NOT is_transfer AND NOT is_split
+           AND (category_id IS NULL OR category_id = $3)
+           AND NOT EXISTS (SELECT 1 FROM closed_periods cp WHERE cp.month = date_trunc('month', transactions.date)::date)`,
+        [rows[0].id, newCat, oldCat]);
+      await client.query(
+        `UPDATE transaction_splits s SET category_id = $2 FROM transactions t
+         WHERE s.transaction_id = t.id AND t.credit_card_id = $1 AND t.account_id IS NOT NULL AND NOT s.is_transfer
+           AND (s.category_id IS NULL OR s.category_id = $3)
+           AND NOT EXISTS (SELECT 1 FROM closed_periods cp WHERE cp.month = date_trunc('month', t.date)::date)`,
+        [rows[0].id, newCat, oldCat]);
+      await reclassifyCardPayments(client, rows[0].id);
+    });
+  }
   res.json(rows[0]);
 }));
 

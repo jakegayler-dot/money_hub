@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import MetricCard from '../components/MetricCard.jsx';
 import { money, ratio, pct, localToday } from '../format.js';
 
@@ -47,30 +48,35 @@ export default function Dashboard() {
           <MetricCard
             label="Net worth"
             value={money(netWorth.total)}
-            sub={<>Assets {money(netWorth.assets)} − liabilities {money(netWorth.liabilities)} · <a href="/financials?tab=balance">Balance sheet</a></>}
+            sub={`Assets ${money(netWorth.assets)} − liabilities ${money(netWorth.liabilities)}`}
+            to="/financials?tab=balance"
             tone={netWorth.total >= 0 ? 'positive' : 'negative'}
           />
         )}
         <MetricCard
           label="Liquidity floor"
+          to="/cash-flow"
           value={money(liquidity.floorMonth.balance)}
           sub={`Tightest month ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][liquidity.floorMonth.month - 1]} ${liquidity.floorMonth.year || ''} · ${money(liquidity.requiredFloor)} falls due in the ${liquidity.floorDays || 60} days after`}
           tone={liquidity.passes ? 'positive' : 'negative'}
         />
         <MetricCard
           label="Term debt coverage"
+          to="/loans"
           value={coverage.projected.ratio != null ? ratio(coverage.projected.ratio) : 'No term debt'}
           sub={`Next 12 mo · last 12 mo ${coverage.historical.ratio != null ? ratio(coverage.historical.ratio) : '—'} · lender min ${ratio(coverage.threshold)}`}
           tone={coverage.passes === false ? 'negative' : coverage.passes ? 'positive' : undefined}
         />
         <MetricCard
           label="Reserve"
+          to="/accounts"
           value={money(reserve.currentReserve)}
           sub={`Target ${money(reserve.target)} (${reserve.targetMonths} mo.) · ${pct(reserve.fundedPct)} funded`}
           tone={reserve.passes ? 'positive' : 'negative'}
         />
         <MetricCard
           label="Unpaid bills"
+          to="/bills"
           value={money(bills.totalUnpaid)}
           sub={bills.overdueCount > 0 ? `${plural(bills.overdueCount, 'bill', 'bills')} overdue` : 'None overdue'}
           tone={bills.overdueCount > 0 ? 'negative' : undefined}
@@ -78,6 +84,7 @@ export default function Dashboard() {
         {overdue && (
           <MetricCard
             label="Overdue"
+            to="/calendar"
             value={overdue.count ? money(overdue.total) : 'Nothing'}
             sub={overdue.count ? overdueLabel(overdue) : 'Bills, loan payments and card statements all current'}
             tone={overdue.count ? 'negative' : 'positive'}
@@ -85,16 +92,19 @@ export default function Dashboard() {
         )}
         <MetricCard
           label="Owner draw YTD"
+          to="/personal"
           value={money(ownerDrawYTD)}
         />
         <MetricCard
           label="Account fees (annual)"
+          to="/accounts"
           value={money(annualAccountFees)}
           sub="Recurring cost of holding accounts"
         />
         {contractedInflows && (
           <MetricCard
             label="Contracted inflows"
+            to="/contracts"
             value={money(contractedInflows.total)}
             sub={contractedInflows.count > 0
               ? `${contractedInflows.count} unsettled contract${contractedInflows.count === 1 ? '' : 's'} — already in the forecast`
@@ -104,6 +114,7 @@ export default function Dashboard() {
         )}
         <MetricCard
           label="Outstanding checks"
+          to="/ledgers?outstanding=1"
           value={money(outstandingChecks.total)}
           sub={outstandingChecks.count > 0
             ? `${outstandingChecks.count} not yet cleared — already deducted from balance`
@@ -113,6 +124,7 @@ export default function Dashboard() {
         {creditCards && (
           <MetricCard
             label="Credit cards"
+            to="/credit-cards"
             value={money(creditCards.totalBalance)}
             sub={creditCards.gracePeriodLost > 0
               ? `${creditCards.gracePeriodLost} of ${creditCards.count} lost its grace period — carrying interest`
@@ -123,7 +135,7 @@ export default function Dashboard() {
       </div>
 
       <div className="panel">
-        <div className="panel-header">Term debt coverage — ag lender standard</div>
+        <div className="panel-header spend-header"><span>Term debt coverage — ag lender standard</span><Link className="small-link" to="/loans">Loans</Link></div>
         <div className="coverage-grid">
           <CoverageBuild title="Last 12 months (actual)" period={coverage.historical} threshold={coverage.threshold} />
           <CoverageBuild title="Next 12 months (projected)" period={coverage.projected} threshold={coverage.threshold} />
@@ -136,7 +148,7 @@ export default function Dashboard() {
       </div>
 
       <div className="panel">
-        <div className="panel-header">Upcoming debt service</div>
+        <div className="panel-header spend-header"><span>Upcoming debt service</span><Link className="small-link" to="/loans">Loans</Link></div>
         {upcomingDebtService.length === 0 ? (
           <div className="empty-state">No scheduled payments on file.</div>
         ) : (
@@ -166,7 +178,7 @@ export default function Dashboard() {
       </div>
 
       <div className="panel">
-        <div className="panel-header">Unpaid bills — soonest due first</div>
+        <div className="panel-header spend-header"><span>Unpaid bills — soonest due first</span><Link className="small-link" to="/bills">Bills</Link></div>
         {bills.upcoming.length === 0 ? (
           <div className="empty-state">Nothing outstanding.</div>
         ) : (
