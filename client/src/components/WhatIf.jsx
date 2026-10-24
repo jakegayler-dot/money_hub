@@ -762,7 +762,7 @@ function Results({ r, busy, empty, presets, apply }) {
       )}
       {r.warnings?.length > 0 && <ul className="wi-warn">{r.warnings.map((w) => <li key={w}>{w}</li>)}</ul>}
       <p className="wi-foot">
-        {r.scope === 'farm' ? 'Farm money only' : r.scope === 'personal' ? 'Personal money only' : 'All money, farm and personal'} · {r.window.start} – {r.window.end}
+        {{ farm: 'Farm money only', personal: 'Personal money only', grain: 'Grain only', livestock: 'Cattle only', jake: 'Jake only', ashley: 'Ashley only' }[r.scope] || 'All money, farm and personal'} · {r.window.start} – {r.window.end}
         {r.include_tax ? ' · income tax in the cash line' : ' · income tax not in the cash line'}. Nothing here changes your books.
       </p>
     </div>

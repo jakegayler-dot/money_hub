@@ -36,8 +36,14 @@ const KIND_LABEL = {
 };
 const KIND_LINK = { personal: '/personal', contract: '/contracts', bill: '/bills', loan: '/loans', card: '/credit-cards', gst: '/tax', tax: '/tax' };
 
-/** Eases displayed numbers toward their targets so lines glide when a scenario changes. */
+/** Shows numbers as they are: no gliding (Jake, 2026-10-24: the site shouldn't move). */
+// eslint-disable-next-line no-unused-vars
 function useGlide(targets, ms = 520) {
+  return targets;
+}
+// The old easing, kept for reference: unused.
+// eslint-disable-next-line no-unused-vars
+function useGlideAnimated(targets, ms = 520) {
   const [shown, setShown] = useState(targets);
   const from = useRef(targets);
   const reduce = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;

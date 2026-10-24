@@ -6,6 +6,7 @@ import { assertOpen } from '../lib/periods.js';
 import { toISODate, addDays } from '../lib/dates.js';
 import { CRA_GST_SQL } from '../lib/gstMatch.js';
 import { TAX_KINDS, guessTaxKind } from '../lib/taxMoves.js';
+import { taxPrograms, saveTaxProfile } from '../lib/taxPrograms.js';
 
 const router = Router();
 const yearOf = (q) => Number(q) || new Date().getFullYear();
@@ -176,6 +177,14 @@ router.get('/cra', ah(async (req, res) => {
     marked: marked.map((r) => ({ ...r, date: toISODate(r.date), amount: Number(r.amount), interest: r.interest != null ? Number(r.interest) : null })),
     suggestions,
   });
+}));
+
+// ---- Credits and programs for this family (lib/taxPrograms.js) -------------------
+router.get('/programs', ah(async (req, res) => res.json(await taxPrograms(yearOf(req.query.year)))));
+// { kids_birth_years: [2021, 2023], ashley_educator: true|false|null, owns_home, childcare, jake_tuition }
+router.put('/profile', ah(async (req, res) => {
+  await saveTaxProfile(req.body || {});
+  res.json(await taxPrograms(yearOf(req.query.year)));
 }));
 
 // ---- Income tax -------------------------------------------------------------

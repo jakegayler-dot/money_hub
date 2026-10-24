@@ -176,8 +176,16 @@ function Estimates({ onChange }) {
   );
 }
 
-const SCOPES = [['everything', 'Everything'], ['farm', 'Farm'], ['personal', 'Personal']];
-const SCOPE_META = { everything: 'All money, farm and personal', farm: 'Farm money — Grain and Cattle', personal: 'Personal money — Jake and Ashley' };
+// Whose money (Jake, 2026-10-24: one owner at a time too). Household spending in Jake's and Ashley's views is
+// split by who actually spends it; what the farm pays for them (a card paid from a farm account) stays out.
+const SCOPES = [['everything', 'Everything'], ['farm', 'Farm'], ['grain', 'Grain'], ['livestock', 'Cattle'], ['personal', 'Personal'], ['jake', 'Jake'], ['ashley', 'Ashley']];
+const SCOPE_META = {
+  everything: 'All money, farm and personal', farm: 'Farm money — Grain and Cattle', personal: 'Personal money — Jake and Ashley',
+  grain: 'Grain — its accounts and flows, plus its share of farm-wide GST and tax',
+  livestock: 'Cattle — its accounts and flows, plus its share of farm-wide GST and tax',
+  jake: 'Jake — his accounts, what\'s tagged to him and his share of household spending',
+  ashley: 'Ashley — her accounts, her pay, what\'s tagged to her and her share of household spending',
+};
 const readPref = (k, d) => { try { const v = window.localStorage.getItem(`moneyhub.cf.${k}`); return v == null ? d : JSON.parse(v); } catch { return d; } };
 const writePref = (k, v) => { try { window.localStorage.setItem(`moneyhub.cf.${k}`, JSON.stringify(v)); } catch { /* private mode */ } };
 
@@ -226,9 +234,13 @@ export default function CashFlow() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [refresh, setRefresh] = useState(0);
-  const [scope, setScope] = useState(() => readPref('scope', 'everything'));
+  const [scope, setScope] = useState(() => {
+    const q = new URLSearchParams(window.location.search).get('scope');
+    return SCOPES.some(([k]) => k === q) ? q : readPref('scope', 'everything');
+  });
   const [months, setMonths] = useState(() => readPref('months', 12));
-  const [includeTax, setIncludeTax] = useState(() => readPref('tax', true));
+  // Off by default; the old saved choice ('tax') is ignored so everyone starts without tax predictions.
+  const [includeTax, setIncludeTax] = useState(() => readPref('taxOn', false));
   const [chosen, setChosen] = useState(() => readPref('accounts', null));
   const [whatIf, setWhatIf] = useState(() => readPref('whatif', null)); // { scenario, name, id } shown on the chart
   const [whatIfResult, setWhatIfResult] = useState(null);
@@ -248,7 +260,7 @@ export default function CashFlow() {
     }).catch(() => {});
   }, []);
 
-  useEffect(() => { writePref('scope', scope); writePref('months', months); writePref('tax', includeTax); writePref('accounts', chosen); writePref('whatif', whatIf); },
+  useEffect(() => { writePref('scope', scope); writePref('months', months); writePref('taxOn', includeTax); writePref('accounts', chosen); writePref('whatif', whatIf); },
     [scope, months, includeTax, chosen, whatIf]);
 
   const query = () => {

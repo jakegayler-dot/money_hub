@@ -1,4 +1,5 @@
 import express, { Router } from 'express';
+import { storeName } from '../lib/groceries.js';
 import crypto from 'node:crypto';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
@@ -221,12 +222,17 @@ router.patch('/:id', ah(async (req, res) => {
   if (!r) return res.status(404).json({ error: 'not found' });
   const ex = { ...(r.extracted || {}), is_receipt: true };
   for (const k of ['date', 'total', 'gst', 'party', 'due_date', 'doc_type']) if (req.body[k] !== undefined) ex[k] = req.body[k] === '' ? null : req.body[k];
+  // A date fixed by hand is never second-guessed again.
+  if (req.body.date !== undefined && req.body.date !== (r.extracted || {}).date) ex.date_set_by = 'hand';
   if (ex.total != null) ex.total = Number(ex.total);
   if (ex.gst != null) ex.gst = Number(ex.gst);
   if (!['receipt', 'invoice', 'sales_ticket'].includes(ex.doc_type)) ex.doc_type = 'receipt';
   const status = r.status === 'matched' ? 'matched' : 'unmatched';
   await pool.query('UPDATE receipts SET extracted = $2, status = $3, error = NULL WHERE id = $1', [r.id, ex, status]);
   if (status !== 'matched') await matchReceipt(r.id);
+  // Its grocery lines follow the receipt (Jake, 2026-10-24: a fixed date didn't reach the Groceries page).
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(ex.date || ''))) await pool.query('UPDATE grocery_items SET date = $2 WHERE receipt_id = $1', [r.id, ex.date]);
+  if (ex.party) await pool.query('UPDATE grocery_items SET store = $2 WHERE receipt_id = $1', [r.id, storeName(ex.party)]);
   const { rows } = await pool.query(`${LIST} WHERE r.id = $1`, [r.id]);
   res.json(shape(rows[0]));
 }));

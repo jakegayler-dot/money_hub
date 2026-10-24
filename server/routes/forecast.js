@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { liquidityFloor } from '../lib/calculations.js';
-import { loadForecast } from '../lib/forecast.js';
+import { loadForecast, SCOPES } from '../lib/forecast.js';
 import { scenarioContext } from '../lib/scenario.js';
 import { runAndJudge } from '../lib/purchaseCheck.js';
 import { todayISO } from '../lib/dates.js';
@@ -20,11 +20,12 @@ const router = Router();
 // Forecast options from a query string or body: window, scope, accounts, tax.
 function optionsFrom(src = {}) {
   const months = src.months === 'crop' ? cropYearMonths() : [12, 18, 24].includes(Number(src.months)) ? Number(src.months) : 12;
-  const scope = ['everything', 'farm', 'personal'].includes(src.scope) ? src.scope : 'everything';
+  const scope = SCOPES.includes(src.scope) ? src.scope : 'everything';
   let accounts = src.accounts;
   if (typeof accounts === 'string') accounts = accounts ? accounts.split(',') : null;
   accounts = Array.isArray(accounts) && accounts.length ? accounts.map(Number).filter(Boolean) : null;
-  const includeTax = !(src.tax === '0' || src.tax === 0 || src.tax === false || src.include_tax === false);
+  // Tax predictions are left out unless asked for (Jake, 2026-10-24).
+  const includeTax = src.tax === '1' || src.tax === 1 || src.tax === true || src.include_tax === true;
   return { months, scope, accounts, includeTax };
 }
 

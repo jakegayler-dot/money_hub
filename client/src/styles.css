@@ -9,8 +9,8 @@
   --border: rgba(148, 163, 184, 0.1);
   --border-strong: rgba(148, 163, 184, 0.18);
   --text: #edf0f4;
-  --text-muted: #8b96a5;
-  --text-faint: #525c69;
+  --text-muted: #a2acb9;
+  --text-faint: #6c7785;
   --gold: #c9a227;
   --gold-bright: #e6c14e;
   --gold-soft: rgba(201, 162, 39, 0.1);
@@ -39,8 +39,8 @@ body {
   background-attachment: fixed;
   color: var(--text);
   font-family: var(--font-ui);
-  font-size: 13.5px;
-  line-height: 1.55;
+  font-size: 14px;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -1700,3 +1700,80 @@ a.metric-card-link:hover .metric-label { color: var(--gold-bright); }
 .mb-floor { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 13px; color: var(--text-muted); }
 .mb-floor b { color: var(--text); font-weight: 600; }
 @media (max-width: 600px) { .mb-sides { grid-template-columns: 1fr; } }
+
+/* Dashboard headline cards open their page */
+.entity-card-link { cursor: pointer; transition: border-color var(--ease), transform var(--ease), box-shadow var(--ease); }
+.entity-card-link:hover { border-color: var(--border-strong); transform: translateY(-1px); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
+.entity-card-link:hover .metric-label { color: var(--gold-bright); }
+.entity-card-link:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+
+/* Personal spending page */
+.pp-bars-wrap { padding: 12px 16px 0; overflow-x: auto; }
+.pp-bars { width: 100%; min-width: 520px; height: auto; display: block; }
+.pp-axis { font-size: 11px; fill: var(--text-muted); font-family: var(--font-mono); }
+.pp-axis.est { fill: var(--text-faint); font-style: italic; }
+.pp-key { display: inline-flex; align-items: center; font-size: 12px; color: var(--text-muted); font-weight: 400; letter-spacing: 0; text-transform: none; }
+.pp-hatch-swatch { background: repeating-linear-gradient(45deg, var(--text-faint) 0 2px, transparent 2px 5px); border: 1px solid var(--text-faint); }
+.pp-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 0 16px; }
+.pp-subs { list-style: none; margin: 8px 0; padding: 0; }
+.pp-subs li { padding: 7px 0; border-top: 1px solid var(--border); }
+.pp-sub-head { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--text); }
+.pp-sub-head b { font-family: var(--font-mono); font-weight: 500; }
+.pp-sub-bar { height: 6px; background: var(--panel-alt); border-radius: 3px; margin: 5px 0 4px; overflow: hidden; }
+.pp-sub-bar span { display: block; height: 100%; border-radius: 3px; }
+.pp-budget { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding: 12px 16px 0; }
+.pp-budget-set { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; color: var(--text); }
+.pp-budget-set input { width: 120px; }
+.ps-legend-row.on td { color: var(--gold-bright); }
+
+/* ---------- Calm (Jake, 2026-10-24: transitions were unpleasant; the site should be smooth and easy) ----------
+   Nothing moves, lifts, slides, draws itself in or glides: colours change quickly on hover and that's all.
+   Labels are quieter and text has more contrast. Kept last so it wins over earlier rules. */
+*, *::before, *::after {
+  transition-property: color, background-color, border-color, opacity !important;
+  transition-duration: 90ms !important;
+  transition-timing-function: ease-out !important;
+  animation: none !important;
+}
+.stmt-icon svg.spin { animation: stmt-spin 0.8s linear infinite !important; }
+html { scroll-behavior: auto !important; }
+.metric-card:hover, button.metric-card-button:hover, .entity-card-link:hover { transform: none !important; box-shadow: none !important; }
+button:active { transform: none !important; }
+.cft-draw { stroke-dashoffset: 0 !important; }
+.cft-fade { opacity: 1 !important; }
+.cft-low-ring { display: none; }
+.metric-label, .panel-header { letter-spacing: 0.06em !important; }
+.metric-label { font-size: 11px !important; }
+.panel-header { font-size: 12px !important; }
+
+/* Groceries: budget bar */
+.gb-wrap { padding: 16px 16px 14px; }
+.gb-bar { position: relative; height: 16px; border-radius: 8px; background: var(--panel-alt); border: 1px solid var(--border); overflow: hidden; }
+.gb-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 8px; }
+.gb-pace { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--text); }
+.gb-scale { display: flex; justify-content: space-between; gap: 8px; margin-top: 6px; font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); flex-wrap: wrap; }
+.gb-key-line { display: inline-block; width: 14px; height: 2px; background: var(--gold); margin-right: 6px; vertical-align: middle; }
+.gb-key-dash { display: inline-block; width: 14px; border-top: 2px dashed var(--text-muted); margin-right: 6px; vertical-align: middle; }
+.gr-date { width: 140px; }
+
+/* Tax page: credits and programs */
+.tp-total { font-family: var(--font-mono); color: var(--positive); font-size: 13px; letter-spacing: 0; text-transform: none; }
+.tp-profile { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: flex-end; padding: 4px 16px 12px; border-bottom: 1px solid var(--border); }
+.tp-profile label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-muted); }
+.tp-profile label.tp-check { flex-direction: row; align-items: center; gap: 6px; }
+.tp-profile input:not([type=checkbox]) { width: 170px; }
+.tp-group-head { padding: 12px 16px 4px; font-size: 13.5px; font-weight: 600; color: var(--text); }
+.tp-group-head .split-lines { font-weight: 400; }
+.tp-list { list-style: none; margin: 0; padding: 0 16px 6px; }
+.tp-item { border-top: 1px solid var(--border); padding: 8px 0; }
+.tp-head { all: unset; box-sizing: border-box; display: flex; width: 100%; justify-content: space-between; gap: 16px; cursor: pointer; align-items: baseline; }
+.tp-head:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.tp-name { font-size: 14px; color: var(--text); }
+.tp-chips .tag { font-size: 10.5px; }
+.tp-value { font-family: var(--font-mono); white-space: nowrap; color: var(--positive); }
+.tp-check .tp-value, .tp-item.tp-check .tp-value { color: var(--text-muted); }
+.tp-item.tp-no .tp-name { color: var(--text-muted); }
+.tp-note { margin: 4px 0 0; font-size: 12.5px; color: var(--text-muted); line-height: 1.5; max-width: 90ch; }
+.tp-body { margin-top: 6px; padding: 8px 12px; background: var(--panel-alt); border-radius: 6px; }
+.tp-body p { margin: 0 0 6px; font-size: 13px; line-height: 1.55; color: var(--text); max-width: 90ch; }
+.tp-body a, .tp a { color: var(--gold-bright); }

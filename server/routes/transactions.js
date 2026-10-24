@@ -412,6 +412,12 @@ router.patch('/:id', ah(async (req, res) => {
        splits !== null ? splits.length > 0 : tx.is_split,
        ...SEGMENT_COLUMNS.map((c) => owner[c]), tx.id, payee, gst]
     );
+    // A date fixed here moves the grocery lines of its receipt when they're more than a week out (a misread receipt date).
+    if (moneyChanged && newDate !== toISODate(tx.date)) {
+      await client.query(
+        `UPDATE grocery_items g SET date = $2::date FROM receipts r
+         WHERE r.id = g.receipt_id AND r.transaction_id = $1 AND abs(g.date - $2::date) > 7`, [tx.id, newDate]);
+    }
     // Made ordinary money in or out again (or given a category): no longer a refund or payment with CRA.
     if (tx.tax_kind && (b.is_transfer === false || (!finalTransfer && b.category_id))) {
       await client.query('UPDATE transactions SET tax_kind = NULL WHERE id = $1', [tx.id]);

@@ -34,6 +34,8 @@ const deposit = (account, date, amount, description = 'PAYROLL DEP') => one(
   [account, date, amount, description]);
 
 test('deduction names from an agent map to types', () => {
+  assert.equal(deductionType('STF Fees'), 'union_dues');
+  assert.equal(deductionType('STRP'), 'pension');
   assert.equal(deductionType('Federal Income Tax'), 'income_tax');
   assert.equal(deductionType('CPP2'), 'cpp2');
   assert.equal(deductionType('Canada Pension Plan'), 'cpp');

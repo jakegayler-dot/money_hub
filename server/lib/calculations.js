@@ -4,7 +4,7 @@ import { forecastEstimates } from './inventoryForecast.js';
 import { ownerWeights, businessShare } from './segments.js';
 import { monthIndex, todayISO, toISODate, addMonths, addDays } from './dates.js';
 import { LATEST_STATEMENTS_SQL } from './cardLedger.js';
-import { loadForecast, evaluate, buildTaxFlows, taxesFor, baseNetByYear, scopeShare } from './forecast.js';
+import { loadForecast, evaluate, buildTaxFlows, taxesFor, baseNetByYear, shareFor } from './forecast.js';
 
 const MONTHS = 12;
 
@@ -252,7 +252,7 @@ export function coverageWithAddedDebt(coverage, addedAnnualService) {
  * limits the starting cash to those account ids. With scope 'farm', the
  * Everything line comes back too as `reserve` — what the farm could draw on.
  */
-export async function liquidityFloor({ months = 12, scope = 'everything', accounts = null, includeTax = true } = {}) {
+export async function liquidityFloor({ months = 12, scope = 'everything', accounts = null, includeTax = false } = {}) {
   const ctx = await loadForecast({ months });
   const taxes = ctx.tax.available ? taxesFor(baseNetByYear(ctx)) : null;
   const flows = [...ctx.flows, ...(includeTax && taxes ? buildTaxFlows(ctx, taxes) : [])];
@@ -267,7 +267,7 @@ export async function liquidityFloor({ months = 12, scope = 'everything', accoun
   return {
     scope, months, includeTax,
     startingBalance: ev.opening,
-    accounts: ctx.accounts.map((a) => ({ ...a, included: !pick || pick.has(a.id), counted: (!pick || pick.has(a.id)) ? a.balance * scopeShare(scope, a.farm) : 0 })),
+    accounts: ctx.accounts.map((a) => ({ ...a, included: !pick || pick.has(a.id), counted: (!pick || pick.has(a.id)) ? a.balance * shareFor(scope, a, ctx.splits) : 0 })),
     trajectory,
     floorMonth,
     lowestMonth,

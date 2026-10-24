@@ -18,7 +18,7 @@ export default function Expenses() {
   const [categories, setCategories] = useState([]);
   const [form, setForm] = useState(emptyForm);
   const [segmentTotals, setSegmentTotals] = useState(null);
-  const [owner, setOwner] = useState('all');
+  const [owner, setOwner] = useState(() => { const q = new URLSearchParams(window.location.search).get('owner'); return OWNER_KEYS.includes(q) ? q : 'all'; });
   const [spend, setSpend] = useState(null);
   const [income, setIncome] = useState(null);
   const [payeeKind, setPayeeKind] = useState('expense');

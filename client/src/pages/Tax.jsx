@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { money, localToday } from '../format.js';
 import { cents } from '../components/SplitEditor.jsx';
 import CraMoney from '../components/CraMoney.jsx';
+import TaxPrograms from '../components/TaxPrograms.jsx';
 
 const STATUS = {
   current: <span className="badge">IN PROGRESS</span>,
@@ -47,6 +48,7 @@ export default function Tax() {
       {err && <div className="notice" style={{ borderColor: 'var(--negative)', color: 'var(--negative)' }}>{err}</div>}
 
       {inc && <IncomeTax inc={inc} year={year} whatIf={whatIf} setWhatIf={setWhatIf} reload={loadInc} send={send} />}
+      <TaxPrograms year={year} />
       <CraMoney year={year} onChanged={() => { loadInc(); loadGst(); }} />
       {gst && <Gst gst={gst} reload={loadGst} send={send} />}
     </>

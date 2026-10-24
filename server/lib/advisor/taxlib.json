@@ -994,5 +994,21 @@
   ],
   "verified": true,
   "status": "proposed"
+ },
+ {
+  "id": "household-credits-2026",
+  "title": "Household credits and benefits for a Saskatchewan farm family (2026)",
+  "topic": "household",
+  "tax_year": 2026,
+  "status": "in force",
+  "verified": true,
+  "cite": "ITA s.122.9; s.63; Saskatchewan Income Tax Act (Active Families Benefit, Home Renovation Tax Credit); Saskatchewan Affordability Act",
+  "text": "Eligible educator school supply tax credit (ITA 122.9): refundable 25% of up to $1,000 a year of teaching supplies bought and not reimbursed by a teacher or early childhood educator employed at an elementary/secondary school or regulated child care facility and holding a recognized certificate - up to $250 (line 46900). Saskatchewan Active Families Benefit: from the 2025 tax year up to $300 per child 18 or under ($400 with a disability) for sport, culture and recreation costs, if adjusted family net income is $120,000 or less; claimed on the return, keep receipts. Saskatchewan Home Renovation Tax Credit: re-introduced for 2025 and later years, expenses from Oct 1, 2024: 10.5% non-refundable credit on eligible renovation costs above $1,000 up to $5,000 per year on the principal residence (max $420; seniors to $6,000, max $525); excludes own labour, routine maintenance, appliances, financing costs. Saskatchewan Affordability Act: 2026 basic personal and spousal amounts $20,381, dependent child amount $8,358 per child, senior supplement $2,569, each rising $500 a year to 2028; SK brackets 10.5% to $54,532, 12.5% to $155,805, 14.5% above. Child care expenses deduction (s.63): up to $8,000 per child under 7 and $5,000 for ages 7-16, generally claimed by the lower-income spouse (T778). Canada Training Credit: refundable, 50% of eligible tuition up to the accumulated limit ($250 a year for ages 26-65 with enough earnings). Canada Child Benefit is tax-free and income-tested on family net income, so deductions that lower family net income (RRSP, child care, AgriInvest timing) raise it. Money Hub shows these with the family's estimated values on the Tax page (Credits and programs).",
+  "sources": [
+   "https://laws-lois.justice.gc.ca/eng/acts/i-3.3/section-122.9.html",
+   "https://saskatchewan.ca/residents/parks-culture-heritage-and-sport/sport-and-recreation/programs-and-supports/active-families-benefit",
+   "https://www.saskatchewan.ca/en/Residents/Taxes-and-Investments/Tax-Credits/Home-Renovation-Tax-Credit",
+   "https://www.cifinancial.com/ci-gam/ca/en/expert-insights/articles/tax-highlights-from-the-2026-saskatchewan-budget.html"
+  ]
  }
 ]

@@ -68,7 +68,16 @@ export function unitPrice(line) {
   return { unit: 'each', unit_price: r4(amount / count) };
 }
 
-const PROMPT = ({ party, date, total, known }) => `This is a grocery till slip${party ? ` from ${party}` : ''}${date ? ` dated ${date}` : ''}${total ? `, total $${total}` : ''}. It was bought by a farm family in Saskatchewan.
+/** A printed line as a key for corrections: lowercase, no prices, codes or weights. */
+export const printedKey = (p) => String(p || '').toLowerCase().replace(/[$\d.,@/%#*]+/g, ' ').replace(/\b(kg|lb|lbs|g|ea|each|x)\b/g, ' ').replace(/\s+/g, ' ').trim();
+
+/** Fixes made by hand, by printed line: { key → { item, food_type } }. */
+export async function corrections(db = pool) {
+  const { rows } = await db.query('SELECT printed, item, food_type FROM grocery_corrections ORDER BY updated_at DESC LIMIT 2000');
+  return new Map(rows.map((r) => [r.printed, { item: r.item, food_type: r.food_type }]));
+}
+
+const PROMPT = ({ party, date, total, known, fixed = [] }) => `This is a grocery till slip${party ? ` from ${party}` : ''}${date ? ` dated ${date}` : ''}${total ? `, total $${total}` : ''}. It was bought by a farm family in Saskatchewan.
 
 Record EVERY purchased line by calling record_grocery_lines (angle brackets describe the value — never copy them):
 {
@@ -96,7 +105,10 @@ Rules:
 - Check the amounts add up to the subtotal before tax. If a line is unreadable, give your best reading of its amount and item "unreadable".
 
 KNOWN ITEMS:
-${known.join(', ') || '(none yet)'}`;
+${known.join(', ') || '(none yet)'}
+
+THE FAMILY'S OWN FIXES (printed line → what it is): follow these exactly when the same line appears.
+${fixed.join('\n') || '(none yet)'}`;
 
 async function claude(body) {
   const res = await fetch(`${process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com'}/v1/messages`, {
@@ -116,8 +128,10 @@ async function readLines(rc, ex) {
   const { rows } = await pool.query(`SELECT item FROM grocery_items GROUP BY item ORDER BY COUNT(*) DESC LIMIT 400`);
   // Loaded when needed: receipts.js brings in the image library, which the read API doesn't need.
   const { documentBlocks } = await import('./receipts.js');
+  const fixes = await corrections();
+  const fixed = [...fixes].slice(0, 200).map(([k, v]) => `${k} → ${v.item} [${v.food_type}]`);
   const userTurn = { role: 'user', content: [...(await documentBlocks(rc)),
-    { type: 'text', text: PROMPT({ party: ex.party, date: ex.date, total: ex.total, known: rows.map((r) => r.item) }) }] };
+    { type: 'text', text: PROMPT({ party: ex.party, date: ex.date, total: ex.total, known: rows.map((r) => r.item), fixed }) }] };
   const tools = [{
     name: 'record_grocery_lines', description: 'Record every purchased line of the till slip.',
     input_schema: { type: 'object', properties: { is_grocery: { type: 'boolean' }, lines: { type: 'array', items: { type: 'object' } } }, required: ['is_grocery', 'lines'] },
@@ -153,7 +167,11 @@ export function cleanLine(l) {
 /** Replaces a receipt's catalogued lines. */
 export async function saveLines(client, receiptId, { date, store }, lines) {
   await client.query('DELETE FROM grocery_items WHERE receipt_id = $1', [receiptId]);
-  for (const l of lines) {
+  const fixes = await corrections(client);
+  for (const raw of lines) {
+    // A line fixed by hand before is that thing again, whatever the reader said.
+    const fix = raw.printed ? fixes.get(printedKey(raw.printed)) : null;
+    const l = fix ? { ...raw, item: fix.item, food_type: fix.food_type } : raw;
     await client.query(
       `INSERT INTO grocery_items (receipt_id, date, store, printed, item, brand, store_brand, food_type, qty, size_value, size_unit, unit, unit_price, amount, discount)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,

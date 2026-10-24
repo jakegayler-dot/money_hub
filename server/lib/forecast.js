@@ -12,7 +12,14 @@
 //   ref       what it came from (bill, contract, loan, inventory group…)
 //
 // evaluate() buckets flows into months for a scope — Everything, Farm
-// (farm shares only) or Personal — from the cash in the chosen accounts.
+// (farm shares only), Personal, or one owner (Grain, Cattle, Jake, Ashley)
+// — from the cash in the chosen accounts. Each flow also carries
+//   owners    its share for each owner { grain, livestock, jake, ashley }
+// (Jake, 2026-10-24): from what it's tagged to; farm-wide flows (GST,
+// tax) split by each enterprise's share of the farm's activity; household
+// spending by who actually spends it. Money the farm pays for Jake or
+// Ashley (a card paid from a farm account, the household spending that
+// goes through farm accounts) stays out of their own views.
 // Income tax flows are built separately (buildTaxFlows) from a tax figure
 // per year, so a scenario can re-work them.
 
@@ -20,7 +27,7 @@ import { pool, getSetting } from '../db.js';
 import { occurrences, signedAmount, activeEstimates } from './estimates.js';
 import { inventorySales } from './inventoryForecast.js';
 import { loadBalanceSheet } from './balanceSheet.js';
-import { businessShare } from './segments.js';
+import { businessShare, ownerWeights } from './segments.js';
 import { todayISO, toISODate, addMonths, addDays, monthIndex } from './dates.js';
 import { LATEST_STATEMENTS_SQL, cardBalances } from './cardLedger.js';
 import { farmIncomeTax, gstReport, gstPeriods } from './tax.js';
@@ -49,13 +56,108 @@ const MUST_PAY = new Set(['loan', 'lease', 'bill', 'card', 'fee', 'tax', 'gst'])
 export const mustPay = (f) => f.amount < 0 && (MUST_PAY.has(f.kind) || (f.kind === 'personal' && f.ref?.bucket === 'essential'));
 const FLOOR_PART = { loan: 'loans', lease: 'loans', bill: 'bills', card: 'cards', fee: 'fees', tax: 'tax', gst: 'tax', personal: 'household' };
 
+export const OWNER_SCOPES = ['grain', 'livestock', 'jake', 'ashley'];
+export const SCOPES = ['everything', 'farm', 'personal', ...OWNER_SCOPES];
+const EVEN = { farm: { grain: 0.5, livestock: 0.5 }, household: { jake: 0.5, ashley: 0.5, farm: 0 } };
+
+/** Owner shares from a flow's farm share alone: the farm part by the enterprise split, the rest by the household split. */
+function derivedOwners(farm, splits = EVEN) {
+  const f = farm ?? 1;
+  const h = splits.household;
+  return {
+    grain: f * splits.farm.grain, livestock: f * splits.farm.livestock,
+    jake: (1 - f) * h.jake, ashley: (1 - f) * h.ashley,
+  };
+}
+
+/** Owner shares of a tagged row (contract, bill, loan, account, estimate…); untagged parts follow its ledger. */
+export function ownersOf(row, splits = EVEN) {
+  const w = ownerWeights(row);
+  const o = { grain: w.grain, livestock: w.livestock, jake: w.jake, ashley: w.ashley };
+  if (w.unassigned > 0) {
+    const personal = row.ledger === 'personal' || row.segment === 'personal';
+    const d = derivedOwners(personal ? 0 : 1, splits);
+    for (const k of OWNER_SCOPES) o[k] += w.unassigned * d[k];
+  }
+  return o;
+}
+
+/**
+ * The share of a flow (or account) a scope sees. Everything: all of it.
+ * Farm / Personal: by its farm share. One owner: that owner's share — and
+ * nothing for Jake or Ashley when the farm pays it (ref.paid_from_farm).
+ */
+export function shareFor(scope, x, splits = EVEN) {
+  const farm = typeof x === 'number' ? x : (x.farm ?? 1);
+  if (scope === 'farm') return farm;
+  if (scope === 'personal') return 1 - farm;
+  if (!OWNER_SCOPES.includes(scope)) return 1;
+  if (typeof x === 'object' && x.ref?.paid_from_farm && (scope === 'jake' || scope === 'ashley')) return 0;
+  const o = (typeof x === 'object' && x.owners) || derivedOwners(farm, splits);
+  return o[scope] || 0;
+}
+
+/**
+ * The splits behind derived shares, from the last 12 months of the ledger:
+ * Grain vs Cattle by each one's share of the farm's activity (money in and
+ * out); household spending by who spends it — Jake, Ashley, or the farm
+ * when it's paid from a farm account (a farm-paid card's purchases too).
+ */
+export async function ownerSplits(today = todayISO(), db = pool) {
+  const [{ rows: lines }, { rows: payers }] = await Promise.all([
+    db.query(
+      `SELECT l.amount, l.ledger, l.account_id, l.credit_card_id, l.segment, l.is_segment_split, l.segment_grain_pct, l.segment_livestock_pct,
+              l.segment_jake_pct, l.segment_ashley_pct, a.ledger AS acct_ledger, a.segment AS acct_segment, a.is_segment_split AS acct_split,
+              a.segment_grain_pct AS acct_g, a.segment_livestock_pct AS acct_l
+       FROM transaction_lines l LEFT JOIN accounts a ON a.id = l.account_id
+       WHERE NOT l.is_transfer AND NOT l.is_debt_service AND l.date > $1::date - 365 AND l.date <= $1::date`, [today]),
+    cardPayers(db),
+  ]);
+  let grain = 0; let livestock = 0; let jake = 0; let ashley = 0; let unassigned = 0; let farmPaid = 0;
+  for (const l of lines) {
+    const amt = Math.abs(Number(l.amount));
+    const w = ownerWeights(l);
+    grain += amt * w.grain;
+    livestock += amt * w.livestock;
+    if (Number(l.amount) >= 0) continue;
+    // Household spending: whose, unless the farm's account paid it.
+    const personalPart = w.jake + w.ashley + (businessShare(l) < 0.5 ? w.unassigned : 0);
+    if (personalPart <= 0) continue;
+    const viaFarm = l.account_id
+      ? businessShare({ ledger: l.acct_ledger, segment: l.acct_segment, is_segment_split: l.acct_split, segment_grain_pct: l.acct_g, segment_livestock_pct: l.acct_l }) >= 0.5
+      : !!(l.credit_card_id && payers.get(l.credit_card_id));
+    if (viaFarm) { farmPaid += amt * personalPart; continue; }
+    jake += amt * w.jake;
+    ashley += amt * w.ashley;
+    if (businessShare(l) < 0.5) unassigned += amt * w.unassigned;
+  }
+  const f = grain + livestock;
+  const own = jake + ashley;
+  const t = own + unassigned + farmPaid;
+  // Untagged personal spending goes to Jake and Ashley in the proportion they spend.
+  const jr = own > 0 ? jake / own : 0.5;
+  return {
+    farm: f > 0 ? { grain: grain / f, livestock: livestock / f } : EVEN.farm,
+    household: t > 0 ? { jake: (jake + unassigned * jr) / t, ashley: (ashley + unassigned * (1 - jr)) / t, farm: farmPaid / t } : EVEN.household,
+  };
+}
+
+/** Cards whose payments come out of a farm account (the most recent payment's account): card id → true. */
+async function cardPayers(db = pool) {
+  const { rows } = await db.query(
+    `SELECT DISTINCT ON (t.credit_card_id) t.credit_card_id, a.ledger, a.segment, a.is_segment_split, a.segment_grain_pct, a.segment_livestock_pct
+     FROM transactions t JOIN accounts a ON a.id = t.account_id
+     WHERE t.credit_card_id IS NOT NULL AND t.account_id IS NOT NULL ORDER BY t.credit_card_id, t.date DESC, t.id DESC`);
+  return new Map(rows.map((r) => [r.credit_card_id, businessShare(r) >= 0.5]));
+}
+
 /** What must be paid in [from, to) for a scope: total and by part. */
-export function mustPayBetween(flows, from, to, scope) {
+export function mustPayBetween(flows, from, to, scope, splits = EVEN) {
   const parts = { loans: 0, bills: 0, cards: 0, tax: 0, household: 0, fees: 0 };
   let total = 0;
   for (const f of flows) {
     if (f.date < from || f.date >= to || !mustPay(f)) continue;
-    const amt = -f.amount * scopeShare(scope, f.farm ?? 1);
+    const amt = -f.amount * shareFor(scope, f, splits);
     if (amt < 0.005) continue;
     parts[FLOOR_PART[f.kind]] += amt;
     total += amt;
@@ -142,6 +244,8 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     ]),
   ]);
   const [floorDaysSetting, paidY0, priorOwingY0, paidPrev, gstFreq] = settings;
+  const [splits, payers] = await Promise.all([ownerSplits(today), cardPayers()]);
+  const own = (row) => ownersOf(row, splits);
 
   // ---- Inventory groups (what the what-if prices and quantities act on) ----
   const groups = new Map();
@@ -179,7 +283,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
       add({
         key: `contract:${c.id}${p.part === 'open' ? '' : `:${p.part}`}`, kind: 'contract',
         label: PART_NOTE[p.part] ? `${base} (${PART_NOTE[p.part]})` : base, date: p.date,
-        amount: p.amount, farm, taxable: p.amount * farm, overdue: p.date < today,
+        amount: p.amount, farm, owners: own({ segment: c.segment }), taxable: p.amount * farm, overdue: p.date < today,
         ref: { contract_id: c.id, commodity: norm(c.commodity), part: p.part },
       });
     }
@@ -193,21 +297,21 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
       const amt = signedAmount(e);
       add({
         key: `est:${e.id}:${d}`, kind: amt >= 0 ? 'estimate_in' : 'estimate_out', label: e.name || e.commodity || 'Estimate', date: toISODate(d),
-        amount: amt, farm, taxable: amt * farm, estimate: true,
+        amount: amt, farm, owners: own(e), taxable: amt * farm, estimate: true,
         ref: { estimate_id: e.id, commodity, category: e.category || null },
       });
     }
   }
   // Pay from paystubs: the next net pays, as expected income (personal).
   try {
-    for (const f of await paystubForecastFlows({ today, endStr })) add(f);
+    for (const f of await paystubForecastFlows({ today, endStr })) add({ ...f, owners: own({ segment: f.ref?.owner }) });
   } catch (e) { console.error('Paystub pays unavailable for the forecast:', e.message); }
   for (const it of inv.items) {
     const d = toISODate(it.start_date);
     if (d < today || d >= endStr) continue;
     const farm = businessShare(it);
     add({
-      key: `inv:${it.inventory_id}`, kind: 'inventory', label: it.name, date: d, amount: Number(it.amount), farm,
+      key: `inv:${it.inventory_id}`, kind: 'inventory', label: it.name, date: d, amount: Number(it.amount), farm, owners: own(it),
       taxable: Number(it.amount) * farm, estimate: true,
       ref: { inventory_id: it.inventory_id, group: itemGroup.get(it.inventory_id) || groupKey(it.commodity, ''), commodity: norm(it.commodity), basis: it.basis },
     });
@@ -222,7 +326,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     billDates(b, today, endStr).forEach((d, i) => {
       const amt = i === 0 ? owing : Number(b.amount);
       add({
-        key: `bill:${b.id}:${d}`, kind: 'bill', label: b.name, date: d, amount: -amt, farm,
+        key: `bill:${b.id}:${d}`, kind: 'bill', label: b.name, date: d, amount: -amt, farm, owners: own(b),
         taxable: -(amt - gst) * farm, overdue: d < today,
         ref: { bill_id: b.id, first: i === 0, financed: !!b.is_financed, gst, category_id: b.category_id || null },
       });
@@ -235,7 +339,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     const d = toISODate(p.due_date);
     const interest = Number(p.interest_amount) || 0;
     add({
-      key: `loan:${p.id}`, kind: 'loan', label: p.loan, date: d, amount: -(Number(p.principal_amount) + interest), farm,
+      key: `loan:${p.id}`, kind: 'loan', label: p.loan, date: d, amount: -(Number(p.principal_amount) + interest), farm, owners: own(p),
       taxable: -interest * farm, overdue: d < today,
       ref: { loan_id: p.loan_id, interest, principal: Number(p.principal_amount), rate: Number(p.interest_rate_pct), rate_type: p.rate_type, purpose: p.purpose },
     });
@@ -245,7 +349,8 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
   for (const c of cardRows.rows) {
     const d = toISODate(c.due_date);
     add({ key: `card:${c.card_id}:${d}`, kind: 'card', label: `${c.card} statement`, date: d, amount: -Number(c.amount),
-      farm: businessShare({ segment: c.segment }), overdue: d < today, ref: { card_id: c.card_id } });
+      farm: businessShare({ segment: c.segment }), owners: own({ segment: c.segment }), overdue: d < today,
+      ref: { card_id: c.card_id, paid_from_farm: !!payers.get(c.card_id) } });
   }
 
   // Charges since the last statement: what paying the card off will take
@@ -265,7 +370,8 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
       while (due < today) due = addMonths(due, 1);
       if (due >= endStr) continue;
       add({ key: `card-unbilled:${c.id}`, kind: 'card', label: `${c.name} — charges since the last statement`, date: due, amount: -unbilled,
-        farm: businessShare({ segment: c.segment }), estimate: true, ref: { card_id: c.id, unbilled: true } });
+        farm: businessShare({ segment: c.segment }), owners: own({ segment: c.segment }), estimate: true,
+        ref: { card_id: c.id, unbilled: true, paid_from_farm: !!payers.get(c.id) } });
     }
   }
 
@@ -278,7 +384,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     lwin.meta.forEach((m, i) => {
       let d = `${m.year}-${pad(m.month)}-28`;
       if (i === 0 && d < today) d = today;
-      add({ key: `fee:${a.id}:${m.year}-${m.month}`, kind: 'fee', label: `Account fees — ${a.name}`, date: d, amount: -perMonth, farm, taxable: -perMonth * farm });
+      add({ key: `fee:${a.id}:${m.year}-${m.month}`, kind: 'fee', label: `Account fees — ${a.name}`, date: d, amount: -perMonth, farm, owners: own(a), taxable: -perMonth * farm });
     });
   }
 
@@ -294,8 +400,10 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     for (const f of flows) {
       const share = 1 - (f.farm ?? 1);
       if (share <= 0 || f.amount >= 0) continue;
+      // Card statements too: a card that isn't itemized has its payments in the spending history already,
+      // so the statement due that month is part of the month's essentials, not on top of them.
       const amt = f.kind === 'loan' ? (f.ref?.interest || 0) * share
-        : ['bill', 'fee', 'estimate_out'].includes(f.kind) ? -f.amount * share : 0;
+        : ['bill', 'fee', 'estimate_out', 'card'].includes(f.kind) ? -f.amount * share : 0;
       if (amt) knownOut.set(f.date.slice(0, 7), (knownOut.get(f.date.slice(0, 7)) || 0) + amt);
     }
     const r = await personalFlows({ meta: lwin.meta, today, tax: taxY0, known: (k) => knownOut.get(k) || 0 });
@@ -313,8 +421,10 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
 
   const accountRows = accounts.rows.map((a) => ({
     id: a.id, name: a.name, ledger: a.ledger, type: a.account_type, balance: Number(a.opening_balance),
-    farm: businessShare(a),
+    farm: businessShare(a), owners: own(a),
   }));
+  // Everything else (GST, tax, household spending) from its farm share and the splits.
+  for (const f of flows) if (!f.owners) f.owners = derivedOwners(f.farm, splits);
 
   // Income tax: this year's projection from the Tax tab; next year assumed
   // like this year unless a scenario says otherwise.
@@ -322,7 +432,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
   const inWindow = (d) => toISODate(d) < win.endStr;
   const floorDays = Math.min(MAX_FLOOR_DAYS, Math.max(14, Number(floorDaysSetting) || FLOOR_DAYS));
   return {
-    win, today, flows: flows.filter((f) => inWindow(f.date)), lookahead: flows.filter((f) => !inWindow(f.date)), accounts: accountRows, groups, known, personal,
+    win, today, flows: flows.filter((f) => inWindow(f.date)), lookahead: flows.filter((f) => !inWindow(f.date)), accounts: accountRows, groups, known, personal, splits,
     bills: billRows.rows.filter((b) => inWindow(b.due_date)), loans: loanRows.rows.filter((l) => inWindow(l.due_date)), contracts: contractRows.rows, estimates,
     inventory: inv, floorDays, gstFreq: String(gstFreq || 'quarterly'),
     tax: {
@@ -453,7 +563,7 @@ export function taxesFor(netByYear) {
 }
 
 /** What share of a flow (or account) a scope sees. */
-export const scopeShare = (scope, farm) => (scope === 'farm' ? farm : scope === 'personal' ? 1 - farm : 1);
+export const scopeShare = (scope, x, splits) => shareFor(scope, x, splits);
 
 /**
  * Buckets flows into the window's months for a scope, from the cash in the
@@ -464,7 +574,7 @@ export function evaluate(flows, ctx, { scope = 'everything', accountIds = null }
   const { meta, endStr, y0, m0 } = win;
   const n = meta.length;
   const pick = accountIds ? new Set(accountIds.map(Number)) : null;
-  const opening = r2(ctx.accounts.filter((a) => !pick || pick.has(a.id)).reduce((s, a) => s + a.balance * scopeShare(scope, a.farm), 0));
+  const opening = r2(ctx.accounts.filter((a) => !pick || pick.has(a.id)).reduce((s, a) => s + a.balance * shareFor(scope, a, ctx.splits), 0));
   const months = meta.map((m) => ({
     year: m.year, month: m.month, items: [],
     contractInflows: 0, estimatedInflows: 0, unpaidBillsDue: 0, debtServiceDue: 0, creditCardDue: 0, accountFees: 0,
@@ -472,7 +582,7 @@ export function evaluate(flows, ctx, { scope = 'everything', accountIds = null }
   }));
   for (const f of flows) {
     if (f.date >= endStr) continue;
-    const share = scopeShare(scope, f.farm);
+    const share = shareFor(scope, f, ctx.splits);
     const amount = r2(f.amount * share);
     if (Math.abs(amount) < 0.005) continue;
     const i = Math.min(Math.max(0, monthIndex(f.date, y0, m0)), n - 1);
@@ -509,13 +619,13 @@ export function evaluate(flows, ctx, { scope = 'everything', accountIds = null }
   const all = [...flows, ...(ctx.lookahead || [])];
   trajectory.forEach((t, i) => {
     const next = i + 1 < n ? `${meta[i + 1].year}-${pad(meta[i + 1].month)}-01` : endStr;
-    const f = mustPayBetween(all, next, addDays(next, days), scope);
+    const f = mustPayBetween(all, next, addDays(next, days), scope, ctx.splits);
     t.floor = f.total;
     t.floorParts = f.parts;
     t.headroom = r2(t.balance - f.total);
   });
   // Today's floor: everything overdue plus what falls due in the next `days`.
-  const now = mustPayBetween(all, '0000-01-01', addDays(ctx.today || todayISO(), days), scope);
+  const now = mustPayBetween(all, '0000-01-01', addDays(ctx.today || todayISO(), days), scope, ctx.splits);
   const lowIdx = trajectory.reduce((k, t, i) => (t.balance < trajectory[k].balance ? i : k), 0);
   const tightIdx = trajectory.reduce((k, t, i) => (t.headroom < trajectory[k].headroom ? i : k), 0);
   return {

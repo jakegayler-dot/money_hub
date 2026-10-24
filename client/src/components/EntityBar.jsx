@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { money } from '../format.js';
 import { OWNER_KEYS, OWNER_LABELS } from '../owners.jsx';
 
@@ -56,6 +56,14 @@ export default function EntityBar() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const location = useLocation();
+  const navigate = useNavigate();
+  // Each headline card opens its page, in the same owner's view.
+  const open = (to) => ({
+    role: 'link', tabIndex: 0, className: 'entity-card entity-card-link',
+    onClick: (e) => { if (!e.target.closest('a')) navigate(to); },
+    onKeyDown: (e) => { if (e.key === 'Enter') navigate(to); },
+  });
+  const cfScope = entity === 'all' ? 'everything' : entity;
 
   useEffect(() => {
     save(STORAGE_KEY, entity);
@@ -111,7 +119,7 @@ export default function EntityBar() {
         <div className="entity-error">Couldn't load metrics: {error}</div>
       ) : (
         <div className="entity-metrics">
-          <div className="entity-card">
+          <div {...open(`/cash-flow?scope=${cfScope}`)}>
             <div className="metric-label">Cash flow — {basis === 'estimates' ? 'with estimates' : 'committed only'}</div>
             <div className="entity-card-row">
               <div>
@@ -124,7 +132,7 @@ export default function EntityBar() {
             </div>
           </div>
 
-          <div className="entity-card">
+          <div {...open(`/expenses${entity === 'all' ? '' : `?owner=${entity}`}`)}>
             <div className="metric-label">
               {data?.earningsYTD.kind === 'personal' ? 'Net personal cash' : 'Farm earnings'} — {new Date().getFullYear()} to date
             </div>
@@ -143,13 +151,13 @@ export default function EntityBar() {
             </div>
           </div>
 
-          <div className="entity-card">
+          <div {...open(`/financials?tab=balance${entity === 'all' ? '' : `&entity=${entity}`}`)}>
             <div className="metric-label">Equity</div>
             <div className={`metric-value${data && data.equity.total < 0 ? ' negative' : ''}`}>
               {data ? money(data.equity.total) : '—'}
             </div>
             <div className="metric-sub">
-              {data ? <>Assets {money(data.equity.assets)} − liabilities {money(data.equity.liabilities)}<br /><a href={`/financials?tab=balance${data.entity === 'all' ? '' : `&entity=${data.entity}`}`}>Balance sheet</a></> : 'Loading…'}
+              {data ? <>Assets {money(data.equity.assets)} − liabilities {money(data.equity.liabilities)}</> : 'Loading…'}
             </div>
           </div>
         </div>

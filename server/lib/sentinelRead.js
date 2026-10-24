@@ -1036,10 +1036,10 @@ def({
 // ---------- cash-flow forecast ----------
 const fcFilters = [
   { name: 'months', type: 'enum', values: ['12', '18', '24'], param: true, doc: 'forecast length, default 12' },
-  { name: 'scope', type: 'enum', values: ['everything', 'farm', 'personal'], param: true, doc: 'default everything (farm + household)' },
+  { name: 'scope', type: 'enum', values: ['everything', 'farm', 'personal', 'grain', 'livestock', 'jake', 'ashley'], param: true, doc: 'default everything (farm + household); grain, livestock, jake or ashley for one owner (household spending split by who spends it; what the farm pays for Jake or Ashley stays out of theirs)' },
   { name: 'include_tax', type: 'bool', param: true, doc: 'income tax instalments, default true' },
 ];
-const fcOptions = (q) => ({ months: Number(q.months || 12), scope: q.scope || 'everything', includeTax: q.include_tax !== false });
+const fcOptions = (q) => ({ months: Number(q.months || 12), scope: q.scope || 'everything', includeTax: q.include_tax === true || q.include_tax === 'true' });
 def({
   name: 'cash_flow_forecast', mode: 'js', idType: 'text', summary: true,
   description: 'SUMMARY. The app\'s month-by-month cash forecast (same as its Cash Flow page): starting from today\'s balances, each month\'s money in (+), money out (−), closing balance with estimates, and the committed-only balance. Each month has its cash floor: what must be paid in the floor_days after that month-end (loans, bills, cards, fees, tax, GST, household essentials). First row (kind "summary") has today’s floor, the tightest month and whether every month covers its floor. id = YYYY-MM.',
@@ -1099,7 +1099,7 @@ def({
     }
     const { purchase, error } = purchaseFromInput(q);
     if (error) throw new ReadError(422, error);
-    const result = await runAndJudge({ purchases: [purchase] }, { months: Number(q.months || 12), scope: q.scope || 'everything', includeTax: true });
+    const result = await runAndJudge({ purchases: [purchase] }, { months: Number(q.months || 12), scope: q.scope || 'everything', includeTax: q.tax === '1' || q.tax === true });
     const a = agentAnswer(result);
     return [
       { id: 'verdict', kind: 'verdict', verdict: a.verdict, verdict_label: a.verdict_label, headline: a.headline, tests: a.tests, cash: a.cash, tax: a.tax, currency: CURRENCY },

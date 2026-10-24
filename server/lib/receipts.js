@@ -14,6 +14,7 @@
 // Receipts page — matching works the same either way.
 import { pool } from '../db.js';
 import { toISODate } from './dates.js';
+import { settleDate } from './receiptDates.js';
 import { applyVendorOwnerToBill, payeeId, refreshContract, linkBillToTransaction, linkContractToTransaction, incomeCategoryFor, normalizeSplits, ownerOf, PostingError } from './postings.js';
 import { SEGMENT_COLUMNS } from './segments.js';
 import { closedMonth } from './periods.js';
@@ -42,6 +43,7 @@ Record what you read by calling the record_document tool with these fields (angl
   "is_receipt": true,
   "doc_type": <"receipt" | "invoice" | "sales_ticket">,
   "date": <document date as "YYYY-MM-DD">,
+  "date_printed": <the date exactly as printed on it, characters and all ("24/10/26", "10-24-2026", "OCT 24 26"), else null>,
   "due_date": <invoice only: due date "YYYY-MM-DD", else null>,
   "invoice_number": <invoice only, else null>,
   "interest_free_until": <invoice on a financing program ("interest free until", "0% until", "deferred to"): that date "YYYY-MM-DD", else null>,
@@ -228,6 +230,17 @@ async function extract(receipt) {
   }
   if (out.owner && !OWNERS.includes(out.owner)) out.owner = null;
   if (!['receipt', 'invoice', 'sales_ticket'].includes(out.doc_type)) out.doc_type = 'receipt';
+  // Day and month (or year) read the wrong way round: every reading of the printed date is weighed (lib/receiptDates.js).
+  if (out.is_receipt) {
+    try {
+      const s = await settleDate({ date: out.date, printed: out.date_printed, total: out.total, uploaded: receipt.uploaded_at });
+      if (s.changed) {
+        out.date_read = out.date;
+        out.date = s.date;
+        out.notes = `${out.notes ? `${out.notes} ` : ''}Date taken as ${s.date} (read as ${out.date_read}): ${s.why}.`;
+      }
+    } catch (e) { console.error('Receipt date check failed', receipt.id, e.message); }
+  }
   return out;
 }
 

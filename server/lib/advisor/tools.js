@@ -15,7 +15,7 @@ import { todayISO } from '../dates.js';
 
 export class AdvisorToolError extends Error {}
 
-const SCOPES = ['everything', 'farm', 'personal'];
+const SCOPES = ['everything', 'farm', 'personal', 'grain', 'livestock', 'jake', 'ashley'];
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
 export const TOOL_DEFS = [
@@ -71,7 +71,7 @@ Returns the plan and the scenario side by side (lowest month, tightest month aga
       properties: {
         scenario: { type: 'object' },
         months: { type: 'integer', description: '12 (default), 18 or 24' },
-        scope: { type: 'string', enum: SCOPES, description: 'everything (default: farm and household, one pot), farm or personal' },
+        scope: { type: 'string', enum: SCOPES, description: 'everything (default: farm and household, one pot), farm, personal, or one owner: grain, livestock, jake, ashley' },
         include_tax: { type: 'boolean', description: 'default true' },
       },
       required: ['scenario'],

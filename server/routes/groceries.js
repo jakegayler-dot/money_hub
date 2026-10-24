@@ -5,7 +5,9 @@ import { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { toISODate } from '../lib/dates.js';
-import { grocerySummary, priceBook, latestAdvice, makeAdvice, backfillGroceries, backfillState, FOOD_TYPES, unitPrice } from '../lib/groceries.js';
+import { grocerySummary, priceBook, latestAdvice, makeAdvice, backfillGroceries, backfillState, FOOD_TYPES, unitPrice, printedKey } from '../lib/groceries.js';
+import { recheckReceiptDates } from '../lib/receiptDates.js';
+import { getSetting } from '../db.js';
 
 const router = Router();
 
@@ -18,7 +20,18 @@ router.get('/', ah(async (req, res) => {
     pool.query(`SELECT COUNT(*) FILTER (WHERE grocery IS NULL AND extracted IS NOT NULL AND status NOT IN ('failed', 'not_receipt', 'reading')) AS unchecked,
                        COUNT(*) FILTER (WHERE grocery = 'failed') AS failed FROM receipts`),
   ]);
+  const budget = await getSetting('grocery_budget_month', null);
+  // What's inside each food type over the last six months: the items, most spent first.
+  const { rows: items } = await pool.query(
+    `SELECT food_type, item, SUM(amount) AS spent, COUNT(*) AS times, to_char(MAX(date), 'YYYY-MM-DD') AS last
+     FROM grocery_items WHERE date >= CURRENT_DATE - 183 AND item <> 'unreadable' GROUP BY 1, 2 ORDER BY 3 DESC`);
+  const topItems = {};
+  for (const r of items) {
+    const list = (topItems[r.food_type] = topItems[r.food_type] || []);
+    if (list.length < 12) list.push({ item: r.item, spent: Number(r.spent), times: Number(r.times), last: r.last });
+  }
   res.json({
+    budget: budget == null || budget === '' ? null : Number(budget), top_items: topItems,
     summary, prices, advice, food_types: FOOD_TYPES, reader: !!process.env.ANTHROPIC_API_KEY,
     receipts: recent.map((r) => ({ id: r.receipt_id, date: toISODate(r.date), store: r.store, lines: Number(r.lines), total: Number(r.total), saved: Number(r.saved) })),
     backfill: { ...backfillState(), unchecked: Number(waiting.unchecked), failed: Number(waiting.failed) },
@@ -43,11 +56,29 @@ router.patch('/items/:id', ah(async (req, res) => {
   const sizeUnit = req.body.size_unit !== undefined ? (req.body.size_unit || null) : g.size_unit;
   const up = unitPrice({ amount: g.amount, qty: g.qty, size_value: sizeValue, size_unit: sizeUnit });
   await pool.query('UPDATE grocery_items SET size_value = $2, size_unit = $3, unit = $4, unit_price = $5 WHERE id = $1', [g.id, sizeValue, sizeUnit, up.unit, up.unit_price]);
-  const { rowCount } = await pool.query(
-    `UPDATE grocery_items SET item = $3, food_type = $4 WHERE id = $1 OR (printed IS NOT NULL AND printed = $2 AND store = $5)`,
-    [g.id, g.printed, item, foodType, g.store]);
+  // Learned: the same printed line is this item on every receipt, past and future, at any store.
+  const key = g.printed ? printedKey(g.printed) : null;
+  if (key) {
+    await pool.query(
+      `INSERT INTO grocery_corrections (printed, item, food_type) VALUES ($1, $2, $3)
+       ON CONFLICT (printed) DO UPDATE SET item = EXCLUDED.item, food_type = EXCLUDED.food_type, updated_at = now()`, [key, item, foodType]);
+  }
+  const { rows: same } = await pool.query('SELECT id, printed FROM grocery_items WHERE printed IS NOT NULL');
+  const ids = [g.id, ...(key ? same.filter((x) => printedKey(x.printed) === key).map((x) => x.id) : [])];
+  const { rowCount } = await pool.query('UPDATE grocery_items SET item = $2, food_type = $3 WHERE id = ANY($1::int[])', [ids, item, foodType]);
   res.json({ updated: rowCount });
 }));
+
+// The monthly grocery budget: a dollar amount, or null to use the typical month.
+router.put('/budget', ah(async (req, res) => {
+  const v = req.body?.budget === null || req.body?.budget === '' ? null : Number(req.body?.budget);
+  if (v != null && (!Number.isFinite(v) || v < 0)) return res.status(400).json({ error: 'The budget is a dollar amount, or blank to use a typical month.' });
+  await pool.query(`INSERT INTO settings (key, value) VALUES ('grocery_budget_month', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [JSON.stringify(v)]);
+  res.json({ budget: v });
+}));
+
+// Re-check receipt dates read the wrong way round (day and month swapped), where the bank entry shows the real day.
+router.post('/recheck-dates', ah(async (req, res) => { res.json({ changed: await recheckReceiptDates() }); }));
 
 router.post('/advice', ah(async (req, res) => {
   try { res.json(await makeAdvice()); } catch (e) {

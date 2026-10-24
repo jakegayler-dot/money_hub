@@ -1602,3 +1602,16 @@ WHERE NOT EXISTS (SELECT 1 FROM expense_categories WHERE lower(name) = 'interest
 -- stand in for the purchases, so they're booked under this category instead
 -- of showing as uncategorized spending. NULL = no category.
 ALTER TABLE credit_cards ADD COLUMN IF NOT EXISTS payment_category_id INTEGER REFERENCES expense_categories(id) ON DELETE SET NULL;
+
+-- Grocery lines follow their receipt's date (Jake, 2026-10-24: dates fixed on a
+-- receipt didn't reach the Groceries page). Safe to repeat.
+UPDATE grocery_items g SET date = (r.extracted->>'date')::date
+FROM receipts r
+WHERE r.id = g.receipt_id AND r.extracted->>'date' ~ '^\d{4}-\d{2}-\d{2}$' AND g.date <> (r.extracted->>'date')::date;
+-- What a printed grocery line turned out to be, fixed by hand: used for every receipt read after.
+CREATE TABLE IF NOT EXISTS grocery_corrections (
+  printed     TEXT PRIMARY KEY,
+  item        TEXT NOT NULL,
+  food_type   TEXT NOT NULL,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);

@@ -74,7 +74,7 @@ router.post('/purchase', ah(async (req, res) => {
   const { purchase, error } = purchaseFromInput(b);
   if (error) return res.status(422).json({ error });
   const months = [12, 18, 24].includes(Number(b.months)) ? Number(b.months) : 12;
-  const scope = ['everything', 'farm', 'personal'].includes(b.scope) ? b.scope : 'everything';
+  const scope = ['everything', 'farm', 'personal', 'grain', 'livestock', 'jake', 'ashley'].includes(b.scope) ? b.scope : 'everything';
   const scenario = { purchases: [purchase] };
   const result = await runAndJudge(scenario, { months, scope, includeTax: true });
   const answer = agentAnswer(result);

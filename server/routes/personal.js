@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
-import { personalPlan } from '../lib/personal.js';
+import { personalPlan, spendingBreakdown } from '../lib/personal.js';
 import { ownerCheck } from '../lib/ownerCheck.js';
 import { todayISO } from '../lib/dates.js';
 
@@ -16,13 +16,31 @@ router.get('/', ah(async (req, res) => {
   res.json(await personalPlan(year));
 }));
 
-// { savings_pct, cap } — cap null or '' for no cap.
+// Where household spending went: ?from=YYYY-MM-DD&to=YYYY-MM-DD (to exclusive; default the last 12 months).
+router.get('/breakdown', ah(async (req, res) => {
+  const today = todayISO();
+  const iso = (d) => (/^\d{4}-\d{2}-\d{2}$/.test(String(d || '')) ? String(d) : null);
+  const to = iso(req.query.to) || new Date(Date.parse(`${today}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
+  const from = iso(req.query.from) || `${Number(today.slice(0, 4)) - 1}${today.slice(4, 7)}-01`;
+  res.json(await spendingBreakdown({ from, to, today }));
+}));
+
+// { savings_pct, cap, mode: 'actual'|'plan', monthly_budget } — cap / monthly_budget null or '' for none.
 router.put('/settings', ah(async (req, res) => {
   const b = req.body || {};
   if (b.savings_pct !== undefined) {
     const pct = Number(b.savings_pct);
     if (!Number.isFinite(pct) || pct < 0 || pct > 100) return res.status(400).json({ error: 'Savings is a percentage from 0 to 100.' });
     await setSetting('personal_savings_pct', pct);
+  }
+  if (b.mode !== undefined) {
+    if (!['actual', 'plan'].includes(b.mode)) return res.status(400).json({ error: 'mode is actual or plan.' });
+    await setSetting('personal_budget_mode', b.mode);
+  }
+  if (b.monthly_budget !== undefined) {
+    const v = b.monthly_budget === null || b.monthly_budget === '' ? null : Number(b.monthly_budget);
+    if (v != null && (!Number.isFinite(v) || v < 0)) return res.status(400).json({ error: 'The monthly budget is a dollar amount, or blank to use what you actually spend.' });
+    await setSetting('personal_discretionary_month', v);
   }
   if (b.cap !== undefined) {
     const cap = b.cap === null || b.cap === '' ? null : Number(b.cap);

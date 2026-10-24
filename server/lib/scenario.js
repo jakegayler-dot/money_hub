@@ -496,7 +496,9 @@ function operatingLine(ev, ctx, cfg, scope) {
   const limit = num(cfg.limit) || 0;
   const rate = (num(cfg.rate) || 0) / 100 / 12;
   const keep = num(cfg.keep) ?? 0;
-  const farm = scope === 'personal' ? 0 : 1;
+  // The line belongs to the view it's run in: one owner's line is that owner's.
+  const farm = ['personal', 'jake', 'ashley'].includes(scope) ? 0 : 1;
+  const owners = ['grain', 'livestock', 'jake', 'ashley'].includes(scope) ? { grain: 0, livestock: 0, jake: 0, ashley: 0, [scope]: 1 } : undefined;
   const flows = [];
   let drawn = 0;
   let carry = 0;
@@ -507,17 +509,17 @@ function operatingLine(ev, ctx, cfg, scope) {
     let bal = m.balance + carry;
     const interest = r2(drawn * rate);
     if (interest > 0) {
-      flows.push({ key: `opline:int:${i}`, kind: 'opline', label: 'Operating line interest', date, amount: -interest, farm,
+      flows.push({ key: `opline:int:${i}`, kind: 'opline', label: 'Operating line interest', date, amount: -interest, farm, owners,
         taxable: -interest * farm, estimate: false, whatif: true, ref: { interest } });
       carry -= interest; bal -= interest; interestTotal += interest;
     }
     if (bal < keep && drawn < limit) {
       const d = r2(Math.min(limit - drawn, keep - bal));
-      flows.push({ key: `opline:draw:${i}`, kind: 'opline', label: 'Operating line draw', date, amount: d, farm, taxable: 0, estimate: false, whatif: true, ref: {} });
+      flows.push({ key: `opline:draw:${i}`, kind: 'opline', label: 'Operating line draw', date, amount: d, farm, owners, taxable: 0, estimate: false, whatif: true, ref: {} });
       carry += d; drawn += d;
     } else if (bal > keep && drawn > 0) {
       const rp = r2(Math.min(drawn, bal - keep));
-      flows.push({ key: `opline:repay:${i}`, kind: 'opline', label: 'Operating line repaid', date, amount: -rp, farm, taxable: 0, estimate: false, whatif: true, ref: {} });
+      flows.push({ key: `opline:repay:${i}`, kind: 'opline', label: 'Operating line repaid', date, amount: -rp, farm, owners, taxable: 0, estimate: false, whatif: true, ref: {} });
       carry -= rp; drawn -= rp;
     }
     peak = Math.max(peak, drawn);
@@ -603,7 +605,7 @@ const trimTrajectory = (ev) => ({
  * the impact of each group of levers in order.
  */
 export function runScenario(ctx, sc = {}, opts = {}) {
-  const o = { scope: opts.scope || 'everything', accounts: opts.accounts || null, includeTax: opts.includeTax !== false };
+  const o = { scope: opts.scope || 'everything', accounts: opts.accounts || null, includeTax: opts.includeTax === true };
   ctx.groupOf = ctx.groupOf || ((item) => {
     const f = ctx.flows.find((x) => x.kind === 'inventory' && x.ref.inventory_id === item.inventory_id);
     return f?.ref.group;

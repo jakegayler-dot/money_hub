@@ -18,13 +18,20 @@
 //
 // What's left of the limit is spread evenly over the months left in the
 // year; the Cash Flow forecast spends exactly that, so it assumes the
-// budget is kept. The household share of every line counts as paid (GST
+// budget is kept.
+//
+// That profit-based plan is opt-in now (Jake, 2026-10-24: tax predictions
+// are never factored in by default). By default ('actual') discretionary is
+// what the household actually spends — the median of the last six full
+// months — or a monthly budget you set; no profit, no tax. The household share of every line counts as paid (GST
 // in), the same rule as Income & Expenses.
 import { pool, getSetting } from '../db.js';
 import { EARNING_COLUMNS, lineValue } from './earnings.js';
+import { ownerWeights } from './segments.js';
 import { toISODate, todayISO } from './dates.js';
 
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+const median = (xs) => { const a = [...xs].sort((x, y) => x - y); if (!a.length) return 0; const m = Math.floor(a.length / 2); return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2; };
 const ym = (d) => toISODate(d).slice(0, 7);
 const pad = (n) => String(n).padStart(2, '0');
 
@@ -110,9 +117,10 @@ export async function essentialsModel(today = todayISO(), buckets = null) {
   // A month with no essential spending at all is a gap in the records, not a free month.
   const months = [...byMonth].filter(([k, v]) => k <= lastFull && v > 0.005);
   const full = months.length >= 12;
-  const avg = months.length ? months.reduce((s, [, v]) => s + v, 0) / months.length : 0;
+  // The typical month: the median, so one big month (a repair, a lump card payment) doesn't set the forecast.
+  const avg = median(months.map(([, v]) => v));
   return {
-    basis: full ? 'same month last year' : months.length ? `average of the ${months.length} month${months.length === 1 ? '' : 's'} on file, weighted toward the same month last year where there is one` : 'no history yet',
+    basis: full ? 'same month last year' : months.length ? `the typical (median) month of the ${months.length} on file, weighted toward the same month last year where there is one` : 'no history yet',
     months: months.map(([k, v]) => ({ month: k, amount: r2(v) })),
     // The same month last year carries weight as history builds: all of it
     // with a full year, months/12 of it before that (the rest from the
@@ -130,8 +138,10 @@ export async function essentialsModel(today = todayISO(), buckets = null) {
 export async function personalPlan(year, { tax = null, today = todayISO() } = {}) {
   const { farmIncomeTax, reserveStatus } = await loadDeps();
   const cats = await categoryBuckets();
+  const mode = String(await getSetting('personal_budget_mode', 'actual')) === 'plan' ? 'plan' : 'actual';
+  const monthSetting = await getSetting('personal_discretionary_month', null);
   const [taxRes, savingsPct, capSetting, reserve, ess] = await Promise.all([
-    tax ? Promise.resolve(tax) : farmIncomeTax(year).catch(() => null),
+    mode === 'plan' ? (tax ? Promise.resolve(tax) : farmIncomeTax(year).catch(() => null)) : Promise.resolve(null),
     getSetting('personal_savings_pct', 20),
     getSetting('personal_discretionary_cap', null),
     reserveStatus(year).catch(() => null),
@@ -174,11 +184,23 @@ export async function personalPlan(year, { tax = null, today = todayISO() } = {}
 
   const before = afterTax + cca - capex - principal + householdIncome - reserveTopUp - savings - essentials;
   const cap = capSetting == null || capSetting === '' ? null : Number(capSetting);
-  const limit = Math.max(0, cap != null ? Math.min(before, cap) : before);
   const spentYTD = [...discSpent.values()].reduce((s, v) => s + v, 0);
   const monthsLeft = year === Number(curKey.slice(0, 4)) ? 13 - Number(curKey.slice(5, 7)) : year > Number(curKey.slice(0, 4)) ? 12 : 0;
+  // Actual (the default): what's really spent on discretionary, the median of the last six full months
+  // (a month with none counts as none), or the monthly budget you set.
+  const disc6 = await discretionaryHistory(today, cats);
+  const typicalDisc = median(disc6.map((m) => m.amount));
+  const setMonth = monthSetting == null || monthSetting === '' ? null : Number(monthSetting);
+  let limit;
+  let perMonth;
+  if (mode === 'actual') {
+    perMonth = setMonth != null ? setMonth : typicalDisc;
+    limit = spentYTD + perMonth * monthsLeft;
+  } else {
+    limit = Math.max(0, cap != null ? Math.min(before, cap) : before);
+    perMonth = monthsLeft ? Math.max(0, limit - spentYTD) / monthsLeft : 0;
+  }
   const remaining = limit - spentYTD;
-  const perMonth = monthsLeft ? Math.max(0, remaining) / monthsLeft : 0;
 
   const steps = [
     { key: 'profit', label: 'Farm profit this year (projected)', amount: profit },
@@ -194,7 +216,8 @@ export async function personalPlan(year, { tax = null, today = todayISO() } = {}
 
   // Pace: the last two complete months against a month of the limit. Two
   // in a row more than 15% over means the budget isn't what's happening.
-  const monthBudget = limit / 12;
+  // Actual mode warns only against a budget you set; the plan warns against its limit.
+  const monthBudget = mode === 'actual' ? (setMonth ?? 0) : limit / 12;
   const lastTwo = monthKeys.filter((k) => k < curKey).slice(-2).map((k) => ({ month: k, spent: r2(discSpent.get(k)) }));
   const overBoth = lastTwo.length === 2 && monthBudget > 0 && lastTwo.every((m) => m.spent > monthBudget * 1.15);
   const pace = {
@@ -204,6 +227,7 @@ export async function personalPlan(year, { tax = null, today = todayISO() } = {}
   };
 
   return {
+    mode, monthly_budget: setMonth, typical_discretionary: r2(typicalDisc), discretionary_history: disc6,
     year, as_of: today, tax_available: !!basis, pace,
     steps, before_cap: r2(before), cap, limit: r2(limit), capped: cap != null && before > cap,
     savings_pct: pct, savings: r2(savings),
@@ -226,6 +250,20 @@ export async function personalPlan(year, { tax = null, today = todayISO() } = {}
     })(),
     uncategorized: r2(spending.filter((l) => l.category === 'Uncategorized').reduce((t, l) => t + l.amount, 0)),
   };
+}
+
+/** Discretionary spending in each of the last six full months (0 where there was none). */
+async function discretionaryHistory(today, cats) {
+  const cur = ym(today);
+  const from = shiftMonth(cur, -6);
+  const { rows: [first] } = await pool.query('SELECT MIN(date) AS d FROM transactions');
+  const start = first?.d ? shiftMonth(ym(first.d), 1) : cur; // the first month on file is usually partial
+  const keys = monthsBetween(from > start ? from : start, shiftMonth(cur, -1));
+  if (!keys.length) return [];
+  const { spending } = await householdLines(`${keys[0]}-01`, `${cur}-01`, cats);
+  const by = new Map(keys.map((k) => [k, 0]));
+  for (const l of spending) if (l.bucket === 'discretionary' && by.has(l.month)) by.set(l.month, by.get(l.month) + l.amount);
+  return [...by].map(([month, amount]) => ({ month, amount: r2(amount) }));
 }
 
 const addDay = (d) => { const t = new Date(`${d}T00:00:00Z`); t.setUTCDate(t.getUTCDate() + 1); return t.toISOString().slice(0, 10); };
@@ -258,9 +296,79 @@ export async function personalFlows({ meta, today, tax, known }) {
     if (key === curKey) essential -= spentThisMonth.essential; // already spent this month is in the bank balance
     // This year: what's left of the limit, spread over the months left (this month's spending is already out of it).
     // Next year: this year's limit a month at a time, until next year's plan takes over.
-    const disc = m.year === thisYear ? plan.discretionary.per_month : plan.limit / 12;
+    const disc = m.year === thisYear || plan.mode === 'actual' ? plan.discretionary.per_month : plan.limit / 12;
     if (essential > 0.5) out.push({ key: `personal:ess:${key}`, kind: 'personal', label: 'Personal essentials (from what you spend)', date, amount: -r2(essential), farm: 0, estimate: true, ref: { bucket: 'essential' } });
     if (disc > 0.5) out.push({ key: `personal:disc:${key}`, kind: 'personal', label: 'Discretionary budget', date, amount: -r2(disc), farm: 0, estimate: true, ref: { bucket: 'discretionary' } });
   }
   return { flows: out, plan };
+}
+
+/**
+ * Where household spending went from `from` to `to` (exclusive): by main
+ * category and subcategory (with the payees behind each), by person, by
+ * bucket, plus the last 12 months by bucket and the months ahead as
+ * forecast. The Personal page draws its charts from this.
+ */
+export async function spendingBreakdown({ from, to, today = todayISO() }) {
+  const cats = await categoryBuckets();
+  const byId = new Map(cats.map((c) => [c.id, c]));
+  const { rows: catRows } = await pool.query('SELECT c.id, c.name, c.kind, p.name AS parent FROM expense_categories c LEFT JOIN expense_categories p ON p.id = c.parent_id');
+  const meta = new Map(catRows.map((c) => [c.id, c]));
+  const { rows } = await pool.query(
+    `SELECT ${EARNING_COLUMNS}, l.date, l.category_id, p.name AS payee, t.description, t.account_id AS tx_account, t.credit_card_id AS tx_card
+     FROM transaction_lines l JOIN transactions t ON t.id = l.transaction_id
+     LEFT JOIN loan_payments lp ON lp.linked_transaction_id = l.transaction_id
+     LEFT JOIN payees p ON p.id = t.payee_id
+     WHERE l.is_transfer = false AND (l.is_debt_service = false OR l.split_id IS NOT NULL) AND l.date >= $1 AND l.date < $2`, [from, to]);
+  const groups = new Map();
+  const people = { jake: 0, ashley: 0, unassigned: 0 };
+  const buckets = { essential: 0, discretionary: 0 };
+  let total = 0;
+  for (const l of rows) {
+    if (l.is_capex) continue;
+    const v = -lineValue(l, 'household');
+    if (Math.abs(v) < 0.005) continue;
+    const m = l.category_id ? meta.get(l.category_id) : null;
+    if (m?.kind === 'income' || (!m && v < 0)) continue; // money in isn't spending
+    const cardPayment = !!(l.tx_account && l.tx_card);
+    const parent = m ? (m.parent || m.name) : cardPayment ? 'Card payments (not itemized)' : 'Uncategorized';
+    const child = m ? (m.parent ? m.name : m.name) : cardPayment ? 'Card payments (not itemized)' : 'Uncategorized';
+    const bucket = l.category_id ? (byId.get(l.category_id)?.bucket || 'essential') : 'essential';
+    const g = groups.get(parent) || { name: parent, amount: 0, essential: 0, discretionary: 0, children: new Map() };
+    g.amount += v; g[bucket] += v;
+    const c = g.children.get(child) || { name: child, amount: 0, count: 0, payees: new Map() };
+    c.amount += v; c.count++;
+    const who = l.payee || l.description || '(no payee)';
+    c.payees.set(who, (c.payees.get(who) || 0) + v);
+    g.children.set(child, c);
+    groups.set(parent, g);
+    const w = ownerWeights(l);
+    const personal = w.jake + w.ashley + w.unassigned || 1;
+    people.jake += v * (w.jake / personal); people.ashley += v * (w.ashley / personal); people.unassigned += v * (w.unassigned / personal);
+    buckets[bucket] += v;
+    total += v;
+  }
+  const categories = [...groups.values()].map((g) => ({
+    name: g.name, amount: r2(g.amount), essential: r2(g.essential), discretionary: r2(g.discretionary),
+    children: [...g.children.values()].map((c) => ({
+      name: c.name, amount: r2(c.amount), count: c.count,
+      payees: [...c.payees].map(([name, amount]) => ({ name, amount: r2(amount) })).sort((a, b) => b.amount - a.amount).slice(0, 6),
+    })).sort((a, b) => b.amount - a.amount),
+  })).filter((g) => g.amount > 0.005).sort((a, b) => b.amount - a.amount);
+
+  // The last 12 full months and this one, by bucket; then the months ahead as Cash Flow forecasts them.
+  const cur = ym(today);
+  const histFrom = shiftMonth(cur, -12);
+  const { spending } = await householdLines(`${histFrom}-01`, addDay(today), cats);
+  const hist = new Map(monthsBetween(histFrom, cur).map((k) => [k, { month: k, essential: 0, discretionary: 0 }]));
+  for (const l of spending) { const h = hist.get(l.month); if (h) h[l.bucket] += l.amount; }
+  const plan = await personalPlan(Number(cur.slice(0, 4)), { today });
+  const ess = await essentialsModel(today, cats);
+  const ahead = [1, 2, 3].map((n) => { const k = shiftMonth(cur, n); return { month: k, essential: ess.estimate(k), discretionary: plan.discretionary.per_month, forecast: true }; });
+  return {
+    from, to, total: r2(total), buckets: { essential: r2(buckets.essential), discretionary: r2(buckets.discretionary) },
+    people: { jake: r2(people.jake), ashley: r2(people.ashley), unassigned: r2(people.unassigned) },
+    categories,
+    months: [...[...hist.values()].map((h) => ({ ...h, essential: r2(h.essential), discretionary: r2(h.discretionary), partial: h.month === cur })), ...ahead],
+  };
 }

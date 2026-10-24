@@ -131,8 +131,9 @@ router.get('/', ah(async (req, res) => {
     for (const d of occurrences(e, today, endStr)) estimated[idx(d)] += signedAmount(e) * weight;
   }
   // The farm's Dec 31 income tax instalment — personal tax, so it sits
-  // with Jake (and Combined), as an estimate until it's marked paid.
-  if (w({ segment: 'jake' })) {
+  // with Jake (and Combined), as an estimate until it's marked paid. Tax
+  // predictions are left out unless asked for (?tax=1) (Jake, 2026-10-24).
+  if (w({ segment: 'jake' }) && req.query.tax === '1') {
     try {
       const tax = await farmIncomeTax(y0);
       const due = tax.instalment.due;
