@@ -82,3 +82,12 @@ test('household split: by who spends it, with what the farm account pays kept ap
   const all = evaluate(flows, ctx, { scope: 'everything' });
   assert.equal(all.trajectory[1].items.length, 5);
 });
+
+test('a card purchase in the household split: its card paid from the farm account is farm-funded (Oct 24: the payer lookup was unpacked as rows and every forecast crashed)', async () => {
+  const farm = (await one(`INSERT INTO accounts (name, ledger, account_type, opening_balance, segment) VALUES ('Farm 2', 'business', 'operating', 0, 'grain') RETURNING id`)).id;
+  const card = (await one(`INSERT INTO credit_cards (name, issuer, last4, apr_purchase, segment) VALUES ('Her Visa', 'TD', '1111', 20.99, 'ashley') RETURNING id`)).id;
+  await db.query(`INSERT INTO transactions (credit_card_id, ledger, date, amount, description, segment) VALUES ($1, 'personal', '2026-09-12', -400, 'Co-op', 'ashley')`, [card]);
+  await db.query(`INSERT INTO transactions (account_id, credit_card_id, ledger, date, amount, description, is_transfer) VALUES ($1, $2, 'business', '2026-09-20', -400, 'VISA PAYMENT', true)`, [farm, card]);
+  const s = await ownerSplits(TODAY);
+  assert.ok(s.household.farm > 0.2, `the farm-paid card counts as farm-funded (${JSON.stringify(s.household)})`);
+});

@@ -104,7 +104,7 @@ export function shareFor(scope, x, splits = EVEN) {
  * when it's paid from a farm account (a farm-paid card's purchases too).
  */
 export async function ownerSplits(today = todayISO(), db = pool) {
-  const [{ rows: lines }, { rows: payers }] = await Promise.all([
+  const [{ rows: lines }, payers] = await Promise.all([ // cardPayers gives a Map, not rows
     db.query(
       `SELECT l.amount, l.ledger, l.account_id, l.credit_card_id, l.segment, l.is_segment_split, l.segment_grain_pct, l.segment_livestock_pct,
               l.segment_jake_pct, l.segment_ashley_pct, a.ledger AS acct_ledger, a.segment AS acct_segment, a.is_segment_split AS acct_split,
