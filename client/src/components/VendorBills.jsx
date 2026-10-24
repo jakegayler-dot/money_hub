@@ -1,13 +1,14 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { uploadBody } from '../pages/Receipts.jsx';
+import { removeDoc } from '../removeDoc.js';
 import { money, localToday } from '../format.js';
 import { cents } from './SplitEditor.jsx';
 import CategorySelect from './CategorySelect.jsx';
 import MetricCard from './MetricCard.jsx';
-import { OwnerFields, ownerPayload, ownerSummary, ownerFieldsFrom, emptyOwnerFields } from '../owners.jsx';
+import { OwnerFields, ownerPayload, ownerSummary, ownerFieldsFrom, emptyOwnerFields, OWNER_LABELS } from '../owners.jsx';
 
 const today = () => localToday();
-const KIND = { prepayment: 'Prepayment (applied to bills)', refundable: 'Refundable deposit' };
+const KIND = { prepayment: 'Prepayment (applied to bills)', refundable: 'Refundable deposit', credit: 'Credit (no cash moved)' };
 const CREDIT_STATUS = { open: 'Held', used: 'All applied', refunded: 'Refunded', kept: 'Kept by vendor' };
 
 /**
@@ -279,7 +280,7 @@ function BillSummaryCards({ s, account, onPickVendor, onShowLine, onShowAccount 
   );
   const TITLE = {
     owing: 'Owing on bills', overdue: 'Overdue', due_30: 'Due in the next 30 days', held: 'Credit held — deposits and overpayments',
-    financed: 'Financed bills — running interest', scheduled: 'Scheduled — recurring, not billed yet', free_ending: 'Interest-free ending soon',
+    financed: 'Bills charging interest', scheduled: 'Scheduled — recurring, not billed yet', free_ending: 'Interest-free ending soon',
   };
   const list = open ? items[open] || [] : [];
   const total = list.reduce((a, i) => a + i.amount, 0);
@@ -349,7 +350,7 @@ function BillSummaryCards({ s, account, onPickVendor, onShowLine, onShowAccount 
   );
 }
 
-const KIND_LABEL = { opening: 'Opening', spot: 'Paid at purchase', received: 'Paid to you', onaccount: 'On account', bill: 'Bill', adjust: 'Adjustment', interest: 'Interest', deposit: 'Deposit', payment: 'Payment', diff: 'Difference', marked: 'Paid', refund: 'Refund', kept: 'Kept' };
+const KIND_LABEL = { opening: 'Opening', spot: 'Paid at purchase', received: 'Paid to you', onaccount: 'On account', bill: 'Bill', adjust: 'Adjustment', interest: 'Interest', deposit: 'Deposit', credit: 'Credit', payment: 'Payment', diff: 'Difference', marked: 'Paid', refund: 'Refund', kept: 'Kept' };
 
 /**
  * The vendor's standing settings: an owner split every new bill and entry
@@ -561,7 +562,7 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
         <button type="button" className="small" aria-expanded={adding === 'charge'} onClick={() => setAdding(adding === 'charge' ? null : 'charge')}>Add charge</button>
         <button type="button" className="small" aria-expanded={adding === 'payment'} onClick={() => setAdding(adding === 'payment' ? null : 'payment')}>Add payment</button>
         <button type="button" className="small secondary" aria-expanded={showActions} onClick={() => setShowActions(!showActions)}>
-          {showActions ? 'Hide' : 'Pay bills or record a deposit'}
+          {showActions ? 'Hide' : 'Pay bills, deposits and credits'}
         </button>
         {!recOn && !form && (
           <button type="button" className="small secondary" onClick={() => setForm({ statement_date: today(), statement_balance: '' })}>Reconcile to a statement</button>
@@ -644,11 +645,18 @@ function VendorAccount({ payeeId, reload, open, name, accounts, categories, call
                     {(l.docs || editable(l)) && (
                       <span className="stmt-icons">
                         {(l.docs || []).map((d, i) => (
-                          <a key={d.id} href={`/api/receipts/${d.id}/image`} target="_blank" rel="noreferrer" className="stmt-icon has-doc"
-                            title={`Open ${d.mime === 'application/pdf' ? 'PDF' : 'photo'}${l.docs.length > 1 ? ` ${i + 1}` : ''}`}
-                            aria-label={`Open ${d.mime === 'application/pdf' ? 'PDF' : 'photo'}${l.docs.length > 1 ? ` ${i + 1}` : ''} for ${l.label}`}>
-                            <Icon name={d.mime === 'application/pdf' ? 'doc' : 'image'} />
-                          </a>
+                          <Fragment key={d.id}>
+                            <a href={`/api/receipts/${d.id}/image`} target="_blank" rel="noreferrer" className="stmt-icon has-doc"
+                              title={`Open ${d.mime === 'application/pdf' ? 'PDF' : 'photo'}${l.docs.length > 1 ? ` ${i + 1}` : ''}`}
+                              aria-label={`Open ${d.mime === 'application/pdf' ? 'PDF' : 'photo'}${l.docs.length > 1 ? ` ${i + 1}` : ''} for ${l.label}`}>
+                              <Icon name={d.mime === 'application/pdf' ? 'doc' : 'image'} />
+                            </a>
+                            <button type="button" className="stmt-icon stmt-doc-x" title={`Delete this ${d.mime === 'application/pdf' ? 'PDF' : 'photo'}`}
+                              aria-label={`Delete ${d.mime === 'application/pdf' ? 'PDF' : 'photo'}${l.docs.length > 1 ? ` ${i + 1}` : ''} on ${l.label}`}
+                              onClick={async () => { if (await removeDoc(d, `the ${d.mime === 'application/pdf' ? 'PDF' : 'photo'} on ${l.label}`)) await load(); }}>
+                              <Icon name="close" />
+                            </button>
+                          </Fragment>
                         ))}
                         {l.docs && (
                           <button type="button" className="stmt-icon" disabled={busy === l.key} onClick={() => pickFor(l)}
@@ -801,6 +809,8 @@ function VendorDetail({ v, accounts, categories, call }) {
   const [refundFor, setRefundFor] = useState(null);
   const [keepFor, setKeepFor] = useState(null);
   const [payments, setPayments] = useState([]);
+  const [applying, setApplying] = useState(null); // { bill, credit_id, amount, paid_date }
+  const [credit, setCredit] = useState(null); // form state for a credit with no cash
   const pickedTotal = v.bills.filter((b) => picked.has(b.id)).reduce((s, b) => s + b.owing, 0);
   const openCredits = v.credits.filter((c) => c.status === 'open');
 
@@ -820,12 +830,28 @@ function VendorDetail({ v, accounts, categories, call }) {
                 setPicked(n);
               }} />
               {' '}{b.due_date} · {b.name} · <span className="nowrap">{cents(b.owing)}</span>
-              {b.applied > 0 && <span className="tag">deposit applied {cents(b.applied)}</span>}
-              {openCredits.length > 0 && (
-                <select aria-label="Apply a deposit" value="" onChange={(e) => e.target.value && call('POST', `/api/bills/credits/${e.target.value}/apply`, { bill_id: b.id }, 'apply the deposit')}>
-                  <option value="">Apply a deposit…</option>
-                  {openCredits.map((c) => <option key={c.id} value={c.id}>{cents(c.remaining)} held since {c.date}</option>)}
+              {b.applied > 0 && <span className="tag">credit applied {cents(b.applied)}</span>}
+              {openCredits.length > 0 && applying?.bill.id !== b.id && (
+                <select aria-label="Apply a deposit or credit" value="" onChange={(e) => {
+                  const c = openCredits.find((x) => String(x.id) === e.target.value);
+                  if (c) setApplying({ bill: b, credit_id: c.id, amount: String(Math.min(c.remaining, b.owing).toFixed(2)), paid_date: b.bill_date || today() });
+                }}>
+                  <option value="">Apply a deposit or credit…</option>
+                  {openCredits.map((c) => <option key={c.id} value={c.id}>{cents(c.remaining)} {c.kind === 'credit' ? 'credit' : 'held'} since {c.date}</option>)}
                 </select>
+              )}
+              {applying?.bill.id === b.id && (
+                <span className="contract-actions apply-form">
+                  <span className="split-lines">Apply</span>
+                  <input type="number" step="0.01" min="0.01" aria-label="Amount to apply" style={{ width: 110 }} value={applying.amount}
+                    onChange={(e) => setApplying({ ...applying, amount: e.target.value })} />
+                  <span className="split-lines">paid on</span>
+                  <input type="date" aria-label="Paid on" value={applying.paid_date} onChange={(e) => setApplying({ ...applying, paid_date: e.target.value })} />
+                  <button type="button" className="small" disabled={!(Number(applying.amount) > 0) || !applying.paid_date}
+                    onClick={() => call('POST', `/api/bills/credits/${applying.credit_id}/apply`, { bill_id: b.id, amount: Number(applying.amount), paid_date: applying.paid_date }, 'apply it')
+                      .then((ok) => ok && setApplying(null))}>Apply</button>
+                  <button type="button" className="small-link" onClick={() => setApplying(null)}>Cancel</button>
+                </span>
               )}
             </label>
           ))}
@@ -848,7 +874,12 @@ function VendorDetail({ v, accounts, categories, call }) {
 
       {v.payee_id && (
         <div className="vendor-block">
-          <div className="split-lines" style={{ fontWeight: 600 }}>Deposits with {v.name}</div>
+          <div className="split-lines" style={{ fontWeight: 600 }}>Deposits and credits with {v.name}</div>
+          <label className="split-lines" title="Off: credits wait for you to apply them, in part if you like">
+            <input type="checkbox" checked={v.auto_apply !== false}
+              onChange={(e) => call('PUT', `/api/bills/vendors/${v.payee_id}/auto-apply`, { on: e.target.checked }, 'change it')} />
+            {' '}Apply credits to this vendor's bills automatically, oldest first
+          </label>
           {v.credits.length === 0 && <div className="split-lines">None.</div>}
           {v.credits.map((c) => (
             <div key={c.id} className="split-lines">
@@ -865,7 +896,7 @@ function VendorDetail({ v, accounts, categories, call }) {
                 <button type="button" className="small-link" onClick={() => { setRefundFor(c.id); loadPayments('in'); }}>Refunded…</button>
               )}{' '}
               {c.status === 'open' && <button type="button" className="small-link" onClick={() => setKeepFor(c.id)}>Vendor kept it…</button>}{' '}
-              <button type="button" className="small-link" onClick={() => window.confirm('Remove this deposit record? Its payment stays in the ledger.') && call('DELETE', `/api/bills/credits/${c.id}`, null, 'remove it')}>Remove</button>
+              <button type="button" className="small-link" onClick={() => window.confirm(c.kind === 'credit' ? 'Remove this credit? It comes off the books, and any bill it paid reopens.' : 'Remove this deposit record? Its payment stays in the ledger.') && call('DELETE', `/api/bills/credits/${c.id}`, null, 'remove it')}>Remove</button>
               {refundFor === c.id && (
                 <div className="contract-actions">
                   <span className="split-lines">Which deposit was the refund?</span>
@@ -920,11 +951,37 @@ function VendorDetail({ v, accounts, categories, call }) {
               </button>
               <button type="button" className="small secondary" onClick={() => setDeposit(null)}>Cancel</button>
             </div>
+          ) : credit ? (
+            <div className="contract-actions">
+              <span className="split-lines">Credit from {v.name}, no cash moved</span>
+              <input type="number" step="0.01" min="0.01" placeholder="Amount" aria-label="Credit amount" style={{ width: 110 }} value={credit.amount}
+                onChange={(e) => setCredit({ ...credit, amount: e.target.value })} />
+              <input type="date" aria-label="Credit date" value={credit.date} onChange={(e) => setCredit({ ...credit, date: e.target.value })} />
+              <CategorySelect categories={categories} value={credit.category_id} onChange={(id) => setCredit({ ...credit, category_id: id })} />
+              <select aria-label="Whose income" value={credit.segment} onChange={(e) => setCredit({ ...credit, segment: e.target.value })}>
+                {Object.entries(OWNER_LABELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
+              <input placeholder="What it's for (e.g. canola contra)" aria-label="Note" value={credit.note} onChange={(e) => setCredit({ ...credit, note: e.target.value })} />
+              <button type="button" className="small" disabled={!(Number(credit.amount) > 0) || !credit.date || !credit.category_id}
+                onClick={() => call('POST', '/api/bills/credits', {
+                  payee_id: v.payee_id, kind: 'credit', amount: Number(credit.amount), date: credit.date,
+                  category_id: Number(credit.category_id), segment: credit.segment, note: credit.note.trim() || null,
+                }, 'record the credit').then((ok) => ok && setCredit(null))}>
+                Save credit
+              </button>
+              <button type="button" className="small secondary" onClick={() => setCredit(null)}>Cancel</button>
+            </div>
           ) : (
-            <button type="button" className="small secondary" style={{ marginTop: 4 }}
-              onClick={() => { setDeposit({ kind: 'prepayment', transaction_id: '', account_id: '', amount: '', date: today() }); loadPayments('out'); }}>
-              Record a deposit
-            </button>
+            <div className="contract-actions" style={{ marginTop: 4 }}>
+              <button type="button" className="small secondary"
+                onClick={() => { setDeposit({ kind: 'prepayment', transaction_id: '', account_id: '', amount: '', date: today() }); loadPayments('out'); }}>
+                Record a deposit
+              </button>
+              <button type="button" className="small secondary"
+                onClick={() => setCredit({ amount: '', date: today(), category_id: '', segment: 'grain', note: '' })}>
+                Add a credit (no cash)
+              </button>
+            </div>
           )}
         </div>
       )}

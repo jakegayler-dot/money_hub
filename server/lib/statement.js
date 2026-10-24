@@ -187,7 +187,7 @@ export async function loadStatement(today = todayISO()) {
     if (billDate(b) > today) { scheduled += owing; continue; }
     add('payables', b.payee_name && !b.name.toLowerCase().startsWith(b.payee_name.toLowerCase()) ? `${b.payee_name} — ${b.name}` : b.name, owing, b, { due: toISODate(b.due_date) });
   }
-  for (const c of credits.rows) add('prepaid', `${c.payee_name} — ${c.kind === 'refundable' ? 'refundable deposit' : 'prepayment'}`, Number(c.remaining), c);
+  for (const c of credits.rows) add('prepaid', `${c.payee_name} — ${c.kind === 'refundable' ? 'refundable deposit' : c.kind === 'credit' ? 'credit' : 'prepayment'}`, Number(c.remaining), c);
 
   // Inventory.
   for (const i of sheet.inventoryRows) {

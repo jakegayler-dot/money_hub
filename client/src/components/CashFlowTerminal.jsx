@@ -29,7 +29,7 @@ const kfmt = (v) => {
 const signed = (v) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${money(Math.abs(Math.round(v)))}`;
 
 const KIND_LABEL = {
-  contract: 'Contract', estimate_in: 'Estimated sale', inventory: 'Inventory sale', bill: 'Bill', loan: 'Loan payment',
+  contract: 'Contract', estimate_in: 'Estimated sale', inventory: 'Inventory sale', bill: 'Bill', loan: 'Loan payment', lease: 'Lease payment',
   card: 'Card statement', fee: 'Account fees', tax: 'Income tax', gst: 'GST', estimate_out: 'Estimated cost',
   whatif: 'What-if', opline: 'Operating line', personal: 'Personal spending',
 };
@@ -314,7 +314,7 @@ export default function CashFlowTerminal({ liquidity, scenario = null, scenarioN
   );
 }
 
-const FLOOR_PARTS = [['loans', 'Loan payments'], ['bills', 'Bills'], ['cards', 'Card statements'], ['tax', 'Tax and GST'], ['household', 'Household essentials'], ['fees', 'Fees']];
+const FLOOR_PARTS = [['loans', 'Loan and lease payments'], ['bills', 'Bills'], ['cards', 'Card statements'], ['tax', 'Tax and GST'], ['household', 'Household essentials'], ['fees', 'Fees']];
 const floorTitle = (parts) => (parts ? FLOOR_PARTS.filter(([k]) => parts[k] >= 1).map(([k, l]) => `${l} ${money(Math.round(parts[k]))}`).join('\n') : undefined);
 
 /** Everything behind one month: money in and out, item by item. */

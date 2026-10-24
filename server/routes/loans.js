@@ -379,6 +379,8 @@ router.post('/:id/verify', ah(async (req, res) => {
           anchor,
           anchorOffset: k,
           payment: P,
+          promoUntil: loan.promo_until && toISODate(loan.promo_until) > verified_on ? toISODate(loan.promo_until) : null,
+          promoRetro: !!loan.promo_retro, startDate: toISODate(loan.start_date),
         });
       } catch (e) {
         const err = new Error(e.message);
@@ -452,7 +454,7 @@ router.post('/', ah(async (req, res) => {
     name, lender, purpose, linked_asset = null, principal, interest_rate_pct,
     rate_type = 'fixed', term_months, start_date, covenant_notes = null,
     covenant_date = null, custom_schedule = null, segment = null, asset_id = null,
-    payment_frequency = 'monthly', first_payment_date = null,
+    payment_frequency = 'monthly', first_payment_date = null, promo_until = null, promo_retro = false,
   } = req.body;
   checkFrequency(payment_frequency);
   const ownerErr = validateSegment(req.body);
@@ -475,11 +477,15 @@ router.post('/', ah(async (req, res) => {
        payment_frequency, first_payment_date || null, isSplit, gPct, lPct, jPct, aPct]
     );
     const created = rows[0];
+    if (promo_until) {
+      await client.query('UPDATE loans SET promo_until = $2, promo_retro = $3 WHERE id = $1', [created.id, promo_until, !!promo_retro]);
+      Object.assign(created, { promo_until, promo_retro: !!promo_retro });
+    }
     // `custom_schedule` lets a loan mirror seasonal income (larger payments
     // after harvest, smaller off-season) — an array of
     // { due_date, principal_amount, interest_amount }.
     const schedule = custom_schedule || scheduleFromTerms({
-      principal, interest_rate_pct, term_months, start_date, payment_frequency, first_payment_date,
+      principal, interest_rate_pct, term_months, start_date, payment_frequency, first_payment_date, promo_until, promo_retro,
     });
     for (const row of schedule) {
       await client.query(
@@ -523,6 +529,8 @@ router.patch('/:id', ah(async (req, res) => {
       first_payment_date: b.first_payment_date !== undefined
         ? (b.first_payment_date || null)
         : (cur.first_payment_date ? toISODate(cur.first_payment_date) : null),
+      promo_until: b.promo_until !== undefined ? (b.promo_until || null) : (cur.promo_until ? toISODate(cur.promo_until) : null),
+      promo_retro: b.promo_retro !== undefined ? !!b.promo_retro : !!cur.promo_retro,
     };
 
     const { rows: updatedRows } = await client.query(
@@ -539,6 +547,8 @@ router.patch('/:id', ah(async (req, res) => {
        next.payment_frequency, next.first_payment_date, req.params.id, isSplit, gPct, lPct, jPct, aPct]
     );
     const updated = updatedRows[0];
+    await client.query('UPDATE loans SET promo_until = $2, promo_retro = $3 WHERE id = $1', [updated.id, next.promo_until, next.promo_retro]);
+    Object.assign(updated, { promo_until: next.promo_until, promo_retro: next.promo_retro });
     // What the loan shows up as on statements ("AAFC LOAN", "FCC PAD"), comma-separated.
     if (b.statement_names !== undefined) {
       await client.query('UPDATE loans SET statement_names = $2 WHERE id = $1', [updated.id, String(b.statement_names || '').trim() || null]);
@@ -551,7 +561,9 @@ router.patch('/:id', ah(async (req, res) => {
       Number(next.term_months) !== Number(cur.term_months) ||
       next.start_date !== toISODate(cur.start_date) ||
       next.payment_frequency !== (cur.payment_frequency || 'monthly') ||
-      (next.first_payment_date || null) !== (cur.first_payment_date ? toISODate(cur.first_payment_date) : null);
+      (next.first_payment_date || null) !== (cur.first_payment_date ? toISODate(cur.first_payment_date) : null) ||
+      (next.promo_until || null) !== (cur.promo_until ? toISODate(cur.promo_until) : null) ||
+      next.promo_retro !== !!cur.promo_retro;
 
     if (termsChanged) {
       await client.query('DELETE FROM loan_payments WHERE loan_id = $1', [updated.id]);

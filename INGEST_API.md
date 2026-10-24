@@ -268,6 +268,48 @@ A transfer: `"category": "[Other Account Name]"` (Quicken's own form) or `"trans
 
 ---
 
+## 8. Paystubs — `POST /api/paystubs/ingest`
+
+For Ashley's agent. **Its own key:** header `X-Api-Key: <PAYSTUB_API_KEY>` (not the ingest key). That key can file paystubs and read the paystub analysis, nothing else. `503` until `PAYSTUB_API_KEY` is set in Railway.
+
+- `GET /api/paystubs/ingest` — the fields, with an example.
+- `POST /api/paystubs/ingest` — `{ "stubs": [ … ] }` (up to 100), or one stub as the body.
+- `GET /api/paystubs/ingest/summary?owner=ashley&year=2026` — the analysis below.
+
+```json
+{ "stubs": [ {
+  "employer": "Prairie Health Region", "pay_date": "2026-10-16",
+  "period_start": "2026-09-27", "period_end": "2026-10-10",
+  "gross": 2650.00, "net": 1987.42,
+  "deductions": [ { "type": "income_tax", "amount": 351.20 }, { "type": "cpp", "amount": 152.85 },
+                  { "type": "ei", "amount": 43.20 }, { "type": "pension", "label": "SHEPP", "amount": 115.33 } ],
+  "ytd": { "gross": 55650.00, "income_tax": 7375.20 },
+  "external_id": "stub-2026-10-16", "source": "ashley-agent",
+  "document": { "mime": "application/pdf", "base64": "<the stub, optional, under 10 MB>" }
+} ] }
+```
+
+| Field | |
+|---|---|
+| `employer`, `pay_date`, `gross`, `net` | Required. `net` is what was deposited. |
+| `owner` | `"ashley"` (default) or `"jake"`. |
+| `deductions` | `[{ type, label, amount }]`. `type` is one of `income_tax`, `cpp`, `cpp2`, `ei`, `pension`, `rrsp` (group RRSP), `union_dues`, `benefits`, `other`; leave it out and the `label` decides. Or send them as flat fields with those names. |
+| `ytd` | The stub's own year-to-date column, if printed. Used to spot missing stubs. |
+| `hours`, `hourly_rate`, `period_start`, `period_end`, `notes` | Optional. |
+| `external_id` + `source` | Re-sending the same pair updates the stub. Without them, the same employer, date and net updates it. |
+
+**What Money Hub does with each stub**
+- Checks that gross less deductions equals net; if not, the result carries a warning (a missed deduction, or a taxable benefit printed on the stub).
+- Finds the deposit of exactly `net`, from 3 days before the pay date to 7 days after, preferring the owner's own accounts, and books it as **Wages & salary**, personal, for that owner, with the employer as payee. A deposit that hasn't arrived yet is matched when it does (checked every six hours). Closed months are left alone.
+- The books stay at net pay. Tax, CPP, EI, pension and the rest live on the stub, not as spending.
+- With two or more recent stubs, her next pays go into the cash forecast as expected personal income, unless an active estimate already stands in for her pay.
+
+**Response:** `{ received, results: [{ external_id, ok, id, updated, matched_deposit, warnings } | { ok: false, error }] }`.
+
+**The analysis** (`/summary`, also on the Personal page and readable by Sentinel and the advisor as `paystubs`): year-to-date gross, take-home and each deduction; pay frequency and pays left; the tax outlook (withholding for the year against the tax her pay alone will owe, so a likely refund or balance owing); CPP and EI against the year's maximums and the pay they max out on; pension and group RRSP; and a check against the stub's own year-to-date figures.
+
+---
+
 ## Quicken agent brief (paste this to the agent that runs Quicken)
 
 > Every morning you bring Money Hub up to date from Quicken.

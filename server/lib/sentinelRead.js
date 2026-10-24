@@ -25,6 +25,7 @@ import { countedLines } from '../routes/expenses.js';
 import { runAndJudge, purchaseFromInput, agentAnswer } from './purchaseCheck.js';
 import { balanceSheetStatement } from './statement.js';
 import { grocerySummary, priceBook, latestAdvice, FOOD_TYPES } from './groceries.js';
+import { paystubSummary } from './paystubs.js';
 
 export const APP = 'money_hub';
 export const DEFAULT_LIMIT = 50;
@@ -329,11 +330,11 @@ def({
 // ---------- vendor deposits ----------
 def({
   name: 'vendor_deposits', mode: 'sql',
-  description: 'Deposits and prepayments a vendor is holding (prepayment = applied to later bills, refundable = given back), with what has been applied and what remains. Positive amounts. Newest first.',
+  description: 'Deposits, prepayments and credits a vendor is holding (prepayment = applied to later bills, refundable = given back, credit = a credit with no cash moving, such as a contra), with what has been applied and what remains. Positive amounts. Newest first.',
   fields: ['id', 'vendor', 'kind', 'amount', 'applied', 'remaining', 'currency', 'status', 'date', 'closed_date', 'paid_from', 'applied_to', 'note'],
   search: ['vendor', 'note'],
   date: 'date',
-  filters: [f.eq('status', 'status', ['open', 'used', 'refunded', 'kept']), f.textLike('vendor', 'vendor', 'vendor name (contains)'), f.eq('kind', 'kind', ['prepayment', 'refundable'])],
+  filters: [f.eq('status', 'status', ['open', 'used', 'refunded', 'kept']), f.textLike('vendor', 'vendor', 'vendor name (contains)'), f.eq('kind', 'kind', ['prepayment', 'refundable', 'credit'])],
   base: () => `SELECT vc.id, p.name AS vendor, vc.kind, vc.amount, vc.status, vc.date, vc.closed_date, vc.note,
       COALESCE((SELECT SUM(ca.amount) FROM credit_applications ca WHERE ca.credit_id = vc.id), 0) AS applied,
       (SELECT string_agg(b.name, '; ' ORDER BY ca.id) FROM credit_applications ca JOIN bills b ON b.id = ca.bill_id WHERE ca.credit_id = vc.id) AS applied_to,
@@ -736,6 +737,31 @@ def({
     }));
   },
 });
+// ---------- paystubs (lib/paystubs.js) ----------
+def({
+  name: 'paystubs', mode: 'js', idType: 'text', summary: true,
+  description: 'SUMMARY. Ashley\'s (or Jake\'s) paystubs for a year, from her agent: first row (kind "summary") has year-to-date gross and take-home, income tax, CPP, EI, pension and group RRSP taken off, pay frequency and pays left, the tax outlook (tax withheld for the year against what her pay alone will owe: refund or owing), CPP and EI against the year\'s maximums (and the pay date they max out), and the next pay dates. Then one row per stub (id = stub id): pay date, employer, period, gross, net, each deduction, and whether its deposit was found and booked as her wages.',
+  fields: ['id', 'kind', 'owner', 'year', 'pay_date', 'employer', 'period', 'gross', 'net', 'deductions', 'matched_deposit',
+    'totals', 'frequency', 'pays_left', 'next_pays', 'tax_outlook', 'cpp', 'cpp2', 'ei', 'retirement', 'check', 'currency'],
+  search: ['employer'], date: 'pay_date',
+  filters: [
+    { name: 'owner', type: 'enum', values: ['ashley', 'jake'], param: true, doc: 'whose (default ashley)' },
+    { name: 'year', type: 'year', param: true, doc: 'YYYY, calendar year (default this year)' },
+  ],
+  load: async (q, ctx) => {
+    const s = await paystubSummary({ owner: q.owner || 'ashley', year: Number(q.year) || Number(ctx.today.slice(0, 4)), today: ctx.today });
+    if (!s.totals) return [{ id: 'summary', kind: 'summary', owner: s.owner, year: s.year, totals: null, check: 'No paystubs on file for this year.', currency: CURRENCY }];
+    return [
+      { id: 'summary', kind: 'summary', owner: s.owner, year: s.year, totals: s.totals, frequency: s.frequency, pays_left: s.pays_left, next_pays: s.next_pays,
+        tax_outlook: s.tax_outlook, cpp: s.cpp, cpp2: s.cpp2, ei: s.ei, retirement: s.retirement, check: s.check, currency: CURRENCY },
+      ...s.stubs.slice().reverse().map((x) => ({
+        id: String(x.id), kind: 'stub', owner: x.owner, pay_date: x.pay_date, employer: x.employer,
+        period: x.period_start && x.period_end ? `${x.period_start} to ${x.period_end}` : null, gross: x.gross, net: x.net,
+        deductions: x.deductions, matched_deposit: x.matched, currency: CURRENCY,
+      })),
+    ];
+  },
+});
 def({
   name: 'grocery_prices', mode: 'js', idType: 'text', summary: true,
   description: 'SUMMARY. The grocery price book for the last year: each item (id = item|per) with its price per kg, litre or each at every store it was bought at (latest and lowest), the usual store, the cheapest store, how much cheaper (saving_pct) and what buying it there would have saved over the year. Items bought at two or more stores first. Use search for an item ("milk").',
@@ -894,7 +920,7 @@ def({
     { name: 'over_budget', type: 'bool', test: (r, v) => r.over_budget === v },
   ],
   load: async (q, ctx) => {
-    const per = q.month ? periodOf(q, ctx) : { year: q.year || Number(ctx.today.slice(0, 4)), month: null, label: String(q.year || ctx.today.slice(0, 4)) };
+    const per = q.month ? periodOf(q, ctx) : { year: Number(q.year) || Number(ctx.today.slice(0, 4)), month: null, label: String(q.year || ctx.today.slice(0, 4)) };
     const kind = q.kind || 'expense';
     const [lines, { rows: cats }] = await Promise.all([
       countedLines(per.year, 'all', kind),

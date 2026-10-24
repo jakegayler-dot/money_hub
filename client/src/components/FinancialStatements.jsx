@@ -9,24 +9,34 @@ const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 
 const longDate = (d) => (d ? `${MONTHS[Number(d.slice(5, 7)) - 1]} ${Number(d.slice(8, 10))}, ${d.slice(0, 4)}` : '');
 const thisYear = new Date().getFullYear();
 const YEARS = Array.from({ length: 6 }, (_, i) => thisYear - i);
+// Crop years run Sep 1 to Aug 31 and are named by their harvest: the 2025
+// crop year is Sep 2025 to Aug 2026. The latest is the one being harvested.
+const latestCrop = new Date().getMonth() >= 8 ? thisYear : thisYear - 1;
+const CROP_YEARS = Array.from({ length: 6 }, (_, i) => latestCrop - i);
 const fmt = (v) => (v == null ? '—' : Math.abs(v) < 0.5 ? '—' : v < 0 ? `(${money(Math.round(-v))})` : money(Math.round(v)));
 
 /** Calendar year (with last year beside it) or a custom range. */
 export function usePeriod() {
   const [mode, setMode] = useState('year');
   const [year, setYear] = useState(thisYear);
+  const [crop, setCrop] = useState(latestCrop);
   const [from, setFrom] = useState(`${thisYear}-01-01`);
   const [to, setTo] = useState(new Date().toISOString().slice(0, 10));
-  const query = mode === 'year' ? `year=${year}` : `from=${from}&to=${to}`;
+  const query = mode === 'year' ? `year=${year}` : mode === 'crop' ? `crop_year=${crop}` : `from=${from}&to=${to}`;
   const control = (
     <span className="fs-period">
       <span className="seg-toggle" role="group" aria-label="Period">
         <button type="button" className={mode === 'year' ? 'on' : ''} aria-pressed={mode === 'year'} onClick={() => setMode('year')}>Calendar year</button>
+        <button type="button" className={mode === 'crop' ? 'on' : ''} aria-pressed={mode === 'crop'} onClick={() => setMode('crop')} title="September to August">Crop year</button>
         <button type="button" className={mode === 'range' ? 'on' : ''} aria-pressed={mode === 'range'} onClick={() => setMode('range')}>Custom dates</button>
       </span>
       {mode === 'year' ? (
         <select aria-label="Year" value={year} onChange={(e) => setYear(Number(e.target.value))}>
           {YEARS.map((y) => <option key={y} value={y}>{y}</option>)}
+        </select>
+      ) : mode === 'crop' ? (
+        <select aria-label="Crop year" value={crop} onChange={(e) => setCrop(Number(e.target.value))}>
+          {CROP_YEARS.map((y) => <option key={y} value={y}>{y} crop (Sep {y} – Aug {y + 1})</option>)}
         </select>
       ) : (
         <>
@@ -38,7 +48,7 @@ export function usePeriod() {
       <button type="button" className="small secondary fs-print" onClick={() => window.print()}>Print</button>
     </span>
   );
-  return { query, control, valid: mode === 'year' || (from && to && from <= to) };
+  return { query, control, valid: mode !== 'range' || (from && to && from <= to) };
 }
 
 function useStatement(url, valid) {
@@ -59,7 +69,9 @@ function useStatement(url, valid) {
 
 const periodLabel = (d) => (d.year
   ? `For the year ended December 31, ${d.year}${d.through < d.to ? ` · to ${longDate(d.through)} so far` : ''}`
-  : `${longDate(d.from)} to ${longDate(d.through)}`);
+  : d.crop_year
+    ? `${d.crop_year} crop year, ${d.through < d.to ? "ending" : "ended"} August 31, ${d.crop_year + 1}${d.through < d.to ? ` · to ${longDate(d.through)} so far` : ''}`
+    : `${longDate(d.from)} to ${longDate(d.through)}`);
 
 // ---- Income statement ------------------------------------------------------------
 
@@ -106,7 +118,7 @@ export function IncomeStatement() {
           <div className="fs-scroll">
             <table className="fs-table" data-nostack="">
               <thead>
-                <tr><th />{COLS.map(([k, l]) => <th key={k} className={`num${k === 'total' ? ' fs-total-col' : ''}`}>{l}</th>)}{prior && <th className="num fs-prior">{data.year - 1}</th>}</tr>
+                <tr><th />{COLS.map(([k, l]) => <th key={k} className={`num${k === 'total' ? ' fs-total-col' : ''}`}>{l}</th>)}{prior && <th className="num fs-prior">{data.prior_label || data.year - 1}</th>}</tr>
               </thead>
               <tbody>
                 <tr className="fs-head"><td colSpan={5 + (prior ? 1 : 0)}>Revenue</td></tr>

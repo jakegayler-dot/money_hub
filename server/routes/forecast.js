@@ -5,12 +5,21 @@ import { liquidityFloor } from '../lib/calculations.js';
 import { loadForecast } from '../lib/forecast.js';
 import { scenarioContext } from '../lib/scenario.js';
 import { runAndJudge } from '../lib/purchaseCheck.js';
+import { todayISO } from '../lib/dates.js';
+
+/**
+ * Months from this one through the end of the crop year being marketed:
+ * the crop year runs Sep to Aug, so from September it's this coming August
+ * (Sep → 12 months), and before September it's the August after next, the
+ * crop still to be harvested (Jan → 20 months).
+ */
+export const cropYearMonths = (today = todayISO()) => 21 - Number(today.slice(5, 7));
 
 const router = Router();
 
 // Forecast options from a query string or body: window, scope, accounts, tax.
 function optionsFrom(src = {}) {
-  const months = [12, 18, 24].includes(Number(src.months)) ? Number(src.months) : 12;
+  const months = src.months === 'crop' ? cropYearMonths() : [12, 18, 24].includes(Number(src.months)) ? Number(src.months) : 12;
   const scope = ['everything', 'farm', 'personal'].includes(src.scope) ? src.scope : 'everything';
   let accounts = src.accounts;
   if (typeof accounts === 'string') accounts = accounts ? accounts.split(',') : null;

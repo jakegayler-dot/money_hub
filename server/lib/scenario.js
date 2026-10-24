@@ -26,6 +26,8 @@
 //                 month, first_month, owner: 'farm'|'personal', cca_rate }],
 //   loans_new: [{ label, amount, rate, years, per_year, start_month, first_month, owner: 'farm'|'personal', buy_cost, cca_rate }],
 //   oneoffs: [{ label, amount, month, treatment: 'farm'|'capital'|'personal', cca_rate }],
+//   leases: [{ label, payment (before tax), per_year: 12|4|2|1, start_month, years, gst_pct, pst_pct,
+//              down (paid at the start), buyout (end of term, a capital purchase), cca_rate, owner }],
 //   op_line: { on, limit, rate, keep },
 // }
 
@@ -47,6 +49,7 @@ export const GROUPS = [
   { id: 'timing', label: 'Sale & payment timing' },
   { id: 'costs', label: 'Costs & bills' },
   { id: 'purchases', label: 'Capital purchases' },
+  { id: 'leases', label: 'Leases' },
   { id: 'loans', label: 'Loans & rates' },
   { id: 'oneoffs', label: 'One-off items' },
   { id: 'gst', label: 'GST timing' },
@@ -64,6 +67,7 @@ export function activeGroups(sc = {}) {
     timing: has(sc.contract_moves) || commodityHas((c) => ym(c.sell_month)),
     costs: !!num(sc.costs_pct) || has(sc.bill_moves) || (sc.prepay || []).some((p) => num(p.amount) > 0 && ym(p.month)),
     purchases: (sc.purchases || []).some((p) => num(p.price) > 0),
+    leases: (sc.leases || []).some((l) => num(l.payment) > 0),
     loans: !!num(sc.rate_pts) || (sc.loans_new || []).some((l) => num(l.amount) > 0),
     oneoffs: (sc.oneoffs || []).some((o) => num(o.amount) && ym(o.month)),
     gst: num(sc.gst_delay) > 0,
@@ -196,17 +200,35 @@ function applyCosts(flows, adj, ctx, sc) {
   return flows;
 }
 
-/** Blended payments for a new loan. */
-export function loanSchedule({ amount, rate, years, per_year = 12, first_month }) {
+/**
+ * Blended payments for a new loan. `promo_until` (YYYY-MM): a promotional
+ * 0% period (dealer financing, same-as-cash) — payments due by that month
+ * carry no interest, and the level payment is solved so the term still
+ * pays it off.
+ */
+export function loanSchedule({ amount, rate, years, per_year = 12, first_month, promo_until = null }) {
   const P = Number(amount);
   const n = Math.max(1, Math.round(Number(years) * Number(per_year)));
   const i = Number(rate) / 100 / Number(per_year);
-  const pay = i > 0 ? P * i / (1 - Math.pow(1 + i, -n)) : P / n;
   const step = 12 / Number(per_year);
+  const monthOf = (k) => addMonths(`${first_month}-01`, Math.round(k * step)).slice(0, 7);
+  const promo = ym(promo_until);
+  const rateAt = (k) => (promo && monthOf(k) <= promo ? 0 : i);
+  let pay = i > 0 ? P * i / (1 - Math.pow(1 + i, -n)) : P / n;
+  if (promo && i > 0) {
+    let lo = P / n / 2; let hi = P * (1 + i * n) + 1;
+    for (let t = 0; t < 60; t++) {
+      const mid = (lo + hi) / 2;
+      let b = P;
+      for (let k = 0; k < n; k++) b = b * (1 + rateAt(k)) - mid;
+      if (b > 0) lo = mid; else hi = mid;
+    }
+    pay = hi;
+  }
   const out = [];
   let bal = P;
   for (let k = 0; k < n; k++) {
-    const interest = bal * i;
+    const interest = bal * rateAt(k);
     const principal = Math.min(bal, pay - interest);
     bal -= principal;
     out.push({ date: midMonth(addMonths(`${first_month}-01`, Math.round(k * step))), interest: r2(interest), principal: r2(principal), payment: r2(interest + principal) });
@@ -249,7 +271,7 @@ function applyLoans(flows, adj, ctx, sc) {
     const label = l.label || 'New loan';
     flows.push({ key: `whatif:loan-in:${i}`, kind: 'whatif', label: `${label} — loan advanced`, date: midMonth(start),
       amount, farm, taxable: 0, estimate: false, whatif: true, ref: {} });
-    const { payments } = loanSchedule({ amount, rate: num(l.rate) || 0, years: num(l.years) || 5, per_year: Number(l.per_year) === 1 ? 1 : 12, first_month: first });
+    const { payments } = loanSchedule({ amount, rate: num(l.rate) || 0, years: num(l.years) || 5, per_year: Number(l.per_year) === 1 ? 1 : 12, first_month: first, promo_until: l.promo_until });
     payments.forEach((p, k) => flows.push({
       key: `whatif:loan:${i}:${k}`, kind: 'loan', label, date: p.date, amount: -p.payment, farm,
       taxable: -p.interest * farm, estimate: false, whatif: true, ref: { interest: p.interest, principal: p.principal, new_loan: true },
@@ -299,7 +321,7 @@ export function purchaseTerms(p, { today, gstFreq = 'quarterly' } = {}) {
   const first = ym(p.first_month) || addMonths(`${month}-01`, 12 / per).slice(0, 7);
   const rate = num(p.rate) || 0;
   const years = num(p.years) || 5;
-  const sched = loan > 0 ? loanSchedule({ amount: loan, rate, years, per_year: per, first_month: first }) : { payment: 0, payments: [] };
+  const sched = loan > 0 ? loanSchedule({ amount: loan, rate, years, per_year: per, first_month: first, promo_until: p.promo_until }) : { payment: 0, payments: [] };
   const interest = r2(sched.payments.reduce((t, x) => t + x.interest, 0));
   // The GST comes back on the return for the period the purchase lands in.
   let refundDate = null;
@@ -387,7 +409,58 @@ function applyTax(flows, adj, ctx, sc) {
   return flows;
 }
 
-const APPLY = { prices: applyPrices, contracts: applyContracts, timing: applyTiming, costs: applyCosts, purchases: applyPurchases, loans: applyLoans,
+/**
+ * A lease: a payment every month (or quarter, half-year, year) for the term,
+ * deductible as a farm expense when paid. The farm gets the GST back, so its
+ * cash cost is the payment plus PST; a personal lease pays both taxes and
+ * deducts nothing. Money down is paid at the start and deducted across the
+ * term; a buyout at the end is a capital purchase (CCA).
+ */
+export function leaseFlows(l, i, today) {
+  const pay = num(l.payment);
+  if (!(pay > 0)) return { flows: [], cca: null };
+  const per = [1, 2, 4, 12].includes(Number(l.per_year)) ? Number(l.per_year) : 12;
+  const step = 12 / per;
+  const start = ym(l.start_month) || today.slice(0, 7);
+  const n = Math.max(1, Math.round((num(l.years) || 3) * per));
+  const farm = l.owner === 'personal' ? 0 : 1;
+  const gst = (num(l.gst_pct) ?? 5) / 100;
+  const pst = (num(l.pst_pct) ?? 0) / 100;
+  const cashEach = r2(pay * (1 + pst + (farm ? 0 : gst)));
+  const down = num(l.down) > 0 ? r2(num(l.down) * (1 + pst + (farm ? 0 : gst))) : 0;
+  const downEach = down / n;
+  const label = l.label || 'Lease';
+  const flows = [];
+  if (down > 0) {
+    flows.push({ key: `whatif:lease:${i}:down`, kind: 'lease', label: `${label} — money down`, date: midMonth(start),
+      amount: -down, farm, taxable: 0, estimate: false, whatif: true, ref: { lease: true } });
+  }
+  for (let k = 0; k < n; k++) {
+    const month = addMonths(`${start}-01`, k * step).slice(0, 7);
+    flows.push({ key: `whatif:lease:${i}:${k}`, kind: 'lease', label, date: midMonth(month), amount: -cashEach, farm,
+      taxable: r2(-(cashEach + downEach) * farm), estimate: false, whatif: true, ref: { lease: true } });
+  }
+  let cca = null;
+  const buyout = num(l.buyout);
+  if (buyout > 0) {
+    const end = addMonths(`${start}-01`, n * step).slice(0, 7);
+    const cost = r2(buyout * (1 + pst + (farm ? 0 : gst)));
+    flows.push({ key: `whatif:lease:${i}:buyout`, kind: 'whatif', label: `${label} — buyout`, date: midMonth(end), amount: -cost, farm,
+      taxable: 0, estimate: false, whatif: true, ref: {} });
+    cca = { year: Number(end.slice(0, 4)), cost, rate: num(l.cca_rate) ?? 20, farm };
+  }
+  return { flows, cca, annual: r2(cashEach * per) };
+}
+function applyLeases(flows, adj, ctx, sc) {
+  for (const [i, l] of (sc.leases || []).entries()) {
+    const out = leaseFlows(l, i, ctx.today);
+    flows.push(...out.flows);
+    if (out.cca) addCca(adj, out.cca.year, out.cca.cost, out.cca.rate, out.cca.farm);
+  }
+  return flows;
+}
+
+const APPLY = { prices: applyPrices, contracts: applyContracts, timing: applyTiming, costs: applyCosts, purchases: applyPurchases, leases: applyLeases, loans: applyLoans,
   oneoffs: applyOneoffs, gst: applyGst, tax: applyTax };
 
 // ---- Outcome ---------------------------------------------------------------------
@@ -592,7 +665,14 @@ export function newDebtAnnual(sc = {}) {
     if (!(amount > 0)) continue;
     const per = Number(l.per_year) === 1 ? 1 : 12;
     const { payment } = loanSchedule({ amount, rate: num(l.rate) || 0, years: num(l.years) || 5, per_year: per, first_month: '2000-01' });
+    // (A promotional 0% period lowers early payments; the lender judges the full-rate payment.)
     if (l.owner === 'personal') personal += payment * per; else farm += payment * per;
+  }
+  // Lease payments are fixed obligations a lender counts like debt payments.
+  for (const [i, l] of (sc.leases || []).entries()) {
+    const { annual } = leaseFlows(l, i, '2000-01-01');
+    if (!annual) continue;
+    if (l.owner === 'personal') personal += annual; else farm += annual;
   }
   return { farm: r2(farm), personal: r2(personal) };
 }

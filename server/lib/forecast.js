@@ -28,6 +28,7 @@ import { personalTax } from './taxRates.js';
 import { billDates } from './billDates.js';
 import { personalFlows } from './personal.js';
 import { contractParts } from './contracts.js';
+import { paystubForecastFlows } from './paystubs.js';
 
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const pad = (n) => String(n).padStart(2, '0');
@@ -44,9 +45,9 @@ const dayNum = (d) => { const [y, m, dd] = toISODate(d).split('-').map(Number); 
 export const FLOOR_DAYS = 60;
 const MAX_FLOOR_DAYS = 90;
 const LOOKAHEAD_MONTHS = 3;
-const MUST_PAY = new Set(['loan', 'bill', 'card', 'fee', 'tax', 'gst']);
+const MUST_PAY = new Set(['loan', 'lease', 'bill', 'card', 'fee', 'tax', 'gst']);
 export const mustPay = (f) => f.amount < 0 && (MUST_PAY.has(f.kind) || (f.kind === 'personal' && f.ref?.bucket === 'essential'));
-const FLOOR_PART = { loan: 'loans', bill: 'bills', card: 'cards', fee: 'fees', tax: 'tax', gst: 'tax', personal: 'household' };
+const FLOOR_PART = { loan: 'loans', lease: 'loans', bill: 'bills', card: 'cards', fee: 'fees', tax: 'tax', gst: 'tax', personal: 'household' };
 
 /** What must be paid in [from, to) for a scope: total and by part. */
 export function mustPayBetween(flows, from, to, scope) {
@@ -112,9 +113,9 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
                 FROM accounts ORDER BY ledger, account_type, name`),
     pool.query(
       `SELECT b.*, p.name AS vendor, COALESCE((SELECT SUM(amount) FROM credit_applications WHERE bill_id = b.id), 0) AS applied,
-              bill_owing(b, b.due_date) AS owing_at_due
+              bill_owing(b, GREATEST(b.due_date, $2::date)) AS owing_at_due
        FROM bills b LEFT JOIN payees p ON p.id = b.payee_id
-       WHERE b.status = 'unpaid' AND b.due_date < $1 ORDER BY b.due_date, b.id`, [endStr]),
+       WHERE b.status = 'unpaid' AND b.due_date < $1 ORDER BY b.due_date, b.id`, [endStr, today]),
     pool.query(
       `SELECT lp.id, lp.loan_id, lp.due_date, lp.principal_amount, lp.interest_amount, COALESCE(NULLIF(l.name, ''), l.lender) AS loan,
               l.interest_rate_pct, l.rate_type, l.purpose, l.segment, l.is_segment_split, l.segment_grain_pct, l.segment_livestock_pct,
@@ -197,6 +198,10 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
       });
     }
   }
+  // Pay from paystubs: the next net pays, as expected income (personal).
+  try {
+    for (const f of await paystubForecastFlows({ today, endStr })) add(f);
+  } catch (e) { console.error('Paystub pays unavailable for the forecast:', e.message); }
   for (const it of inv.items) {
     const d = toISODate(it.start_date);
     if (d < today || d >= endStr) continue;
@@ -478,7 +483,7 @@ export function evaluate(flows, ctx, { scope = 'everything', accountIds = null }
       case 'estimate_in': case 'inventory': m.estimatedInflows += amount; break;
       case 'estimate_out': m.estimatedOutflows -= amount; break;
       case 'bill': m.unpaidBillsDue -= amount; break;
-      case 'loan': m.debtServiceDue -= amount; break;
+      case 'loan': case 'lease': m.debtServiceDue -= amount; break;
       case 'card': m.creditCardDue -= amount; break;
       case 'fee': m.accountFees -= amount; break;
       case 'tax': m.taxInstalment -= amount; break;

@@ -1502,3 +1502,81 @@ CREATE TABLE IF NOT EXISTS advisor_usage (
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_advisor_usage_created ON advisor_usage (created_at);
+
+-- A credit from a vendor with no money moving (a canola contra: grain sold
+-- to the input supplier, set against its bill). It is income in its own
+-- category on the day it's given, held with the vendor until it pays bills,
+-- and each bill it pays is that bill's expense — all on one non-cash entry
+-- (no bank account; it never changes a balance). lib/postings.js
+-- recordVendorCredit.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_noncash BOOLEAN NOT NULL DEFAULT false;
+DO $$ BEGIN
+  ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_account_or_card;
+  ALTER TABLE transactions ADD CONSTRAINT transactions_account_or_card
+    CHECK (account_id IS NOT NULL OR credit_card_id IS NOT NULL OR is_noncash);
+END $$;
+ALTER TABLE vendor_credits DROP CONSTRAINT IF EXISTS vendor_credits_kind_check;
+ALTER TABLE vendor_credits ADD CONSTRAINT vendor_credits_kind_check CHECK (kind IN ('prepayment', 'refundable', 'credit'));
+ALTER TABLE vendor_credits ADD COLUMN IF NOT EXISTS category_id INTEGER REFERENCES expense_categories(id) ON DELETE SET NULL;
+-- Credits apply themselves to a vendor's new bills, oldest first, unless
+-- this is off for the vendor (then they're applied by hand, in part if wanted).
+ALTER TABLE payees ADD COLUMN IF NOT EXISTS auto_apply_credits BOOLEAN NOT NULL DEFAULT true;
+
+-- Transfers are never split between owners (Jake, 2026-10-23): one already
+-- split takes its largest share alone. Runs once.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM settings WHERE key = 'transfers_sole_owner_done') THEN
+    UPDATE transactions SET
+      segment = (CASE
+        WHEN COALESCE(segment_grain_pct, 0) >= GREATEST(COALESCE(segment_livestock_pct, 0), COALESCE(segment_jake_pct, 0), COALESCE(segment_ashley_pct, 0)) THEN 'grain'
+        WHEN COALESCE(segment_livestock_pct, 0) >= GREATEST(COALESCE(segment_jake_pct, 0), COALESCE(segment_ashley_pct, 0)) THEN 'livestock'
+        WHEN COALESCE(segment_jake_pct, 0) >= COALESCE(segment_ashley_pct, 0) THEN 'jake'
+        ELSE 'ashley' END)::enterprise_segment,
+      is_segment_split = false, segment_grain_pct = NULL, segment_livestock_pct = NULL, segment_jake_pct = NULL, segment_ashley_pct = NULL
+    WHERE is_transfer AND is_segment_split AND NOT is_split;
+    INSERT INTO settings (key, value) VALUES ('transfers_sole_owner_done', 'true') ON CONFLICT (key) DO NOTHING;
+  END IF;
+END $$;
+
+-- Promotional financing on a loan (a dealer's 0% period, Fairstone's
+-- same-as-cash plans): no interest until promo_until, then the loan's rate.
+-- promo_retro: the plan charges interest back to the start on the whole
+-- amount if anything is still owing when the promotion ends.
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS promo_until DATE;
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS promo_retro BOOLEAN NOT NULL DEFAULT false;
+
+-- Paystubs (lib/paystubs.js): sent by Ashley's agent through the paystub
+-- API (its own key, PAYSTUB_API_KEY), each one hers (or Jake's), matched to
+-- the deposit of its net pay, which then books as her wages. Deductions are
+-- [{ type, label, amount }]: income_tax, cpp, cpp2, ei, pension (RPP),
+-- rrsp (group RRSP), union_dues, benefits, other. ytd is the stub's own
+-- year-to-date figures when it prints them.
+CREATE TABLE IF NOT EXISTS paystubs (
+  id              SERIAL PRIMARY KEY,
+  owner           TEXT NOT NULL DEFAULT 'ashley' CHECK (owner IN ('ashley', 'jake')),
+  employer        TEXT NOT NULL,
+  pay_date        DATE NOT NULL,
+  period_start    DATE,
+  period_end      DATE,
+  gross           NUMERIC(12,2) NOT NULL,
+  net             NUMERIC(12,2) NOT NULL,
+  deductions      JSONB NOT NULL DEFAULT '[]',
+  ytd             JSONB,
+  hours           NUMERIC(8,2),
+  hourly_rate     NUMERIC(10,4),
+  source          TEXT NOT NULL DEFAULT 'agent',
+  external_id     TEXT,
+  transaction_id  INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+  doc_mime        TEXT,
+  doc             BYTEA,
+  notes           TEXT,
+  warnings        JSONB NOT NULL DEFAULT '[]',
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_paystubs_external ON paystubs (source, external_id) WHERE external_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_paystubs_owner_date ON paystubs (owner, pay_date);
+-- Where matched pay deposits are booked: employment income on the personal side.
+INSERT INTO expense_categories (name, class, ledger, kind)
+SELECT 'Wages & salary', 'variable_seasonal', 'personal', 'income'
+WHERE NOT EXISTS (SELECT 1 FROM expense_categories WHERE lower(name) = 'wages & salary');

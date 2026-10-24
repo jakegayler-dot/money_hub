@@ -4,7 +4,7 @@ import { ah } from '../lib/asyncHandler.js';
 import { validateSegment, segmentValues, SEGMENT_COLUMNS } from '../lib/segments.js';
 import {
   payBill, removeTransaction, linkBillToTransaction, expenseCategoryFor, linkBillsToTransaction, payBills,
-  applyVendorOwnerToBill, recordVendorDeposit, applyVendorCredit, unapplyVendorCredit, refundVendorCredit, keepVendorCredit, removeVendorCredit, payeeId,
+  applyVendorOwnerToBill, recordVendorDeposit, recordVendorCredit, applyVendorCredit, unapplyVendorCredit, refundVendorCredit, keepVendorCredit, removeVendorCredit, payeeId,
   settleVendorAccount,
 } from '../lib/postings.js';
 
@@ -27,7 +27,27 @@ const router = Router();
 // Finance terms off a request: interest-free date, annual rate, and the
 // latest statement balance (if one has been entered). Empty → null.
 const FIN_FIELDS = ['is_financed', 'finance_rate_pct', 'interest_free_until', 'balance_amount', 'balance_as_of'];
-function financeFrom(body, current = {}) {
+// Interest on a bill (any bill: input financing, or a vendor charging on an
+// overdue account): a rate and the date interest starts. Agents may send
+// plain names (interest_rate_pct, interest_starts); giving a rate or a start
+// date turns it on.
+const FIN_ALIASES = {
+  finance_rate_pct: ['interest_rate_pct', 'interest_rate', 'rate_pct'],
+  interest_free_until: ['interest_starts', 'interest_start_date', 'interest_from', 'interest_starts_on'],
+};
+function withAliases(body = {}) {
+  const b = { ...body };
+  for (const [k, names] of Object.entries(FIN_ALIASES)) {
+    const n = names.find((x) => body[x] !== undefined && body[x] !== '' && body[x] !== null);
+    if (b[k] === undefined && n) b[k] = body[n];
+  }
+  if (b.is_financed === undefined && b.charges_interest !== undefined) b.is_financed = b.charges_interest;
+  if (b.is_financed === undefined && (FIN_ALIASES.finance_rate_pct.concat('finance_rate_pct').some((x) => body[x] != null && body[x] !== '')
+    || FIN_ALIASES.interest_free_until.some((x) => body[x] != null && body[x] !== ''))) b.is_financed = true;
+  return b;
+}
+function financeFrom(rawBody, current = {}) {
+  const body = withAliases(rawBody);
   const pick = (k) => (body[k] !== undefined ? body[k] : current[k]);
   const financed = !!pick('is_financed');
   const num = (v) => (v === '' || v == null ? null : Number(v));
@@ -49,7 +69,7 @@ function finKey(k, v) {
 }
 function financeError(f) {
   if (!f.is_financed) return null;
-  if (f.finance_rate_pct == null || !(f.finance_rate_pct >= 0 && f.finance_rate_pct < 100)) return 'Enter the interest rate (% per year) for a bill on finance terms.';
+  if (f.finance_rate_pct == null || !(f.finance_rate_pct >= 0 && f.finance_rate_pct < 100)) return 'Enter the interest rate (% per year) for a bill that charges interest.';
   if ((f.balance_amount == null) !== (f.balance_as_of == null)) return 'A statement balance needs both the amount and its date.';
   return null;
 }
@@ -160,14 +180,17 @@ router.post('/', ah(async (req, res) => {
   await pool.query(
     `UPDATE bills SET is_financed = $2, finance_rate_pct = $3, interest_free_until = $4, balance_amount = $5, balance_as_of = $6 WHERE id = $1`,
     [rows[0].id, fin.is_financed, fin.finance_rate_pct, fin.interest_free_until, fin.balance_amount, fin.balance_as_of]);
-  // The vendor: picked, or taken from the name ("Nutrien — Inv 4471" → Nutrien).
-  const vendor = req.body.payee_id ? Number(req.body.payee_id) : await payeeId(pool, vendorFromName(name));
+  // The vendor: picked (payee_id), named (vendor / payee: an agent's way), or
+  // taken from the bill's name ("Nutrien — Inv 4471" → Nutrien).
+  const named = [req.body.vendor, req.body.payee, req.body.payee_name, req.body.vendor_name].find((v) => typeof v === 'string' && v.trim());
+  const vendor = Number(req.body.payee_id) > 0 ? Number(req.body.payee_id)
+    : await payeeId(pool, named ? named.trim() : vendorFromName(name));
   await pool.query('UPDATE bills SET payee_id = $2 WHERE id = $1', [rows[0].id, vendor]);
   // The vendor's owner split, when the caller didn't choose an owner (an
   // agent), or the vendor came from the name and the owner was left at the default.
   const noOwner = req.body.segment === undefined && req.body.is_segment_split === undefined;
   const defaultOwner = !req.body.is_segment_split && (req.body.segment || 'grain') === 'grain';
-  if (noOwner || (!req.body.payee_id && defaultOwner)) await applyVendorOwnerToBill(pool, rows[0].id);
+  if (noOwner || (!(Number(req.body.payee_id) > 0) && defaultOwner)) await applyVendorOwnerToBill(pool, rows[0].id);
   autoLinkBillsSoon(); // already paid? find the payment
   await settle(vendor); // credit already held with the vendor pays it
   res.status(201).json({ ...rows[0], ...fin });
@@ -273,7 +296,7 @@ router.post('/:id/unpay', ah(async (req, res) => {
 router.get('/vendors', ah(async (req, res) => {
   try { await autoLinkBills(); } catch (e) { console.error('Bill auto-link failed:', e.message); }
   const { rows: bills } = await pool.query(
-    `SELECT b.id, b.payee_id, b.name, b.due_date, b.amount, b.status, bill_owing(b, CURRENT_DATE) AS owing,
+    `SELECT b.id, b.payee_id, b.name, b.due_date, b.received_date, b.created_at, b.amount, b.status, bill_owing(b, CURRENT_DATE) AS owing,
             COALESCE((SELECT SUM(amount) FROM credit_applications WHERE bill_id = b.id), 0) AS applied
      FROM bills b WHERE b.status = 'unpaid' ORDER BY b.due_date, b.id`);
   const { rows: credits } = await pool.query(
@@ -283,18 +306,19 @@ router.get('/vendors', ah(async (req, res) => {
                       FROM credit_applications ca JOIN bills b ON b.id = ca.bill_id WHERE ca.credit_id = vc.id), '[]'::json) AS applications
      FROM vendor_credits vc LEFT JOIN transactions t ON t.id = vc.transaction_id LEFT JOIN accounts a ON a.id = t.account_id
      ORDER BY vc.date, vc.id`);
-  const { rows: payees } = await pool.query('SELECT id, name FROM payees');
+  const { rows: payees } = await pool.query('SELECT id, name, auto_apply_credits FROM payees');
   const nameOf = new Map(payees.map((p) => [p.id, p.name]));
+  const autoOf = new Map(payees.map((p) => [p.id, p.auto_apply_credits !== false]));
   const by = new Map();
   const get = (id) => {
     const k = id ?? 0;
-    if (!by.has(k)) by.set(k, { payee_id: id, name: id ? nameOf.get(id) : 'No vendor set', owing: 0, held: 0, bills: [], credits: [] });
+    if (!by.has(k)) by.set(k, { payee_id: id, name: id ? nameOf.get(id) : 'No vendor set', auto_apply: id ? autoOf.get(id) : true, owing: 0, held: 0, bills: [], credits: [] });
     return by.get(k);
   };
   for (const b of bills) {
     const v = get(b.payee_id);
     v.owing += Number(b.owing);
-    v.bills.push({ ...b, due_date: toISODate(b.due_date), amount: Number(b.amount), owing: Number(b.owing), applied: Number(b.applied) });
+    v.bills.push({ ...b, due_date: toISODate(b.due_date), bill_date: toISODate(b.received_date) || toISODate(b.created_at), amount: Number(b.amount), owing: Number(b.owing), applied: Number(b.applied) });
   }
   for (const c of credits) {
     const v = get(c.payee_id);
@@ -333,6 +357,15 @@ router.post('/link-many', ah(async (req, res) => {
 router.post('/credits', ah(async (req, res) => {
   const b = req.body || {};
   if (!b.payee_id) return res.status(400).json({ error: 'Which vendor is holding it?' });
+  // A credit with no cash moving (a contra): income in its category, held with the vendor.
+  if (b.kind === 'credit') {
+    const c = await withTransaction((client) => recordVendorCredit(client, {
+      payee_id: Number(b.payee_id), amount: b.amount, date: b.date, category_id: b.category_id ? Number(b.category_id) : null,
+      owner: b.owner || (b.segment ? { segment: b.segment } : null), note: b.note || null,
+    }));
+    await settle(c.payee_id);
+    return res.status(201).json(c);
+  }
   const c = await withTransaction((client) => recordVendorDeposit(client, {
     payee_id: Number(b.payee_id), kind: b.kind, transaction_id: b.transaction_id || null,
     account_id: b.account_id || null, amount: b.amount, date: b.date, note: b.note || null,
@@ -341,9 +374,21 @@ router.post('/credits', ah(async (req, res) => {
   if (c.kind === 'prepayment') await settle(c.payee_id);
   res.status(201).json(c);
 }));
+// Apply a deposit or credit to a bill: all it can cover, or `amount`; paid
+// on `paid_date` (the invoice date, say) instead of today.
 router.post('/credits/:id/apply', ah(async (req, res) => {
-  const r = await withTransaction((client) => applyVendorCredit(client, Number(req.params.id), Number(req.body?.bill_id)));
+  const b = req.body || {};
+  const on = b.paid_date && /^\d{4}-\d{2}-\d{2}$/.test(String(b.paid_date)) ? String(b.paid_date) : null;
+  const r = await withTransaction((client) => applyVendorCredit(client, Number(req.params.id), Number(b.bill_id), { on, amount: b.amount ?? null }));
   res.json(r);
+}));
+// Credits apply themselves to a vendor's new bills unless this is off.
+router.put('/vendors/:payeeId/auto-apply', ah(async (req, res) => {
+  const on = req.body?.on !== false;
+  const { rowCount } = await pool.query('UPDATE payees SET auto_apply_credits = $2 WHERE id = $1', [Number(req.params.payeeId), on]);
+  if (!rowCount) return res.status(404).json({ error: 'Vendor not found.' });
+  if (on) await settle(Number(req.params.payeeId));
+  res.json({ auto_apply: on });
 }));
 router.post('/credits/applications/:id/remove', ah(async (req, res) => {
   await withTransaction((client) => unapplyVendorCredit(client, Number(req.params.id)));
@@ -542,6 +587,9 @@ router.post('/vendors/:payeeId/reconcile/undo', ah(async (req, res) => {
 }));
 
 router.patch('/:id', ah(async (req, res) => {
+  req.body = withAliases(req.body || {}); // interest_rate_pct, interest_starts…
+  const named = [req.body.vendor, req.body.payee, req.body.payee_name, req.body.vendor_name].find((v) => typeof v === 'string' && v.trim());
+  if (req.body.payee_id === undefined && named) req.body.payee_id = await payeeId(pool, named.trim());
   const { name, amount, due_date, notes, has_gst, gst_pct } = req.body;
   if (req.body.category_id === undefined && req.body.category) req.body.category_id = await expenseCategoryFor(pool, req.body.category);
   const setsCategory = req.body.category_id !== undefined;

@@ -11,8 +11,17 @@ import { todayISO } from '../lib/dates.js';
 const router = Router();
 const isDate = (d) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(Date.parse(d));
 
-/** The period asked for: ?year= or ?from=&to=; default this calendar year. */
+/**
+ * The period asked for: ?year= (calendar), ?crop_year= (Sep 1 to Aug 31,
+ * named by its harvest: the 2025 crop year is Sep 2025 to Aug 2026), or
+ * ?from=&to=; default this calendar year.
+ */
 function period(q) {
+  if (q.crop_year) {
+    const cy = Number(q.crop_year);
+    if (!(cy >= 2000 && cy <= 2100)) return { error: 'crop_year looks wrong.' };
+    return { from: `${cy}-09-01`, to: `${cy + 1}-08-31`, year: null, crop_year: cy };
+  }
   if (q.from || q.to) {
     if (!isDate(q.from) || !isDate(q.to)) return { error: 'from and to are dates, YYYY-MM-DD.' };
     if (q.from > q.to) return { error: '"from" is after "to".' };
@@ -27,15 +36,17 @@ router.get('/income-statement', ah(async (req, res) => {
   const p = period(req.query);
   if (p.error) return res.status(400).json({ error: p.error });
   const current = await incomeStatement(p);
-  // A calendar year comes with last year beside it.
-  const prior = p.year ? await incomeStatement({ from: `${p.year - 1}-01-01`, to: `${p.year - 1}-12-31` }) : null;
-  res.json({ ...current, year: p.year, prior });
+  // A calendar or crop year comes with the one before beside it.
+  const prior = p.year ? await incomeStatement({ from: `${p.year - 1}-01-01`, to: `${p.year - 1}-12-31` })
+    : p.crop_year ? await incomeStatement({ from: `${p.crop_year - 1}-09-01`, to: `${p.crop_year}-08-31` }) : null;
+  const priorLabel = p.year ? String(p.year - 1) : p.crop_year ? `${p.crop_year - 1} crop` : null;
+  res.json({ ...current, year: p.year, crop_year: p.crop_year || null, prior, prior_label: priorLabel });
 }));
 
 router.get('/cash-flow', ah(async (req, res) => {
   const p = period(req.query);
   if (p.error) return res.status(400).json({ error: p.error });
-  res.json({ ...(await cashFlowStatement(p)), year: p.year });
+  res.json({ ...(await cashFlowStatement(p)), year: p.year, crop_year: p.crop_year || null });
 }));
 
 // An inventory count on a date (the year-end count):

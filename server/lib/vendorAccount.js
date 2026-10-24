@@ -96,7 +96,7 @@ function chargeLines(b, end) {
   return lines;
 }
 
-const ORDER = { opening: -1, spot: 4, received: 4, onaccount: 4, bill: 0, adjust: 1, interest: 2, deposit: 3, payment: 4, diff: 5, marked: 5, refund: 6, kept: 7 };
+const ORDER = { opening: -1, spot: 4, received: 4, onaccount: 4, bill: 0, adjust: 1, interest: 2, deposit: 3, credit: 3, payment: 4, diff: 5, marked: 5, refund: 6, kept: 7 };
 
 /**
  * The vendor's account: every line with its running balance, plus bills
@@ -114,6 +114,7 @@ export async function vendorStatement(db, payeeId, today = todayISO()) {
      WHERE b.payee_id = $1 ORDER BY b.id`, [payeeId]);
   const { rows: credits } = await db.query(
     `SELECT vc.*, vc.amount - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE credit_id = vc.id), 0) AS remaining,
+            (SELECT name FROM expense_categories WHERE id = vc.category_id) AS category_name,
             rt.date AS refund_date, rt.amount AS refund_amount, dt.gst_amount AS tx_gst, dt.description AS tx_description,
             dt.awaiting_statement AS tx_awaiting, COALESCE(da.name, dc.name) AS tx_account,
             (SELECT json_agg(b.name ORDER BY ca.id) FROM credit_applications ca JOIN bills b ON b.id = ca.bill_id WHERE ca.credit_id = vc.id) AS applied_to
@@ -202,6 +203,9 @@ export async function vendorStatement(db, payeeId, today = todayISO()) {
       lines.push({ key: c.transaction_id ? `acct:${c.transaction_id}` : `dep:${c.id}`, date: toISODate(c.date), kind: 'onaccount', amount: -round2(c.amount), credit_id: c.id, transaction_id: c.transaction_id,
         label: c.tx_description || 'Payment', account: c.tx_account, awaiting: !!c.tx_awaiting, gst: c.tx_gst == null ? null : round2(c.tx_gst),
         applies, credit_left: c.status === 'open' && left > 0.005 ? left : 0 });
+    } else if (c.kind === 'credit') {
+      lines.push({ key: `dep:${c.id}`, date: toISODate(c.date), kind: 'credit', amount: -round2(c.amount), credit_id: c.id, transaction_id: c.transaction_id,
+        label: `Credit — ${c.note || c.category_name || 'no cash'}`, applies, credit_left: c.status === 'open' && left > 0.005 ? left : 0 });
     } else {
       lines.push({ key: `dep:${c.id}`, date: toISODate(c.date), kind: 'deposit', amount: -round2(c.amount), credit_id: c.id, transaction_id: c.transaction_id, label: `Deposit paid — ${kind}`,
         gst: c.tx_gst == null ? null : round2(c.tx_gst), applies, credit_left: c.status === 'open' && left > 0.005 ? left : 0 });
@@ -288,7 +292,7 @@ export function billSummary(bills, credits, today = todayISO()) {
   for (const c of credits) {
     if (c.status !== 'open') continue;
     s.held += Number(c.remaining);
-    items.held.push({ credit_id: c.id, payee_id: c.payee_id ?? null, vendor: c.payee_name || null, name: c.kind === 'refundable' ? 'Refundable deposit' : c.note === 'Paid on account' ? 'Paid on account — not used yet' : 'Prepayment',
+    items.held.push({ credit_id: c.id, payee_id: c.payee_id ?? null, vendor: c.payee_name || null, name: c.kind === 'refundable' ? 'Refundable deposit' : c.kind === 'credit' ? `Credit${c.note ? ` — ${c.note}` : ''}` : c.note === 'Paid on account' ? 'Paid on account — not used yet' : 'Prepayment',
       date: toISODate(c.date), amount: round2(c.remaining) });
   }
   for (const list of Object.values(items)) list.sort((a, b) => ((a.due_date || a.date) < (b.due_date || b.date) ? -1 : 1));

@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
+import { removeDoc } from '../removeDoc.js';
 import { uploadBody } from './Receipts.jsx';
 import { money, unitPrice, localToday } from '../format.js';
 import { OWNER_LABELS } from '../owners.jsx';
@@ -248,7 +249,7 @@ export default function Contracts() {
                           startSettle={() => { setSettlingId(c.id); setSettleAccountId(''); setSettleAmount(''); }}
                           cancelSettle={() => { setSettlingId(null); setSettleAccountId(''); setSettleAmount(''); }}
                           settle={() => settle(c.id)} unsettle={() => unsettle(c.id)} remove={() => remove(c.id)}
-                          addDoc={() => { setDocFor(c.id); docRef.current?.click(); }} />
+                          addDoc={() => { setDocFor(c.id); docRef.current?.click(); }} onDocRemoved={load} />
                       </td>
                     </tr>
                   )}
@@ -323,7 +324,7 @@ export default function Contracts() {
 }
 
 /** One contract opened up: its deposits, documents, linking by hand, and settling. */
-function ContractDetail({ c, accounts, post, settling, settleAccountId, setSettleAccountId, settleAmount, setSettleAmount, startSettle, cancelSettle, settle, unsettle, remove, addDoc }) {
+function ContractDetail({ c, accounts, post, settling, settleAccountId, setSettleAccountId, settleAmount, setSettleAmount, startSettle, cancelSettle, settle, unsettle, remove, addDoc, onDocRemoved }) {
   const [linking, setLinking] = useState(false);
   const [q, setQ] = useState('');
   const [hits, setHits] = useState([]);
@@ -407,9 +408,13 @@ function ContractDetail({ c, accounts, post, settling, settleAccountId, setSettl
         {c.status === 'settled' && <button type="button" className="small secondary" onClick={unsettle}>Reopen</button>}
         <button type="button" className="small secondary" title="The signed contract, an amendment or confirmation — photo or PDF" onClick={addDoc}>Add document</button>
         {(c.documents || []).map((d, i) => (
-          <a key={d.id} className="tag" href={`/api/receipts/${d.id}/image`} target="_blank" rel="noreferrer">
-            {i === 0 ? 'Contract' : `Document ${i + 1}`}{d.mime === 'application/pdf' ? ' (PDF)' : ''}
-          </a>
+          <span key={d.id} className="tag doc-tag">
+            <a href={`/api/receipts/${d.id}/image`} target="_blank" rel="noreferrer">
+              {i === 0 ? 'Contract' : `Document ${i + 1}`}{d.mime === 'application/pdf' ? ' (PDF)' : ''}
+            </a>
+            <button type="button" className="doc-x" aria-label={`Delete ${i === 0 ? 'contract document' : `document ${i + 1}`}`} title="Delete this document"
+              onClick={async () => { if (await removeDoc(d)) onDocRemoved?.(); }}>×</button>
+          </span>
         ))}
         {c.status !== 'settled' && !deposits.length && (
           <button type="button" className="small-link" onClick={() => window.confirm(`Delete the ${c.commodity} contract?`) && remove()}>Delete contract</button>

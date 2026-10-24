@@ -7,7 +7,7 @@ const emptyForm = {
   name: '', lender: '', purpose: 'term', linked_asset: '', principal: '',
   interest_rate_pct: '', rate_type: 'fixed', term_months: '', start_date: '',
   covenant_notes: '', covenant_date: '', asset_id: '',
-  ...emptyOwnerFields, payment_frequency: 'monthly', first_payment_date: '',
+  ...emptyOwnerFields, payment_frequency: 'monthly', first_payment_date: '', promo_until: '', promo_retro: false,
 };
 
 // Payment frequencies offered by typical ag lenders — annual and
@@ -39,6 +39,29 @@ const SEGMENT_LABELS = OWNER_LABELS;
 // from today forward matches reality. The math is identical either way;
 // only the labels change to guide correct entry.
 const usesCurrentState = (purpose) => purpose === 'mortgage';
+
+// Promotional financing (a dealer's 0%, Fairstone's same-as-cash): no
+// interest until a date, then the loan's rate. Some plans charge interest
+// back to the start if anything is still owing then.
+function PromoFields({ state, setState }) {
+  return (
+    <>
+      <div className="field">
+        <label>0% until (promotional plans)</label>
+        <input type="date" value={state.promo_until || ''} onChange={(e) => setState({ ...state, promo_until: e.target.value })} />
+        <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '4px 0 0' }}>No interest on payments due by this date; the rate above applies after it.</p>
+      </div>
+      {state.promo_until && (
+        <div className="field">
+          <label>
+            <input type="checkbox" checked={!!state.promo_retro} onChange={(e) => setState({ ...state, promo_retro: e.target.checked })} />
+            {' '}Interest is charged back to the start if it isn't paid off by then
+          </label>
+        </div>
+      )}
+    </>
+  );
+}
 
 export default function Loans() {
   const [loans, setLoans] = useState([]);
@@ -101,6 +124,7 @@ export default function Loans() {
         covenant_date: form.covenant_date || null,
         asset_id: form.asset_id ? Number(form.asset_id) : null,
         first_payment_date: form.first_payment_date || null,
+        promo_until: form.promo_until || null, promo_retro: !!form.promo_until && !!form.promo_retro,
       }),
     });
     if (!res.ok) {
@@ -144,6 +168,7 @@ export default function Loans() {
       asset_id: l.asset_id ?? '',
       payment_frequency: l.payment_frequency || 'monthly',
       first_payment_date: l.first_payment_date ? String(l.first_payment_date).slice(0, 10) : '',
+      promo_until: l.promo_until ? String(l.promo_until).slice(0, 10) : '', promo_retro: !!l.promo_retro,
       covenant_date: l.covenant_date?.slice(0, 10) || '', covenant_notes: l.covenant_notes || '',
       statement_names: l.statement_names || '',
     });
@@ -164,6 +189,7 @@ export default function Loans() {
         linked_asset: editForm.linked_asset || null,
         asset_id: editForm.asset_id ? Number(editForm.asset_id) : null,
         first_payment_date: editForm.first_payment_date || null,
+        promo_until: editForm.promo_until || null, promo_retro: !!editForm.promo_until && !!editForm.promo_retro,
         covenant_date: editForm.covenant_date || null,
         covenant_notes: editForm.covenant_notes || null,
       }),
@@ -458,6 +484,7 @@ export default function Loans() {
                               </select></div>
                             <div className="field"><label>First payment date</label>
                               <input type="date" value={editForm.first_payment_date} onChange={(e) => setEditForm({ ...editForm, first_payment_date: e.target.value })} /></div>
+                            <PromoFields state={editForm} setState={setEditForm} />
                             <div className="field"><label>Secured by asset</label>
                               <select value={editForm.asset_id} onChange={(e) => setEditForm({ ...editForm, asset_id: e.target.value })}>
                                 <option value="">— none —</option>
@@ -722,6 +749,7 @@ export default function Loans() {
               {Object.entries(FREQUENCY_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
             </select>
           </div>
+          <PromoFields state={form} setState={setForm} />
           <div className="field">
             <label>First payment date (optional)</label>
             <input type="date" value={form.first_payment_date} onChange={(e) => setForm({ ...form, first_payment_date: e.target.value })} />

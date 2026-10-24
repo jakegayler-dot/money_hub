@@ -30,7 +30,7 @@ const SECTIONS = [
   { id: 'contracts', label: 'New contracts', hint: 'Price bins or next year’s crop and calves' },
   { id: 'revenue', label: 'Revenue timing', hint: 'When inventory sells and contracts pay' },
   { id: 'costs', label: 'Costs & bills', hint: 'Cost changes, deferring bills, prepaying' },
-  { id: 'loans', label: 'Loans & financing', hint: 'New loan, rates, operating line' },
+  { id: 'loans', label: 'Loans & financing', hint: 'New loan, lease, rates, operating line' },
   { id: 'tax', label: 'Tax', hint: 'Instalment, inventory adjustment' },
   { id: 'other', label: 'Other', hint: 'One-off items, GST timing' },
 ];
@@ -43,7 +43,7 @@ function sectionCount(sc, id) {
     case 'contracts': return (sc.contracts_new || []).length;
     case 'revenue': return com.filter((c) => c.sell_month).length + Object.keys(sc.contract_moves || {}).length;
     case 'costs': return (n(sc.costs_pct) ? 1 : 0) + Object.keys(sc.bill_moves || {}).length + (sc.prepay || []).length;
-    case 'loans': return (sc.loans_new || []).length + (n(sc.rate_pts) ? 1 : 0) + (sc.op_line?.on ? 1 : 0);
+    case 'loans': return (sc.loans_new || []).length + (sc.leases || []).length + (n(sc.rate_pts) ? 1 : 0) + (sc.op_line?.on ? 1 : 0);
     case 'tax': return (sc.tax?.instalment === 'skip' ? 1 : 0) + (n(sc.tax?.oia) ? 1 : 0) + (n(sc.tax?.next_year_net) != null ? 1 : 0);
     case 'other': return (sc.oneoffs || []).length + (n(sc.gst_delay) ? 1 : 0);
     default: return 0;
@@ -249,6 +249,7 @@ function PurchaseSection({ sc, months, update, result }) {
               </Field>
               <Field label="Bought in"><MonthSelect months={months} value={p.month} allowNone={false} label="Bought in" onChange={(x) => set(i, { month: x, first_month: null })} /></Field>
               <Field label="First payment"><MonthSelect months={months} value={p.first_month} planned={`${{ 1: 'a year', 2: '6 months', 4: '3 months', 12: 'a month' }[p.per_year || 1]} after`} label="First payment" onChange={(x) => set(i, { first_month: x })} /></Field>
+              <Field label="0% until"><MonthSelect months={months} value={p.promo_until} planned="no promotion" label="Promotional 0% until" onChange={(x) => set(i, { promo_until: x })} /></Field>
               <Field label="Owner">
                 <select value={p.owner || 'farm'} onChange={(e) => set(i, { owner: e.target.value })}><option value="farm">Farm</option><option value="personal">Personal</option></select>
               </Field>
@@ -526,6 +527,7 @@ function Section({ id, sc, ctx, update, result, options }) {
                 </Field>
                 <Field label="Advanced in"><MonthSelect months={months} value={l.start_month} allowNone={false} label="Advanced in" onChange={(x) => set(i, { start_month: x, first_month: null })} /></Field>
                 <Field label="First payment"><MonthSelect months={months} value={l.first_month} planned={l.per_year === 1 ? 'a year after' : 'a month after'} label="First payment" onChange={(x) => set(i, { first_month: x })} /></Field>
+                <Field label="0% until"><MonthSelect months={months} value={l.promo_until} planned="no promotion" label="Promotional 0% until" onChange={(x) => set(i, { promo_until: x })} /></Field>
                 <Field label="Owner">
                   <select value={l.owner || 'farm'} onChange={(e) => set(i, { owner: e.target.value })}><option value="farm">Farm</option><option value="personal">Personal</option></select>
                 </Field>
@@ -545,6 +547,49 @@ function Section({ id, sc, ctx, update, result, options }) {
         <button type="button" className="small secondary" onClick={() => update((s) => {
           s.loans_new = [...(s.loans_new || []), { label: '', amount: 250000, rate: 6.5, years: 5, per_year: 1, start_month: months[Math.min(2, months.length - 1)].value, owner: 'farm' }];
         })}>Add a loan</button>
+
+        <h4 className="wi-h">Leases</h4>
+        {(sc.leases || []).map((l, i) => {
+          const setL = (patch) => update((s) => { s.leases[i] = clean({ ...s.leases[i], ...patch }); });
+          const per = Number(l.per_year || 12);
+          const each = n(l.payment) > 0 ? n(l.payment) * (1 + (n(l.pst_pct) || 0) / 100 + (l.owner === 'personal' ? (n(l.gst_pct) ?? 5) / 100 : 0)) : null;
+          return (
+            <div key={i} className="wi-card">
+              <div className="wi-card-head">
+                <input className="wi-card-name" aria-label="Lease name" value={l.label || ''} placeholder="What's leased" onChange={(e) => setL({ label: e.target.value })} />
+                <button type="button" className="wi-x" aria-label="Remove lease" onClick={() => update((s) => { s.leases.splice(i, 1); })}>×</button>
+              </div>
+              <div className="wi-grid2">
+                <Field label="Payment (before tax)"><NumIn label="Lease payment" value={l.payment} min="0" step="100" onChange={(x) => setL({ payment: x })} /></Field>
+                <Field label="Paid">
+                  <select value={String(per)} onChange={(e) => setL({ per_year: Number(e.target.value) })}>
+                    <option value="12">Monthly</option><option value="4">Quarterly</option><option value="2">Twice a year</option><option value="1">Annually</option>
+                  </select>
+                </Field>
+                <Field label="Years"><NumIn label="Lease years" value={l.years} min="0.5" step="0.5" onChange={(x) => setL({ years: x })} /></Field>
+                <Field label="First payment"><MonthSelect months={months} value={l.start_month} allowNone={false} label="First lease payment" onChange={(x) => setL({ start_month: x })} /></Field>
+                <Field label="PST %"><NumIn label="PST" value={l.pst_pct} min="0" step="1" placeholder="0" onChange={(x) => setL({ pst_pct: x })} /></Field>
+                <Field label="Owner">
+                  <select value={l.owner || 'farm'} onChange={(e) => setL({ owner: e.target.value })}><option value="farm">Farm</option><option value="personal">Personal</option></select>
+                </Field>
+                <Field label="Money down"><NumIn label="Money down" value={l.down} min="0" step="500" placeholder="none" onChange={(x) => setL({ down: x })} /></Field>
+                <Field label="Buyout at the end"><NumIn label="Buyout" value={l.buyout} min="0" step="1000" placeholder="none" onChange={(x) => setL({ buyout: x })} /></Field>
+                {n(l.buyout) > 0 && (
+                  <Field label="CCA class" wide>
+                    <select value={String(l.cca_rate ?? 20)} onChange={(e) => setL({ cca_rate: Number(e.target.value) })}>
+                      {CCA_CLASSES.map((c) => <option key={c.rate} value={c.rate}>{c.label}</option>)}
+                    </select>
+                  </Field>
+                )}
+              </div>
+              {each && <p className="wi-card-foot">{money(each)} {per === 12 ? 'a month' : per === 4 ? 'a quarter' : per === 2 ? 'every six months' : 'a year'} out of the bank{l.owner === 'personal' ? ' with GST' : ', GST claimed back'} · deductible as paid</p>}
+            </div>
+          );
+        })}
+        <button type="button" className="small secondary" onClick={() => update((s) => {
+          s.leases = [...(s.leases || []), { label: '', payment: 2500, per_year: 12, years: 4, start_month: months[Math.min(1, months.length - 1)].value, owner: 'farm' }];
+        })}>Add a lease</button>
+        <p className="wi-help">PST: farm machinery is exempt in Saskatchewan; trucks and vehicles are 6%.</p>
 
         <h4 className="wi-h">Interest rates</h4>
         <RangeIn label="Change on existing loans" value={n(sc.rate_pts) || 0} min={-2} max={4} step={0.25} unit=" pts" onChange={(v) => update((s) => { if (v) s.rate_pts = v; else delete s.rate_pts; })} />

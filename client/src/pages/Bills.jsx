@@ -44,8 +44,9 @@ const emptyForm = {
   ...emptyOwnerFields,
 };
 
-// Input financing terms: interest-free until a date, then simple interest
-// at the rate. A balance from a statement replaces the invoice as the base.
+// Interest on a bill (input financing, or a vendor charging on an overdue
+// account): simple interest at the rate from the date it starts. A balance
+// from a statement replaces the invoice as the base.
 function FinanceFields({ state, setState, disabled = false }) {
   const set = (k) => (e) => setState({ ...state, [k]: e.target.value });
   return (
@@ -54,17 +55,17 @@ function FinanceFields({ state, setState, disabled = false }) {
         <label>
           <input type="checkbox" disabled={disabled} checked={!!state.is_financed}
             onChange={(e) => setState({ ...state, is_financed: e.target.checked })} />
-          {' '}On finance terms (input financing)
+          {' '}Charges interest
         </label>
       </div>
       {state.is_financed && (
         <>
           <div className="field">
-            <label>Interest-free until</label>
+            <label>Interest starts</label>
             <input type="date" disabled={disabled} value={state.interest_free_until || ''} onChange={set('interest_free_until')} />
           </div>
           <div className="field">
-            <label>Interest after that (% per year)</label>
+            <label>Rate (% per year)</label>
             <input type="number" step="0.01" min="0" disabled={disabled} value={state.finance_rate_pct ?? ''} onChange={set('finance_rate_pct')} />
           </div>
           <div className="field">
@@ -371,7 +372,7 @@ export default function Bills() {
                       <td>
                         {b.name}
                         {b.frequency !== 'one_time' && <span className="tag">{{ monthly: 'Monthly', quarterly: 'Quarterly', annual: 'Yearly' }[b.frequency]}</span>}
-                        {b.is_financed && <span className="tag">Financed</span>}
+                        {b.is_financed && <span className="tag">Interest</span>}
                         <div>
                           {b.invoice_receipt_id ? (
                             <a className="tag" style={{ marginLeft: 0 }} href={`/api/receipts/${b.invoice_receipt_id}/image`} target="_blank" rel="noreferrer">Invoice</a>
@@ -399,9 +400,9 @@ export default function Bills() {
                         <span className="nowrap">{money(Number(b.amount))}</span>
                         {b.is_financed && b.status === 'unpaid' && (
                           <div className="split-lines nowrap">
-                            {b.owing_now > Number(b.amount) + 0.005 ? `owing now ${cents(b.owing_now)}` : `0% until ${b.interest_free_until || '—'}`}
+                            {b.owing_now > Number(b.amount) + 0.005 ? `owing now ${cents(b.owing_now)}` : (b.interest_free_until ? `interest from ${b.interest_free_until}` : 'interest from the invoice date')}
                             {b.owing_at_due > b.owing_now + 0.005 && <div>{cents(b.owing_at_due)} by {b.due_date?.slice(0, 10)}</div>}
-                            <div>{Number(b.finance_rate_pct)}%/yr after{b.balance_as_of ? ` · stmt ${b.balance_as_of}` : ''}</div>
+                            <div>{Number(b.finance_rate_pct)}%/yr{b.balance_as_of ? ` · stmt ${b.balance_as_of}` : ''}</div>
                           </div>
                         )}
                         {b.has_gst && (

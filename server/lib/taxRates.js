@@ -25,6 +25,10 @@ export const RATES = {
       firstAdditional: 0.01, // per side — deductible
       cpp2Rate: 0.04,        // per side — deductible
     },
+    // EI, outside Quebec: https://www.canada.ca/en/employment-social-development/news/2025/09/canada-employment-insurance-commission-sets-the-2026-employment-insurance-premium-rate.html
+    ei: { mie: 68900, rate: 0.0163 },
+    // Canada employment amount (federal credit for employees), CRA indexation 2026.
+    employmentAmount: 1501,
   },
 };
 
@@ -91,5 +95,42 @@ export function personalTax(netIncome, year) {
     cpp: r2(cppTotal), federal: r2(federal), sk: r2(sk), total: r2(total),
     average_rate: ni ? r2((total / ni) * 100) : 0,
     marginal_income_tax_rate: r2(marginal * 100),
+  };
+}
+
+/**
+ * Income tax on employment income for one person (a paystub's year):
+ * federal and Saskatchewan, after the RPP, RRSP and union dues taken off
+ * the cheque and the enhanced CPP (deductible), with the basic personal
+ * amounts, the employee's base CPP and EI (credits) and the Canada
+ * employment amount. No other income, credits or deductions. Also the
+ * year's maximum employee CPP, CPP2 and EI.
+ */
+export function employeeTax(gross, { rpp = 0, rrsp = 0, union = 0 } = {}, year) {
+  const R = ratesFor(year);
+  const g = Math.max(0, Number(gross) || 0);
+  const { cpp } = R;
+  const pensionable = Math.max(0, Math.min(g, cpp.ympe) - cpp.exemption);
+  const cppBase = pensionable * cpp.baseRate;
+  const cppFirst = pensionable * cpp.firstAdditional;
+  const cpp2 = Math.max(0, Math.min(g, cpp.yampe) - cpp.ympe) * cpp.cpp2Rate;
+  const ei = Math.min(g, R.ei?.mie ?? 0) * (R.ei?.rate ?? 0);
+  const taxable = Math.max(0, g - rpp - rrsp - union - cppFirst - cpp2);
+  const F = R.federal;
+  let bpa = F.bpaMax;
+  if (taxable > F.bpaTaperFrom) {
+    const t = Math.min(1, (taxable - F.bpaTaperFrom) / (F.bpaTaperTo - F.bpaTaperFrom));
+    bpa = F.bpaMax - (F.bpaMax - F.bpaMin) * t;
+  }
+  const empAmt = Math.min(R.employmentAmount ?? 0, g);
+  const federal = Math.max(0, bracketTax(taxable, F.brackets) - (bpa + cppBase + ei + empAmt) * F.creditRate);
+  const S = R.sk;
+  const sk = Math.max(0, bracketTax(taxable, S.brackets) - (S.bpa + cppBase + ei) * S.creditRate);
+  const maxCpp = (cpp.ympe - cpp.exemption) * (cpp.baseRate + cpp.firstAdditional);
+  return {
+    rates_year: R.year, rates_current: R.current, taxable_income: r2(taxable),
+    federal: r2(federal), sk: r2(sk), income_tax: r2(federal + sk),
+    cpp: r2(cppBase + cppFirst), cpp2: r2(cpp2), ei: r2(ei),
+    max: { cpp: r2(maxCpp), cpp2: r2((cpp.yampe - cpp.ympe) * cpp.cpp2Rate), ei: r2((R.ei?.mie ?? 0) * (R.ei?.rate ?? 0)) },
   };
 }

@@ -3,6 +3,7 @@ import MetricCard from '../components/MetricCard.jsx';
 import { money } from '../format.js';
 import { cents } from '../components/SplitEditor.jsx';
 import OwnerCheck from '../components/OwnerCheck.jsx';
+import Paystubs from '../components/Paystubs.jsx';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const monthName = (key) => MONTHS[Number(key.slice(5, 7)) - 1];
@@ -180,6 +181,8 @@ export default function Personal() {
           </table>
         )}
       </div>
+
+      <Paystubs />
     </>
   );
 }

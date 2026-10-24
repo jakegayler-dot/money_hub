@@ -40,6 +40,8 @@ import { applyContractRules } from './lib/contracts.js';
 import sentinelActionsRoute from './routes/sentinelActions.js';
 import sentinelRoute from './routes/sentinel.js';
 import advisorRoute from './routes/advisor.js';
+import paystubsRoute, { ingestRouter as paystubIngest } from './routes/paystubs.js';
+import { matchAllStubs } from './lib/paystubs.js';
 import { sentinelWriteTrigger, startSentinelSync } from './lib/sentinel.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -52,6 +54,9 @@ app.use(cors());
 app.use('/api/receipts/upload', receiptUpload);
 // A Quicken export sent as JSON can be bigger than the usual limit.
 app.use('/api/quicken/import', express.json({ limit: '25mb' }));
+// Ashley's agent files paystubs with its own key (PAYSTUB_API_KEY), stubs and
+// their PDFs in the body: before the JSON parser and the sign-in guard.
+app.use('/api/paystubs/ingest', paystubIngest);
 app.use(express.json());
 
 // Any successful write under /api (including statement ingest paying bills)
@@ -87,6 +92,7 @@ app.use('/api/entity-summary', entityRoute);
 app.use('/api/balance-sheet', balanceSheetRoute);
 app.use('/api/financials', financialsRoute);
 app.use('/api/advisor', advisorRoute);
+app.use('/api/paystubs', paystubsRoute);
 app.use('/api/quicken', quickenRoute);
 app.use('/api/assets', assetsRoute);
 app.use('/api/inventory', inventoryRoute);
@@ -160,4 +166,8 @@ app.listen(port, () => {
   setTimeout(inventoryRecord, 6000);
   setInterval(inventoryRecord, 6 * 60 * 60 * 1000);
   setInterval(() => settleAllVendorAccounts(withTransaction), 6 * 60 * 60 * 1000);
+  // Paystubs whose deposit hadn't arrived yet: look again.
+  const stubMatch = () => matchAllStubs().catch((e) => console.error('Paystub matching failed:', e.message));
+  setTimeout(stubMatch, 9000);
+  setInterval(stubMatch, 6 * 60 * 60 * 1000);
 });

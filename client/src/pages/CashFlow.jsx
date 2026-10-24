@@ -217,6 +217,10 @@ function AccountPicker({ accounts, chosen, setChosen }) {
   );
 }
 
+// The crop year being marketed ends next calendar year's August: from September
+// that's this crop's end; before September it's the crop still to be harvested.
+const CROP_END = new Date().getFullYear() + 1;
+
 export default function CashFlow() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -291,6 +295,8 @@ export default function CashFlow() {
         </span>
         <span className="seg-toggle" role="group" aria-label="Months ahead">
           {[12, 18, 24].map((m) => <button key={m} type="button" aria-pressed={months === m} className={months === m ? 'on' : ''} onClick={() => setMonths(m)}>{m} months</button>)}
+          <button type="button" aria-pressed={months === 'crop'} className={months === 'crop' ? 'on' : ''} onClick={() => setMonths('crop')}
+            title="Through the end of the crop year being marketed (Sep to Aug)">To Aug {CROP_END}</button>
         </span>
         <label className="cf-switch">
           <input type="checkbox" checked={includeTax} onChange={(e) => setIncludeTax(e.target.checked)} />

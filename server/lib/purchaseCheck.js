@@ -153,6 +153,7 @@ export const PURCHASE_FIELDS = {
   per_year: 'payments a year: 1 (default), 2, 4 or 12',
   month: 'month bought, YYYY-MM (default this month)',
   first_month: 'first payment, YYYY-MM (default one payment period after buying)',
+  promo_until: 'promotional 0% financing until this month, YYYY-MM; the rate applies after it (dealer 0%, same-as-cash)',
   owner: '"farm" (default) or "personal"',
   cca_rate: 'CCA rate %: 20 machinery (default), 30 trucks, 10 frame buildings and bins, 4 buildings, 0 land',
 };
@@ -181,7 +182,7 @@ export function purchaseFromInput(src = {}) {
     if (![1, 2, 4, 12].includes(p)) return bad('"per_year" must be 1, 2, 4 or 12.');
     out.per_year = p;
   }
-  for (const k of ['month', 'first_month']) {
+  for (const k of ['month', 'first_month', 'promo_until']) {
     if (src[k] === undefined || src[k] === '') continue;
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(src[k]))) return bad(`"${k}" must be a month, YYYY-MM.`);
     out[k] = String(src[k]);

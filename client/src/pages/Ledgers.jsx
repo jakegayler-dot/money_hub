@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
+import { removeDoc } from '../removeDoc.js';
 import { uploadBody } from './Receipts.jsx';
 
 const DOC_LABEL = { receipt: 'Receipt', invoice: 'Invoice', sales_ticket: 'Ticket', contract: 'Contract' };
@@ -695,9 +696,13 @@ export default function Ledgers() {
                     {t.is_transfer && <span className="tag">Transfer</span>}
                     {t.pays && <span className="tag tag-link">{t.pays}</span>}
                     {(t.documents || []).map((d, i) => (
-                      <a key={d.id} className="tag" href={`/api/receipts/${d.id}/image`} target="_blank" rel="noreferrer">
-                        {DOC_LABEL[d.type] || 'Document'}{t.documents.length > 1 ? ` ${i + 1}` : ''}{d.mime === 'application/pdf' ? ' (PDF)' : ''}
-                      </a>
+                      <span key={d.id} className="tag doc-tag">
+                        <a href={`/api/receipts/${d.id}/image`} target="_blank" rel="noreferrer">
+                          {DOC_LABEL[d.type] || 'Document'}{t.documents.length > 1 ? ` ${i + 1}` : ''}{d.mime === 'application/pdf' ? ' (PDF)' : ''}
+                        </a>
+                        <button type="button" className="doc-x" aria-label={`Delete ${DOC_LABEL[d.type] || 'document'} ${i + 1}`} title="Delete this document"
+                          onClick={async () => { if (await removeDoc(d)) load(); }}>×</button>
+                      </span>
                     ))}
                     {t.payee_name && <div className="split-lines" style={{ color: 'var(--text)' }}>{Number(t.amount) > 0 ? 'From' : 'To'} {t.payee_name}</div>}
                     {t.source && <span className="tag" title={`From ${t.source}`}>Statement</span>}

@@ -56,6 +56,18 @@ export function ownerOf(src, fallback = {}) {
   return Object.fromEntries(SEGMENT_COLUMNS.map((c, i) => [c, vals[i]]));
 }
 
+/**
+ * A transfer is never split between owners (Jake, 2026-10-23): a split
+ * owner becomes its largest share alone (an account split 60/40 gives the
+ * 60 side). Anything already single is kept.
+ */
+export function soleOwner(o) {
+  if (!o?.is_segment_split) return o;
+  const pcts = [['grain', o.segment_grain_pct], ['livestock', o.segment_livestock_pct], ['jake', o.segment_jake_pct], ['ashley', o.segment_ashley_pct]];
+  const top = pcts.reduce((a, b) => (Number(b[1] || 0) > Number(a[1] || 0) ? b : a))[0];
+  return ownerOf({ segment: top });
+}
+
 /** Business vs personal ledger implied by an owner tag; `fallback` when a split straddles both. */
 export function ledgerForOwner(owner, fallback = 'business') {
   if (!owner.is_segment_split) return owner.segment ? ledgerForSegment(owner.segment) : fallback;
@@ -106,7 +118,7 @@ export function normalizeSplits(pieces, parentAmount, parentOwner, parentLedger)
  */
 export async function insertTransaction(client, t) {
   await assertOpen(client, t.date);
-  const owner = t.owner || ownerOf(t);
+  const owner = t.is_transfer ? soleOwner(t.owner || ownerOf(t)) : (t.owner || ownerOf(t));
   const splits = t.splits || [];
   const cleared = t.cleared !== false;
   // Money in with no category can't be analysed — it waits on Review.
@@ -431,16 +443,23 @@ async function rebuildCreditSplits(client, creditId) {
   if (!tx || await closedMonth(client, tx.date)) return;
   const { rows: apps } = await client.query(
     `SELECT b.*, ca.amount AS applied FROM credit_applications ca JOIN bills b ON b.id = ca.bill_id WHERE ca.credit_id = $1 ORDER BY ca.id`, [c.id]);
-  const pieces = apps.map((a) => ({
+  // A credit with no cash (a contra): the credit itself is income in its category.
+  const isCredit = c.kind === 'credit';
+  const income = isCredit ? [{
+    amount: Number(c.amount), category_id: c.category_id || null, memo: `Credit from ${c.vendor}${c.note ? `: ${c.note}` : ''}`,
+    owner: ownerOf(tx), ledger: tx.ledger, is_transfer: false,
+  }] : [];
+  const pieces = income.concat(apps.map((a) => ({
     amount: -Number(a.applied), category_id: a.category_id || null, memo: `${c.note === ON_ACCOUNT_NOTE ? 'Paid' : 'Deposit applied'}: ${a.name}`,
     owner: ownerOf(a), ledger: a.ledger, is_transfer: false,
-  }));
-  const left = round2(-Number(tx.amount) - apps.reduce((s, a) => s + Number(a.applied), 0));
+  })));
+  const total = isCredit ? Number(c.amount) : -Number(tx.amount);
+  const left = round2(total - apps.reduce((s, a) => s + Number(a.applied), 0));
   if (left > 0.005) {
     const kept = c.status === 'kept';
     pieces.push({
       amount: -left, category_id: kept ? c.kept_category_id : null,
-      memo: kept ? `Deposit kept by ${c.vendor}` : c.note === ON_ACCOUNT_NOTE ? `Credit with ${c.vendor} for the next bill` : `Deposit held by ${c.vendor}`,
+      memo: kept ? `${isCredit ? 'Credit' : 'Deposit'} kept by ${c.vendor}` : isCredit || c.note === ON_ACCOUNT_NOTE ? `Credit with ${c.vendor} for the next bill` : `Deposit held by ${c.vendor}`,
       owner: ownerOf(tx), ledger: tx.ledger, is_transfer: !kept,
     });
   }
@@ -480,16 +499,43 @@ export async function recordVendorDeposit(client, { payee_id, kind, transaction_
 }
 
 /**
- * Uses a deposit against a bill: up to what the bill still owes. A bill
- * fully covered is marked paid; the applied part becomes its expense.
+ * A credit from a vendor with no cash moving (a canola contra, a rebate on
+ * account): income in its category on its date, held with the vendor until
+ * it pays bills. Recorded on a non-cash entry that never touches an account.
  */
-export async function applyVendorCredit(client, creditId, billId, { on = null, rebuild = true } = {}) {
+export async function recordVendorCredit(client, { payee_id, amount, date, category_id = null, owner = null, note = null }) {
+  const amt = round2(Number(amount));
+  if (!(amt > 0) || !date) throw new PostingError('A credit needs an amount and a date.');
+  await assertOpen(client, date);
+  const { rows: [p] } = await client.query('SELECT name FROM payees WHERE id = $1', [payee_id]);
+  if (!p) throw new PostingError('Vendor not found.');
+  const o = owner && !validateSegment(owner) ? ownerOf(owner) : ownerOf({ segment: 'grain' });
+  const { rows: [tx] } = await client.query(
+    `INSERT INTO transactions (account_id, credit_card_id, ledger, date, amount, description, is_split, is_noncash, entered_by, cleared, cleared_date, payee_id, ${SEG_COLS})
+     VALUES (NULL, NULL, $1, $2, 0, $3, true, true, 'manual', true, $2, $4, ${SEGMENT_COLUMNS.map((_, i) => `$${5 + i}`).join(',')}) RETURNING *`,
+    [ledgerForOwner(o), date, `Credit from ${p.name}${note ? `: ${note}` : ''}`, payee_id, ...SEGMENT_COLUMNS.map((k) => o[k])]);
+  const { rows: [c] } = await client.query(
+    `INSERT INTO vendor_credits (payee_id, kind, amount, date, transaction_id, note, category_id) VALUES ($1, 'credit', $2, $3, $4, $5, $6) RETURNING *`,
+    [payee_id, amt, date, tx.id, note, category_id || null]);
+  await rebuildCreditSplits(client, c.id);
+  return c;
+}
+
+/**
+ * Uses a deposit or credit against a bill: up to what the bill still owes
+ * (or `amount`, for part of it). `on` is the day it's paid (what a bill
+ * charging interest owes then; its paid date). A bill fully covered is
+ * marked paid; the applied part becomes its expense.
+ */
+export async function applyVendorCredit(client, creditId, billId, { on = null, rebuild = true, amount = null } = {}) {
   const { rows: [c] } = await client.query('SELECT * FROM vendor_credits WHERE id = $1 FOR UPDATE', [creditId]);
   if (!c || c.status !== 'open') throw new PostingError('That deposit isn\'t available to apply.');
   const { rows: [bill] } = await client.query('SELECT * FROM bills WHERE id = $1 FOR UPDATE', [billId]);
   if (!bill || bill.status !== 'unpaid') throw new PostingError('That bill isn\'t unpaid.');
   const at = on || toISODate(new Date()); // the day it's settled: what a financed bill owes then
-  const use = Math.min(await creditRemaining(client, c.id), await billOwing(client, bill.id, at));
+  const want = amount == null || amount === '' ? Infinity : round2(Number(amount));
+  if (!(want > 0)) throw new PostingError('Apply an amount above zero.');
+  const use = Math.min(await creditRemaining(client, c.id), await billOwing(client, bill.id, at), want);
   if (use <= 0.005) throw new PostingError('Nothing to apply.');
   await client.query('INSERT INTO credit_applications (credit_id, bill_id, amount) VALUES ($1, $2, $3)', [c.id, bill.id, round2(use)]);
   if (await creditRemaining(client, c.id) <= 0.005) await client.query(`UPDATE vendor_credits SET status = 'used' WHERE id = $1`, [c.id]);
@@ -537,8 +583,11 @@ export async function settleVendorAccount(client, payeeId, today = toISODate(new
   await client.query(
     `UPDATE vendor_credits vc SET status = 'open' WHERE vc.payee_id = $1 AND vc.status = 'used'
        AND vc.amount - COALESCE((SELECT SUM(amount) FROM credit_applications WHERE credit_id = vc.id), 0) > 0.005`, [payeeId]);
+  // Auto-apply is off for this vendor: credits wait to be applied by hand.
+  const { rows: [pv] } = await client.query('SELECT auto_apply_credits FROM payees WHERE id = $1', [payeeId]);
+  if (pv && pv.auto_apply_credits === false) return { applied: 0 };
   const { rows: credits } = await client.query(
-    `SELECT id, date FROM vendor_credits WHERE payee_id = $1 AND kind = 'prepayment' AND status = 'open' ORDER BY date, id`, [payeeId]);
+    `SELECT id, date FROM vendor_credits WHERE payee_id = $1 AND kind IN ('prepayment', 'credit') AND status = 'open' ORDER BY date, id`, [payeeId]);
   if (!credits.length) return { applied: 0 };
   const { rows: bills } = await client.query(
     `SELECT id, received_date, due_date, created_at, frequency, status, paid_date FROM bills
@@ -582,7 +631,7 @@ function billLandsOn(b) {
 /** Every vendor with credit to apply or payments marked on account. */
 export async function settleAllVendorAccounts(withTx) {
   const { rows } = await pool.query(
-    `SELECT DISTINCT payee_id FROM vendor_credits WHERE kind = 'prepayment' AND status IN ('open', 'used')
+    `SELECT DISTINCT payee_id FROM vendor_credits WHERE kind IN ('prepayment', 'credit') AND status IN ('open', 'used')
      UNION SELECT DISTINCT t.payee_id FROM vendor_on_account o JOIN transactions t ON t.id = o.transaction_id WHERE t.payee_id IS NOT NULL`);
   for (const r of rows) {
     try { await withTx((client) => settleVendorAccount(client, r.payee_id)); } catch (e) { console.error('Vendor settle failed', r.payee_id, e.message); }
@@ -627,7 +676,10 @@ export async function removeVendorCredit(client, creditId) {
   for (const a of apps) await unapplyVendorCredit(client, a.id, { auto: true });
   if (c.refund_transaction_id) await client.query('UPDATE transactions SET is_transfer = false WHERE id = $1', [c.refund_transaction_id]);
   await client.query('DELETE FROM vendor_credits WHERE id = $1', [c.id]);
-  if (c.transaction_id) {
+  if (c.transaction_id && c.kind === 'credit') {
+    await client.query('DELETE FROM transaction_splits WHERE transaction_id = $1', [c.transaction_id]);
+    await client.query('DELETE FROM transactions WHERE id = $1 AND is_noncash', [c.transaction_id]);
+  } else if (c.transaction_id) {
     await client.query('DELETE FROM transaction_splits WHERE transaction_id = $1', [c.transaction_id]);
     await client.query('UPDATE transactions SET is_split = false WHERE id = $1', [c.transaction_id]);
   }

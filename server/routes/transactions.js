@@ -3,7 +3,7 @@ import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { validateSegment, SEGMENT_COLUMNS } from '../lib/segments.js';
 import {
-  insertTransaction, removeTransaction, ownerOf, ledgerForOwner, normalizeSplits,
+  insertTransaction, removeTransaction, ownerOf, soleOwner, ledgerForOwner, normalizeSplits,
   linkBillToTransaction, linkLoanPaymentToTransaction, linkContractToTransaction, linkCardPaymentToTransaction, payeeId, UNCATEGORIZED_INCOME, cleanGst,
 } from '../lib/postings.js';
 import { toISODate } from '../lib/dates.js';
@@ -248,8 +248,12 @@ router.post('/', ah(async (req, res) => {
   let fallbackOwner = {};
   if (account_id) fallbackOwner = (await pool.query('SELECT * FROM accounts WHERE id = $1', [account_id])).rows[0] || {};
   else fallbackOwner = card;
-  // A transfer is its account's owner's money; a purchase can be anyone's.
-  const owner = req.body.is_transfer && account_id ? ownerOf({}, fallbackOwner) : ownerOf(req.body, fallbackOwner);
+  // A transfer keeps the one owner it's given, else its account's (the
+  // largest share of a split account): never split. A purchase can be anyone's.
+  const ownerGiven = req.body.segment !== undefined || req.body.is_segment_split !== undefined;
+  const owner = req.body.is_transfer
+    ? soleOwner(ownerGiven ? ownerOf(req.body, fallbackOwner) : ownerOf({}, fallbackOwner))
+    : ownerOf(req.body, fallbackOwner);
   const ledger = req.body.ledger || ledgerForOwner(owner, fallbackOwner.ledger || 'business');
   const { splits, error } = normalizeSplits(pieces, Number(amount), owner, ledger);
   if (error) return res.status(400).json({ error });
@@ -341,15 +345,18 @@ router.patch('/:id', ah(async (req, res) => {
       if (err) return { status: 400, body: { error: err } };
     }
     let owner = ownerSent ? ownerOf(b, {}) : ownerOf(tx);
-    // A transfer belongs to its account's owner on each side: money moving
-    // from the farm's account to Jake's is the farm's going out and Jake's
-    // coming in. There's nothing to choose.
+    // A transfer keeps the one owner it's given (never split); with none
+    // given it takes its account's (the largest share of a split account).
     const willBeTransfer = b.is_transfer !== undefined ? !!b.is_transfer : tx.is_transfer;
     let transferLedger = null;
     if (willBeTransfer && newAccount) {
       const { rows: [acct] } = await client.query('SELECT * FROM accounts WHERE id = $1', [newAccount]);
-      if (acct) { owner = ownerOf({}, acct); transferLedger = acct.ledger; }
+      if (acct) {
+        if (!ownerSent && (newAccount !== tx.account_id || !tx.is_transfer)) owner = ownerOf({}, acct);
+        transferLedger = acct.ledger;
+      }
     }
+    if (willBeTransfer) owner = soleOwner(owner);
     const ledger = b.ledger || (transferLedger || (ownerSent ? ledgerForOwner(owner, tx.ledger) : tx.ledger));
 
     // Splits: replaced when sent ([] or null = not split any more). If the

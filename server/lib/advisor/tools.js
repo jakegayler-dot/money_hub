@@ -54,8 +54,9 @@ export const TOOL_DEFS = [
   {
     name: 'run_whatif',
     description: `Run a decision through the live forecast: the money moves AND the income tax re-worked, against the plan. Use it for every decision with cash or tax consequences instead of working it out in your head. Scenario levers (all optional):
-  purchases: [{ label, price, trade_in, deposit, fees, gst_pct (5), pst_pct (0 farm machinery; 6 trucks/vehicles), taxes: "financed"|"cash", rate, years, per_year (1,2,4,12), month "YYYY-MM", first_month, owner "farm"|"personal", cca_rate }]
-  loans_new: [{ label, amount, rate, years, per_year, start_month, first_month, owner, buy_cost, cca_rate }]
+  purchases: [{ label, price, trade_in, deposit, fees, gst_pct (5), pst_pct (0 farm machinery; 6 trucks/vehicles), taxes: "financed"|"cash", rate, years, per_year (1,2,4,12), month "YYYY-MM", first_month, promo_until "YYYY-MM" (0% until then), owner "farm"|"personal", cca_rate }]
+  loans_new: [{ label, amount, rate, years, per_year, start_month, first_month, promo_until, owner, buy_cost, cca_rate }]
+  leases: [{ label, payment (before tax), per_year (12,4,2,1), start_month, years, pst_pct, down, buyout, cca_rate, owner }]  (deductible as paid; farm gets GST back)
   oneoffs: [{ label, amount (negative = money out), month, treatment: "farm"|"capital"|"personal", cca_rate }]
   prepay: [{ label, amount, month, instead_month }]  (prepaying inputs: deductible in the month paid)
   commodities: { [key from whatif_options]: { price, pct, qty, sell_month } }  (sell later or sooner, at another price)
