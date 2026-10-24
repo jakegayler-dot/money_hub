@@ -123,3 +123,27 @@ test('employee tax for 2026: CPP, EI and income tax on a $68,900 salary', () => 
   const withPension = employeeTax(68900, { rpp: 3000 }, 2026);
   assert.ok(withPension.income_tax < t.income_tax);
 });
+
+test("an uploaded paystub is read and filed like the agent's (Oct 24: her agent works at a computer, so it adds stubs on the page)", async () => {
+  const { fileUploadedPaystub } = await import('../lib/paystubRead.js');
+  const pay = daysAgo(1);
+  await deposit(hers, pay, 1404.18);
+  const reply = (input) => async () => ({ stop_reason: 'tool_use', content: [{ type: 'tool_use', name: 'record_paystub', input }] });
+  const read = { is_paystub: true, employer: 'Melfort Union Hospital', pay_date: pay, period_start: daysAgo(15), period_end: daysAgo(2), gross: 1900,
+    net: 1404.18, deductions: [{ type: 'income_tax', label: 'Federal tax', amount: 210.5 }, { type: 'income_tax', label: 'Provincial tax', amount: 120.1 },
+      { type: 'cpp', label: 'CPP', amount: 107.4 }, { type: 'ei', label: 'EI', amount: 31.16 }, { type: 'pension', label: 'SHEPP', amount: 26.66 }], ytd: null };
+  const pdf = { bytes: Buffer.from('%PDF-1.4 stub'), mime: 'application/pdf' };
+  const r = await fileUploadedPaystub({ ...pdf, owner: 'ashley' }, { send: reply(read) });
+  assert.equal(r.matched_deposit, true);
+  assert.deepEqual(r.warnings, []);
+  const row = await one('SELECT source, doc_mime, transaction_id FROM paystubs WHERE id = $1', [r.id]);
+  assert.equal(row.source, 'upload');
+  assert.equal(row.doc_mime, 'application/pdf');
+  assert.ok(row.transaction_id);
+  // The same stub added again updates it.
+  assert.equal((await fileUploadedPaystub({ ...pdf, owner: 'ashley' }, { send: reply(read) })).updated, true);
+  // Not a paystub, or no net pay readable: refused with a reason, nothing filed.
+  await assert.rejects(fileUploadedPaystub({ ...pdf, owner: 'ashley' }, { send: reply({ is_paystub: false, notes: 'a grocery receipt' }) }),
+    (e) => e.status === 422 && /grocery receipt/.test(e.message));
+  await assert.rejects(fileUploadedPaystub({ ...pdf, owner: 'ashley' }, { send: reply({ ...read, net: null }) }), (e) => e.status === 422 && /net/.test(e.message));
+});

@@ -270,7 +270,7 @@ A transfer: `"category": "[Other Account Name]"` (Quicken's own form) or `"trans
 
 ## 8. Paystubs — `POST /api/paystubs/ingest`
 
-For Ashley's agent. **Its own key:** header `X-Api-Key: <PAYSTUB_API_KEY>` (not the ingest key). That key can file paystubs and read the paystub analysis, nothing else. `503` until `PAYSTUB_API_KEY` is set in Railway.
+**Ashley's agent works at a computer, so it doesn't need this:** it files a stub on Money Hub's Personal page → Paystubs → **Add paystub** (the PDF or a photo; Money Hub reads it). This API is for a program that sends the fields itself. **Its own key:** header `X-Api-Key: <PAYSTUB_API_KEY>` (not the ingest key). That key can file paystubs and read the paystub analysis, nothing else. `503` until `PAYSTUB_API_KEY` is set in Railway.
 
 - `GET /api/paystubs/ingest` — the fields, with an example.
 - `POST /api/paystubs/ingest` — `{ "stubs": [ … ] }` (up to 100), or one stub as the body.

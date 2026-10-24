@@ -12,12 +12,15 @@
 //   GET    /api/paystubs/:id/document    the stub's PDF or photo, if one was sent
 //   DELETE /api/paystubs/:id
 //   POST   /api/paystubs/match           look for deposits again
+//   POST   /api/paystubs/upload          ?owner= — the stub's PDF or photo as the body: read by Claude and filed
+//                                         (how Ashley's agent files one: it works at a computer, like a person)
 import crypto from 'node:crypto';
 import express, { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { normalizeStub, saveStub, paystubSummary, matchAllStubs, DEDUCTION_TYPES, OWNERS } from '../lib/paystubs.js';
 import { todayISO } from '../lib/dates.js';
+import { fileUploadedPaystub } from '../lib/paystubRead.js';
 
 const digest = (s) => crypto.createHash('sha256').update(String(s)).digest();
 function requirePaystubKey(req, res, next) {
@@ -95,6 +98,26 @@ router.get('/', ah(async (req, res) => {
   res.json(await paystubSummary(query(req.query)));
 }));
 router.post('/match', ah(async (req, res) => res.json({ matched: await matchAllStubs() })));
+// What the bytes are (a phone's Content-Type isn't always right). Claude reads PDF, JPEG, PNG and WebP.
+function sniff(buf) {
+  if (buf.length < 12) return null;
+  if (buf.slice(0, 5).toString() === '%PDF-') return 'application/pdf';
+  if (buf[0] === 0xff && buf[1] === 0xd8) return 'image/jpeg';
+  if (buf[0] === 0x89 && buf[1] === 0x50) return 'image/png';
+  if (buf.slice(0, 4).toString() === 'RIFF' && buf.slice(8, 12).toString() === 'WEBP') return 'image/webp';
+  return null;
+}
+router.post('/upload', express.raw({ type: () => true, limit: '15mb' }), ah(async (req, res) => {
+  const bytes = Buffer.isBuffer(req.body) ? req.body : null;
+  const mime = bytes && sniff(bytes);
+  if (!mime) return res.status(415).json({ error: 'Send the paystub as a PDF or a photo (JPEG, PNG or WebP).' });
+  try {
+    res.json(await fileUploadedPaystub({ bytes, mime, owner: query(req.query).owner }));
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    throw e;
+  }
+}));
 router.get('/:id/document', ah(async (req, res) => {
   const { rows: [r] } = await pool.query('SELECT doc, doc_mime FROM paystubs WHERE id = $1', [Number(req.params.id)]);
   if (!r?.doc) return res.status(404).json({ error: 'No document on this stub.' });

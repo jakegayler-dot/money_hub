@@ -1200,7 +1200,8 @@ button.metric-card-button.active { border-color: rgba(201, 162, 39, 0.55); backg
 .personal-cats-head { display: flex; justify-content: space-between; align-items: center; }
 .personal-cats td { padding: 6px 16px; }
 .personal-cats .seg-toggle button { font-size: 12px; }
-.paystub-controls { display: inline-flex; gap: 10px; align-items: center; }
+.paystub-controls { display: inline-flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.paystubs .personal-cats-head { flex-wrap: wrap; gap: 8px; }
 .paystub-controls .seg-toggle button { font-size: 12px; }
 .paystub-cards { padding: 14px 16px 0; margin-bottom: 4px; }
 .paystub-max td:nth-child(2) { white-space: nowrap; }

@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { uploadBody } from '../pages/Receipts.jsx';
 import MetricCard from './MetricCard.jsx';
 import { money } from '../format.js';
 import { cents } from './SplitEditor.jsx';
 
-// Paystubs filed by Ashley's agent (POST /api/paystubs/ingest), analysed:
+// Paystubs, added here (Add paystub: the PDF or a photo, read by Claude — how Ashley's agent files them, at a
+// computer like a person) or through the paystub API, analysed:
 // what she's earned and kept, whether her withholding points to a refund
 // or a balance owing, CPP and EI against the year's maximums, and each stub
 // with whether its deposit was found and booked as her wages.
@@ -38,6 +40,32 @@ export default function Paystubs() {
   const [s, setS] = useState(null);
   const [error, setError] = useState(null);
   const [all, setAll] = useState(false);
+  const [busy, setBusy] = useState(null);
+  const [note, setNote] = useState(null);
+  const fileRef = useRef(null);
+
+  // Each file is read and filed in turn; a stub already on file (same employer, date and net) is updated.
+  const add = async (files) => {
+    const list = [...files];
+    setError(null); setNote(null);
+    const done = [];
+    for (let i = 0; i < list.length; i++) {
+      setBusy(list.length > 1 ? `Reading ${i + 1} of ${list.length}…` : 'Reading the paystub…');
+      try {
+        const { body, type } = await uploadBody(list[i]);
+        const r = await fetch(`/api/paystubs/upload?owner=${owner}`, { method: 'POST', headers: { 'Content-Type': type }, body });
+        const b = await r.json().catch(() => ({}));
+        if (!r.ok) { setError(`${list[i].name}: ${b.error || `HTTP ${r.status}`}`); continue; }
+        done.push(`${b.employer} ${b.pay_date}, net ${cents(b.net)}${b.matched_deposit ? ' (deposit found and booked)' : ' (no deposit yet: it matches when the statement comes in)'}${b.warnings?.length ? ' — check it' : ''}`);
+      } catch {
+        setError(`Couldn't open ${list[i].name}: PDFs and photos only.`);
+      }
+    }
+    setBusy(null);
+    if (fileRef.current) fileRef.current.value = '';
+    if (done.length) setNote(`Added: ${done.join('; ')}.`);
+    load();
+  };
 
   const load = () => {
     setError(null);
@@ -66,15 +94,18 @@ export default function Paystubs() {
               <button key={k} type="button" aria-pressed={owner === k} className={owner === k ? 'on' : ''} onClick={() => setOwner(k)}>{l}</button>
             ))}
           </span>
+          <input ref={fileRef} type="file" accept="application/pdf,.pdf,image/*" multiple hidden onChange={(e) => add(e.target.files)} />
+          <button type="button" onClick={() => fileRef.current?.click()} disabled={!!busy}>{busy || 'Add paystub'}</button>
           <select aria-label="Year" value={year} onChange={(e) => setYear(Number(e.target.value))}>
             {[0, 1, 2].map((i) => new Date().getFullYear() - i).map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
         </span>
       </div>
       {error && <p className="review-error" style={{ margin: '8px 16px' }}>{error}</p>}
+      {note && <p className="page-meta" style={{ margin: '8px 16px' }}>{note}</p>}
       {!s ? <div className="empty-state">Loading…</div> : !t ? (
         <div className="empty-state">
-          No paystubs for {name} in {year}. Her agent files them to <code>/api/paystubs/ingest</code> with the paystub key.
+          No paystubs for {name} in {year}. Add paystub takes the PDF or a photo and reads it.
         </div>
       ) : (
         <>

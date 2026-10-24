@@ -49,7 +49,7 @@ export function normalizeStub(b = {}) {
   const gross = money(b.gross);
   const net = money(b.net);
   if (!(gross > 0)) return { error: 'gross is required: the pay before deductions.' };
-  if (!(net >= 0)) return { error: 'net is required: the pay deposited.' };
+  if (net == null || !(net >= 0)) return { error: 'net is required: the pay deposited.' }; // null >= 0 is true in JS
   const list = [];
   if (Array.isArray(b.deductions)) {
     for (const d of b.deductions) {
