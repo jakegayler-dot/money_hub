@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import MetricCard from '../components/MetricCard.jsx';
 import { money, localToday } from '../format.js';
 import { cents } from '../components/SplitEditor.jsx';
@@ -69,6 +70,31 @@ function MonthBars({ months }) {
   );
 }
 
+/** The ledger entries behind a subcategory, newest first; each opens in the ledger. */
+function Entries({ entries }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? entries : entries.slice(0, 25);
+  return (
+    <div className="ps-entries">
+      <table data-nostack="">
+        <tbody>
+          {shown.map((e, i) => (
+            <tr key={`${e.id}-${i}`}>
+              <td className="ps-e-date">{e.date}</td>
+              <td>
+                <Link to={`/ledgers?edit=${e.id}`} className="ps-e-link">{e.payee || e.description || 'Entry'}</Link>
+                <div className="split-lines">{[e.payee && e.description !== e.payee ? e.description : null, e.paid_with, e.whose, e.split ? 'part of a split' : null].filter(Boolean).join(' · ')}</div>
+              </td>
+              <td className="num">{cents(e.amount)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {entries.length > 25 && <button type="button" className="small-link" onClick={() => setAll(!all)}>{all ? 'Show the latest 25' : `Show all ${entries.length}`}</button>}
+    </div>
+  );
+}
+
 function Legend({ items, total, selected, onSelect }) {
   return (
     <table className="ps-legend" data-nostack="">
@@ -95,6 +121,7 @@ export default function Personal() {
   const [budget, setBudget] = useState(null); // monthly budget being edited
   const [showCats, setShowCats] = useState(false);
   const [showAll, setShowAll] = useState(false);
+  const [openSub, setOpenSub] = useState(null); // which subcategory's entries are showing
 
   const from = PERIODS.find(([k]) => k === period)[2];
   const loadPlan = () => fetch('/api/personal').then((r) => r.json()).then((d) => (d.error ? setError(d.error) : setPlan(d))).catch((e) => setError(e.message));
@@ -184,13 +211,23 @@ export default function Personal() {
                         <p>{money(cur.c.essential)} essential, {money(cur.c.discretionary)} discretionary.</p>
                       )}
                       <ul className="pp-subs">
-                        {cur.c.children.map((ch) => (
-                          <li key={ch.name}>
-                            <div className="pp-sub-head"><span>{ch.name === cur.label ? 'Directly under it' : ch.name} <span className="split-lines">· {ch.count}</span></span><b>{cents(ch.amount)}</b></div>
-                            <div className="pp-sub-bar"><span style={{ width: `${Math.max(2, (ch.amount / cur.amount) * 100)}%`, background: cur.color }} /></div>
-                            <div className="split-lines">{ch.payees.map((p) => `${p.name} ${money(p.amount)}`).join(' · ')}</div>
-                          </li>
-                        ))}
+                        {cur.c.children.map((ch) => {
+                          const key = `${cur.label}|${ch.name}`;
+                          const open = openSub === key || cur.c.children.length === 1;
+                          return (
+                            <li key={ch.name}>
+                              <div className="pp-sub-head"><span>{ch.name === cur.label ? 'Directly under it' : ch.name} <span className="split-lines">· {ch.count}</span></span><b>{cents(ch.amount)}</b></div>
+                              <div className="pp-sub-bar"><span style={{ width: `${Math.max(2, (ch.amount / cur.amount) * 100)}%`, background: cur.color }} /></div>
+                              <div className="split-lines">{ch.payees.map((p) => `${p.name} ${money(p.amount)}`).join(' · ')}</div>
+                              {cur.c.children.length > 1 && (
+                                <button type="button" className="small-link" aria-expanded={open} onClick={() => setOpenSub(open ? null : key)}>
+                                  {open ? 'Hide entries' : `Show the ${ch.count} entr${ch.count === 1 ? 'y' : 'ies'}`}
+                                </button>
+                              )}
+                              {open && ch.entries && <Entries entries={ch.entries} />}
+                            </li>
+                          );
+                        })}
                       </ul>
                       {cur.label === 'Card payments (not itemized)' && (
                         <p>Payments on cards whose purchases aren't entered: Money Hub can't see what was bought. Give the card a "Payments count as" category on Credit Cards, or itemize it.</p>

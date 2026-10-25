@@ -344,10 +344,14 @@ export async function spendingBreakdown({ from, to, today = todayISO() }) {
   const { rows: catRows } = await pool.query('SELECT c.id, c.name, c.kind, p.name AS parent FROM expense_categories c LEFT JOIN expense_categories p ON p.id = c.parent_id');
   const meta = new Map(catRows.map((c) => [c.id, c]));
   const { rows } = await pool.query(
-    `SELECT ${EARNING_COLUMNS}, l.date, l.category_id, p.name AS payee, t.description, t.account_id AS tx_account, t.credit_card_id AS tx_card
+    `SELECT ${EARNING_COLUMNS}, l.date, l.category_id, l.transaction_id, l.description AS line_description,
+            p.name AS payee, t.description, t.account_id AS tx_account, t.credit_card_id AS tx_card,
+            COALESCE(cc.name, a.name) AS paid_with
      FROM transaction_lines l JOIN transactions t ON t.id = l.transaction_id
      LEFT JOIN loan_payments lp ON lp.linked_transaction_id = l.transaction_id
      LEFT JOIN payees p ON p.id = t.payee_id
+     LEFT JOIN accounts a ON a.id = t.account_id
+     LEFT JOIN credit_cards cc ON cc.id = t.credit_card_id
      WHERE l.is_transfer = false AND (l.is_debt_service = false OR l.split_id IS NOT NULL) AND l.date >= $1 AND l.date < $2`, [from, to]);
   const groups = new Map();
   const people = { jake: 0, ashley: 0, unassigned: 0 };
@@ -365,7 +369,7 @@ export async function spendingBreakdown({ from, to, today = todayISO() }) {
     const bucket = l.category_id ? (byId.get(l.category_id)?.bucket || 'essential') : 'essential';
     const g = groups.get(parent) || { name: parent, amount: 0, essential: 0, discretionary: 0, children: new Map() };
     g.amount += v; g[bucket] += v;
-    const c = g.children.get(child) || { name: child, amount: 0, count: 0, payees: new Map() };
+    const c = g.children.get(child) || { name: child, amount: 0, count: 0, payees: new Map(), entries: [] };
     c.amount += v; c.count++;
     const who = l.payee || l.description || '(no payee)';
     c.payees.set(who, (c.payees.get(who) || 0) + v);
@@ -373,6 +377,10 @@ export async function spendingBreakdown({ from, to, today = todayISO() }) {
     groups.set(parent, g);
     const w = ownerWeights(l);
     const personal = w.jake + w.ashley + w.unassigned || 1;
+    // The ledger entries behind the category (Jake, Oct 24: he could only find them by searching the ledger).
+    const whose = w.jake >= 0.999 ? 'Jake' : w.ashley >= 0.999 ? 'Ashley' : w.jake + w.ashley > 0.001 ? 'Split' : 'Not tagged';
+    c.entries.push({ id: l.transaction_id, date: toISODate(l.date), description: l.line_description || l.description || '',
+      payee: l.payee || null, paid_with: l.paid_with || null, amount: r2(v), whose, split: l.split_id != null });
     people.jake += v * (w.jake / personal); people.ashley += v * (w.ashley / personal); people.unassigned += v * (w.unassigned / personal);
     buckets[bucket] += v;
     total += v;
@@ -381,6 +389,7 @@ export async function spendingBreakdown({ from, to, today = todayISO() }) {
     name: g.name, amount: r2(g.amount), essential: r2(g.essential), discretionary: r2(g.discretionary),
     children: [...g.children.values()].map((c) => ({
       name: c.name, amount: r2(c.amount), count: c.count,
+      entries: c.entries.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.id - a.id)),
       payees: [...c.payees].map(([name, amount]) => ({ name, amount: r2(amount) })).sort((a, b) => b.amount - a.amount).slice(0, 6),
     })).sort((a, b) => b.amount - a.amount),
   })).filter((g) => g.amount > 0.005).sort((a, b) => b.amount - a.amount);

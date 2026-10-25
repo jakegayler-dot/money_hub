@@ -1842,3 +1842,12 @@ button:active { transform: none !important; }
 .bf-holds .ps-legend { max-width: 560px; }
 .bf-indent { padding-left: 16px !important; color: var(--text-muted); }
 .bf-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 10px 16px 16px; border-top: 1px solid var(--border); }
+
+/* Personal: the entries behind a category */
+.ps-entries { margin: 6px 0 4px; border-left: 2px solid var(--border); padding-left: 10px; }
+.ps-entries table { width: 100%; }
+.ps-entries td { padding: 5px 4px; font-size: 12.5px; border-top: 1px solid var(--border); vertical-align: top; }
+.ps-entries td.num { text-align: right; font-family: var(--font-mono); white-space: nowrap; }
+.ps-e-date { font-family: var(--font-mono); color: var(--text-muted); white-space: nowrap; width: 88px; }
+.ps-e-link { color: var(--text); text-decoration: none; border-bottom: 1px dotted var(--border-strong); }
+.ps-e-link:hover, .ps-e-link:focus-visible { color: var(--gold-bright); }
