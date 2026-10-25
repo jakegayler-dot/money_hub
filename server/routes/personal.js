@@ -3,7 +3,7 @@ import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { personalPlan, spendingBreakdown, categoryEntries } from '../lib/personal.js';
 import { ownerCheck } from '../lib/ownerCheck.js';
-import { generateBudget, adoptBudget } from '../lib/budgetPlan.js';
+import { generateBudget } from '../lib/budgetPlan.js';
 import { todayISO } from '../lib/dates.js';
 
 const router = Router();
@@ -51,29 +51,14 @@ router.put('/settings', ah(async (req, res) => {
   res.json(await personalPlan(Number(todayISO().slice(0, 4))));
 }));
 
-// A household budget that keeps the forecast's cash above its floor for the next 12 months (lib/budgetPlan.js).
+// The household budget: a share of the room above the cash floor, spent every month in Cash Flow (lib/budgetPlan.js).
 router.get('/budget', ah(async (req, res) => { res.json(await generateBudget()); }));
-// Adopt it: generated afresh, then the forecast's discretionary budget and the category budgets.
-router.post('/budget/adopt', ah(async (req, res) => {
-  await adoptBudget(await generateBudget());
+// The share of the room above the floor the budget uses (default 0.9).
+router.put('/budget/share', ah(async (req, res) => {
+  const v = Number(req.body?.share);
+  if (!(v > 0 && v <= 1)) return res.status(400).json({ error: 'share is a fraction from 0 to 1 (0.9 = 90%).' });
+  await setSetting('household_budget_share', v);
   res.json(await generateBudget());
-}));
-// Stop using it: back to what you actually spend.
-router.delete('/budget/adopt', ah(async (req, res) => {
-  await setSetting('personal_discretionary_month', null);
-  await setSetting('personal_budget_plan', null);
-  res.json(await generateBudget());
-}));
-
-// The entries behind a category's spending this year (or ?from=&to=, to exclusive).
-router.get('/entries', ah(async (req, res) => {
-  const id = Number(req.query.category_id);
-  if (!id) return res.status(400).json({ error: 'category_id is required' });
-  const today = todayISO();
-  const iso = (d) => (/^\d{4}-\d{2}-\d{2}$/.test(String(d || '')) ? String(d) : null);
-  const from = iso(req.query.from) || `${today.slice(0, 4)}-01-01`;
-  const to = iso(req.query.to) || new Date(Date.parse(`${today}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
-  res.json(await categoryEntries({ category_id: id, from, to }));
 }));
 
 // A category's bucket: 'essential', 'discretionary', or null to go back to the default.

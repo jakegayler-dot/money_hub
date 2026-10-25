@@ -320,11 +320,16 @@ export default function CashFlow() {
         <button type="button" className="cf-whatif-btn" onClick={() => setEditing(true)}>What-if analysis</button>
       </div>
 
-      {data.personal?.pace && scope !== 'farm' && (
-        <p className="pace-warn" role="status">
-          Discretionary spending has run {data.personal.pace.over_pct}% over budget two months running. This forecast spends the budget —
-          at your actual pace it would end about {money(Math.round(data.personal.pace.shortfall))} lower. <a href="/personal">See Personal</a>
-        </p>
+      {data.personal && scope !== 'farm' && (
+        data.personal.shortfall ? (
+          <p className="pace-warn" role="status">
+            No room for household spending: even with none, cash falls {money(Math.round(data.personal.shortfall.amount))} below the floor. <a href="/personal">See Personal</a>
+          </p>
+        ) : (
+          <p className="cf-budget-note">
+            Household spending is one budget: {money(data.personal.per_month)} a month, {Math.round(data.personal.share * 100)}% of the room above the cash floor, on top of the bills. <a href="/personal">See the budget</a>
+          </p>
+        )
       )}
       <CashFlowTerminal liquidity={data} scenario={whatIfResult} scenarioName={whatIf?.name}
         onOpenWhatIf={() => setEditing(true)} onClearScenario={() => setWhatIf(null)} />

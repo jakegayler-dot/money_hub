@@ -654,6 +654,14 @@ router.patch('/:id', ah(async (req, res) => {
       await client.query('UPDATE bills SET received_date = $2 WHERE id = $1', [updated.id, req.body.received_date || null]);
       updated.received_date = req.body.received_date || null;
     }
+    // How often it repeats (Jake, Oct 24: edited from the recurring bills viewer). 'one_time' stops it repeating.
+    if (req.body.frequency !== undefined && req.body.frequency !== current.frequency) {
+      if (!['one_time', 'monthly', 'quarterly', 'annual'].includes(req.body.frequency)) {
+        const e = new Error('frequency is one_time, monthly, quarterly or annual'); e.status = 400; throw e;
+      }
+      await client.query('UPDATE bills SET frequency = $2 WHERE id = $1', [updated.id, req.body.frequency]);
+      updated.frequency = req.body.frequency;
+    }
     if (req.body.payee_id !== undefined) {
       await client.query('UPDATE bills SET payee_id = $2 WHERE id = $1', [updated.id, req.body.payee_id ? Number(req.body.payee_id) : null]);
       updated.payee_id = req.body.payee_id ? Number(req.body.payee_id) : null;

@@ -20,7 +20,7 @@ export const GROUPS = {
   bills: { label: 'Bills', color: '#e0835a', link: '/bills', from: 'Unpaid bills by due date, and recurring bills on their schedule (an overdue one counts now).' },
   loans: { label: 'Loan & lease payments', color: '#d46a9a', link: '/loans', from: 'Loan and lease payment schedules (principal and interest).' },
   cards: { label: 'Card statements', color: '#e8b04a', link: '/credit-cards', from: 'Credit card statement balances, on their due date.' },
-  household: { label: 'Household spending', color: '#9b85ee', link: '/personal', from: 'The Personal page: essentials forecast from what\'s actually been spent, plus the discretionary budget for the month.' },
+  household: { label: 'Household spending', color: '#9b85ee', link: '/personal', from: 'The household budget (Personal page): a share of the room above the cash floor each month (90% unless changed), for everything that isn\'t a bill.' },
   tax: { label: 'Income tax', color: '#5b8def', link: '/tax', from: 'The farm income tax estimate: the December instalment and the April balance (or a June refund).' },
   gst_out: { label: 'GST payments', color: '#7f8ce0', link: '/tax', from: 'GST returns owing.' },
   fees: { label: 'Account fees', color: '#6b7480', link: '/accounts', from: 'Recurring bank account fees.' },
@@ -122,7 +122,7 @@ function Side({ title, items, sign }) {
   );
 }
 
-const FLOOR_PARTS = [['loans', 'Loan and lease payments'], ['bills', 'Bills'], ['cards', 'Card statements'], ['tax', 'Tax and GST'], ['household', 'Household essentials'], ['fees', 'Fees']];
+const FLOOR_PARTS = [['loans', 'Loan and lease payments'], ['bills', 'Bills'], ['cards', 'Card statements'], ['tax', 'Tax and GST'], ['fees', 'Fees']];
 
 /** The whole month: opening to closing, money in and out by source, and the floor after it. */
 export default function MonthBreakdown({ m, floor, floorDays = 60, compare = null }) {

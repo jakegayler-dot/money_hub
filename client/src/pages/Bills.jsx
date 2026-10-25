@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
+import RecurringBills from '../components/RecurringBills.jsx';
 import { money, localToday } from '../format.js';
 import { OwnerFields, ownerPayload, ownerFieldsFrom, ownerSummary, emptyOwnerFields, OWNER_LABELS, OWNER_KEYS, ruleOf } from '../owners.jsx';
 import CategorySelect from '../components/CategorySelect.jsx';
@@ -114,12 +115,13 @@ export default function Bills() {
   useEffect(() => { try { window.localStorage.setItem('moneyhub.billView', view); } catch { /* private mode */ } }, [view]);
   const photoRef = useRef(null);
 
+  const [recurringKey, setRecurringKey] = useState(0); // bumps when the list changes, so the recurring viewer reloads
   const load = () => {
     const q = filter === 'all' ? '' : `?status=${filter}`;
     fetch(`/api/bills${q}`)
       .then((r) => r.json())
       .then((data) => {
-        if (Array.isArray(data)) setBills(data);
+        if (Array.isArray(data)) { setBills(data); setRecurringKey((k) => k + 1); }
         else setError(data?.error || 'Failed to load bills.');
       })
       .catch(() => setError('Failed to load bills.'));
@@ -299,6 +301,11 @@ export default function Bills() {
           <p style={{ margin: '8px 0 0', color: 'var(--red, #c0392b)' }}>{error}</p>
         </div>
       )}
+
+      <RecurringBills refreshKey={recurringKey} onChanged={() => {
+        const q = filter === 'all' ? '' : `?status=${filter}`;
+        fetch(`/api/bills${q}`).then((r) => r.json()).then((d) => Array.isArray(d) && setBills(d)).catch(() => {});
+      }} />
 
       <div className="panel">
         <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>

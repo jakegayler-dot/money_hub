@@ -33,7 +33,7 @@ import { LATEST_STATEMENTS_SQL, cardBalances } from './cardLedger.js';
 import { farmIncomeTax, gstReport, gstPeriods } from './tax.js';
 import { personalTax } from './taxRates.js';
 import { billDates } from './billDates.js';
-import { personalFlows } from './personal.js';
+import { householdSpentThisMonth } from './personal.js';
 import { contractParts } from './contracts.js';
 import { paystubForecastFlows } from './paystubs.js';
 
@@ -53,7 +53,8 @@ export const FLOOR_DAYS = 60;
 const MAX_FLOOR_DAYS = 90;
 const LOOKAHEAD_MONTHS = 3;
 const MUST_PAY = new Set(['loan', 'lease', 'bill', 'card', 'fee', 'tax', 'gst']);
-export const mustPay = (f) => f.amount < 0 && (MUST_PAY.has(f.kind) || (f.kind === 'personal' && f.ref?.bucket === 'essential'));
+// The household budget isn't must-pay: it's sized from the room above the floor, so it can't be part of it.
+export const mustPay = (f) => f.amount < 0 && MUST_PAY.has(f.kind);
 const FLOOR_PART = { loan: 'loans', lease: 'loans', bill: 'bills', card: 'cards', fee: 'fees', tax: 'tax', gst: 'tax', personal: 'household' };
 
 export const OWNER_SCOPES = ['grain', 'livestock', 'jake', 'ashley'];
@@ -391,37 +392,9 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
   // GST refunds and payments.
   for (const f of await gstFlows(lwin)) add(f);
 
-  // Personal spending: essentials from what the household actually spends
-  // apart from bills and loan payments (forecast on their own dates), less
-  // fees and personal estimates already here that month;
-  // discretionary at the budget.
+  // Household spending is one budget line a month, added at the end (householdBudget, below): a share of
+  // the room above the cash floor. The history-based estimate is gone (Jake, Oct 24: it double counted bills).
   let personal = null;
-  try {
-    const knownOut = new Map();
-    for (const f of flows) {
-      const share = 1 - (f.farm ?? 1);
-      if (share <= 0 || f.amount >= 0) continue;
-      // Card statements too: a card that isn't itemized has its payments in the spending history already,
-      // so the statement due that month is part of the month's essentials, not on top of them.
-      // Bills and loan payments aren't here: the essentials estimate already leaves them out of history,
-      // so they're simply added on their own dates (a yearly bill no longer eats the month's groceries).
-      // Nor are card statements: a statement pays for purchases already made, and the estimate is for
-      // spending still to come — taking one off the other dropped November's essentials to $114.
-      const amt = ['fee', 'estimate_out'].includes(f.kind) ? -f.amount * share : 0;
-      if (amt) knownOut.set(f.date.slice(0, 7), (knownOut.get(f.date.slice(0, 7)) || 0) + amt);
-    }
-    const r = await personalFlows({ meta: lwin.meta, today, tax: taxY0, known: (k) => knownOut.get(k) || 0 });
-    for (const f of r.flows) add(f);
-    const discMonths = r.flows.filter((f) => f.ref?.bucket === 'discretionary' && f.date < win.endStr).length;
-    const pace = r.plan.pace;
-    personal = {
-      limit: r.plan.limit, per_month: r.plan.discretionary.per_month, essentials_basis: r.plan.essentials.basis,
-      // Spending over budget two months running: what the forecast would lose at that pace.
-      pace: pace.over ? { ...pace, shortfall: r2(Math.max(0, pace.actual_month - r.plan.discretionary.per_month) * discMonths), months: discMonths } : null,
-    };
-  } catch (e) {
-    console.error('Personal plan unavailable for the forecast:', e.message);
-  }
 
   const accountRows = accounts.rows.map((a) => ({
     id: a.id, name: a.name, ledger: a.ledger, type: a.account_type, balance: Number(a.opening_balance),
@@ -435,6 +408,39 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
   const netY0 = taxY0 ? taxY0.projected.net_income : null;
   const inWindow = (d) => toISODate(d) < win.endStr;
   const floorDays = Math.min(MAX_FLOOR_DAYS, Math.max(14, Number(floorDaysSetting) || FLOOR_DAYS));
+
+  // The household budget (Jake, Oct 24): everything the household spends that isn't a bill, a loan or a
+  // card statement, as one line a month. With every other item in, each month-end has some room above the
+  // floor; a budget of B a month spends B in each month up to it, so the most it can be is the smallest
+  // room ÷ months-to-it. The budget is a share of that (90% — a tenth kept spare in the tightest month),
+  // rounded down to $10. The budget isn't must-pay, so the floor doesn't move with it. This month it's
+  // what's left of it after what's already been spent this month.
+  try {
+    const share = Math.min(1, Math.max(0, Number(await getSetting('household_budget_share', 0.9)) || 0.9));
+    const base = { win, today, accounts: accountRows, splits, floorDays, lookahead: flows.filter((f) => !inWindow(f.date)) };
+    const ev0 = evaluate(flows.filter((f) => inWindow(f.date)), base, { scope: 'everything' });
+    const { room, bindingIdx, perMonth } = householdBudget(ev0.trajectory.map((t) => t.headroom), share);
+    const spent = await householdSpentThisMonth(today);
+    win.meta.forEach((m, i) => {
+      const key = `${m.year}-${String(m.month).padStart(2, '0')}`;
+      const amt = i === 0 ? Math.max(0, perMonth - spent) : perMonth;
+      if (amt < 0.5) return;
+      flows.push({
+        key: `personal:budget:${key}`, kind: 'personal', label: 'Household budget', date: i === 0 ? today : `${key}-15`,
+        amount: -r2(amt), farm: 0, estimate: true, taxable: 0, ref: { bucket: 'budget' }, owners: derivedOwners(0, splits),
+      });
+    });
+    const worst = ev0.trajectory.reduce((k, t, i) => (t.headroom < ev0.trajectory[k].headroom ? i : k), 0);
+    personal = {
+      per_month: perMonth, share, room: r2(Math.max(0, room)), spent_this_month: r2(spent),
+      binding: bindingIdx >= 0 ? { year: win.meta[bindingIdx].year, month: win.meta[bindingIdx].month, months_to_it: bindingIdx + 1 } : null,
+      // Even with no household spending, cash goes below the floor here.
+      shortfall: room < 0 ? { year: win.meta[worst].year, month: win.meta[worst].month, amount: r2(-ev0.trajectory[worst].headroom) } : null,
+    };
+  } catch (e) {
+    console.error('Household budget unavailable for the forecast:', e.message);
+  }
+
   return {
     win, today, flows: flows.filter((f) => inWindow(f.date)), lookahead: flows.filter((f) => !inWindow(f.date)), accounts: accountRows, groups, known, personal, splits,
     bills: billRows.rows.filter((b) => inWindow(b.due_date)), loans: loanRows.rows.filter((l) => inWindow(l.due_date)), contracts: contractRows.rows, estimates,
@@ -445,6 +451,20 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
       instalmentY0: taxY0 ? taxY0.instalment : null,
     },
   };
+}
+
+/**
+ * The household budget from the room above the floor at each month-end with
+ * no household spending (pure — exported for tests): spending B a month uses
+ * B × (months to it) of month i's room, so the most a month is the smallest
+ * room ÷ months-to-it; the budget is `share` of that, rounded down to $10.
+ */
+export function householdBudget(headroom, share = 0.9) {
+  let room = Infinity; let bindingIdx = -1;
+  headroom.forEach((h, i) => { const cap = h / (i + 1); if (cap < room) { room = cap; bindingIdx = i; } });
+  if (!headroom.length) room = 0;
+  const perMonth = room > 0 ? Math.floor((room * share) / 10) * 10 : 0;
+  return { room, bindingIdx, perMonth };
 }
 
 /**

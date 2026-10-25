@@ -1,6 +1,7 @@
 // The cash floor: at each month-end, what must be paid in the next 60 days
-// whether or not money comes in. Capital, estimates and discretionary
-// spending are left out; each scope sees its own share.
+// whether or not money comes in. Capital, estimates and the household
+// budget are left out (the budget is sized from the room above the floor,
+// Oct 24); each scope sees its own share.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { windowFor, evaluate, mustPayBetween } from '../lib/forecast.js';
@@ -19,8 +20,7 @@ const flows = [
   f('loan', '2026-11-01', -40000),                       // land payment
   f('bill', '2026-12-10', -5000),
   f('card', '2026-11-20', -3000, 0.5),                   // half farm, half household
-  f('personal', '2026-11-15', -2500, 0, { bucket: 'essential' }),
-  f('personal', '2026-11-15', -1500, 0, { bucket: 'discretionary' }), // can be put off
+  f('personal', '2026-11-15', -2500, 0, { bucket: 'budget' }),       // the household budget: not must-pay
   f('estimate_out', '2026-11-25', -9000, 1, {}, true),   // estimate: left out
   f('whatif', '2026-11-05', -60000),                     // a purchase: left out
   f('gst', '2026-12-20', 3000),                          // a refund isn't owed
@@ -30,18 +30,18 @@ const flows = [
 
 test('only what must be paid counts, in the window', () => {
   const m = mustPayBetween(flows, '2026-11-01', '2026-12-31', 'everything');
-  assert.equal(m.total, 40000 + 5000 + 3000 + 2500);
-  assert.deepEqual(m.parts, { loans: 40000, bills: 5000, cards: 3000, tax: 0, household: 2500, fees: 0 });
+  assert.equal(m.total, 40000 + 5000 + 3000);
+  assert.deepEqual(m.parts, { loans: 40000, bills: 5000, cards: 3000, tax: 0, household: 0, fees: 0 });
 });
 
 test('each month-end’s floor is the next 60 days; it rises ahead of spring', () => {
   const ev = evaluate(flows, ctxWith(flows), { scope: 'everything' });
   const t = ev.trajectory;
-  assert.equal(t[0].floor, 40000 + 5000 + 3000 + 2500); // end of Oct → Nov 1 to Dec 31
+  assert.equal(t[0].floor, 40000 + 5000 + 3000);        // end of Oct → Nov 1 to Dec 31
   assert.equal(t[1].floor, 5000);                       // end of Nov → December's bill
   assert.equal(t[4].floor, 80000);                      // end of Feb → April inputs
   assert.equal(t[6].floor, 0);                          // end of Apr: paid
-  assert.equal(ev.floorNow, 50500);                     // Oct 23 + 60 days
+  assert.equal(ev.floorNow, 48000);                     // Oct 23 + 60 days
   assert.equal(t[0].headroom, t[0].balance - t[0].floor);
 });
 
@@ -49,7 +49,7 @@ test('scopes: farm floor carries the farm share only', () => {
   const ev = evaluate(flows, ctxWith(flows), { scope: 'farm' });
   assert.equal(ev.trajectory[0].floor, 40000 + 5000 + 1500);
   const hh = evaluate(flows, ctxWith(flows), { scope: 'personal' });
-  assert.equal(hh.trajectory[0].floor, 1500 + 2500);
+  assert.equal(hh.trajectory[0].floor, 1500); // the household's half of the card
 });
 
 test('the last months see past the window through the lookahead', () => {

@@ -11,11 +11,10 @@ import { Pie3D } from '../components/Pie3D.jsx';
 
 // Personal spending (Jake, 2026-10-24: rebuilt around where the money
 // actually goes). Household spending — Jake, Ashley and unassigned —
-// by category as a pie (click a slice for its subcategories and who was
-// paid), month by month as bars with the next three months forecast, by
-// person and by essential vs discretionary. The forecast is what you
-// actually spend unless you set a budget; the profit-and-tax plan is
-// opt-in.
+// by category as a pie (click a slice for its subcategories and the
+// entries), month by month as bars, by person and by essential vs
+// discretionary. What Cash Flow spends for the household is one budget:
+// 90% of the room above the cash floor (BudgetFit), on top of the bills.
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const monthName = (key) => MONTHS[Number(key.slice(5, 7)) - 1];
@@ -32,10 +31,10 @@ const PERIODS = [
   ['12m', 'Last 12 months', shift(today, -11)],
 ];
 
-/** Months as stacked bars: essentials and discretionary, the forecast months hatched. */
-function MonthBars({ months }) {
+/** Months as stacked bars: essentials and discretionary; a tick for what wasn't a bill, and the budget as a dashed line. */
+function MonthBars({ months, budget = null }) {
   const W = 760; const H = 220; const P = { l: 54, r: 8, t: 10, b: 26 };
-  const max = Math.max(1, ...months.map((m) => m.essential + m.discretionary));
+  const max = Math.max(1, budget || 0, ...months.map((m) => m.essential + m.discretionary));
   const nice = Math.pow(10, Math.floor(Math.log10(max)));
   const top = Math.ceil(max / nice) * nice;
   const bw = (W - P.l - P.r) / months.length;
@@ -43,11 +42,6 @@ function MonthBars({ months }) {
   const ticks = [0, top / 2, top];
   return (
     <svg className="pp-bars" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Household spending by month, essentials and discretionary">
-      <defs>
-        <pattern id="pp-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-          <rect width="6" height="6" fill="var(--panel)" /><line x1="0" y1="0" x2="0" y2="6" stroke="var(--text-faint)" strokeWidth="2" />
-        </pattern>
-      </defs>
       {ticks.map((t) => (
         <g key={t}>
           <line x1={P.l} x2={W - P.r} y1={y(t)} y2={y(t)} stroke="var(--border)" />
@@ -60,13 +54,15 @@ function MonthBars({ months }) {
         const e = m.essential; const d = m.discretionary;
         return (
           <g key={m.month}>
-            <title>{`${monthName(m.month)} ${m.month.slice(0, 4)}${m.forecast ? ' (forecast)' : m.partial ? ' (so far)' : ''}: essentials ${money(e)}, discretionary ${money(d)}, total ${money(e + d)}`}</title>
-            <rect x={x} y={y(e)} width={w} height={Math.max(0, y(0) - y(e))} rx="2" fill={m.forecast ? 'url(#pp-hatch)' : ESS} stroke={m.forecast ? ESS : 'none'} />
-            <rect x={x} y={y(e + d)} width={w} height={Math.max(0, y(e) - y(e + d) - 2)} rx="2" fill={m.forecast ? 'url(#pp-hatch)' : DISC} stroke={m.forecast ? DISC : 'none'} />
-            <text x={x + w / 2} y={H - 8} textAnchor="middle" className={`pp-axis${m.forecast ? ' est' : ''}`}>{monthName(m.month)}</text>
+            <title>{`${monthName(m.month)} ${m.month.slice(0, 4)}${m.partial ? ' (so far)' : ''}: essentials ${money(e)}, discretionary ${money(d)}, total ${money(e + d)}; not bills ${money(m.unscheduled || 0)}`}</title>
+            <rect x={x} y={y(e)} width={w} height={Math.max(0, y(0) - y(e))} rx="2" fill={ESS} />
+            <rect x={x} y={y(e + d)} width={w} height={Math.max(0, y(e) - y(e + d) - 2)} rx="2" fill={DISC} />
+            {m.unscheduled > 0.5 && <line x1={x - 3} x2={x + w + 3} y1={y(m.unscheduled)} y2={y(m.unscheduled)} stroke="var(--text)" strokeWidth="2" strokeLinecap="round" />}
+            <text x={x + w / 2} y={H - 8} textAnchor="middle" className={`pp-axis${m.partial ? ' est' : ''}`}>{monthName(m.month)}</text>
           </g>
         );
       })}
+      {budget > 0 && <line x1={P.l} x2={W - P.r} y1={y(budget)} y2={y(budget)} stroke="var(--gold)" strokeWidth="1.5" strokeDasharray="6 4" />}
     </svg>
   );
 }
@@ -121,7 +117,7 @@ export default function Personal() {
   const [error, setError] = useState(null);
   const [sel, setSel] = useState(null);
   const [hl, setHl] = useState(null); // legend row pointed at
-  const [budget, setBudget] = useState(null); // monthly budget being edited
+  const [hb, setHb] = useState(null); // the household budget (BudgetFit loads it)
   const [showCats, setShowCats] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [openSub, setOpenSub] = useState(null); // which subcategory's entries are showing
@@ -169,10 +165,9 @@ export default function Personal() {
   const entriesTotal = entriesShown.reduce((a, e) => a + e.amount, 0);
   // Months before the records start are gaps, not months of no spending.
   const firstSpent = b.months.findIndex((m) => m.essential + m.discretionary > 0.5);
-  const months = firstSpent < 0 ? b.months.filter((m) => m.forecast) : b.months.slice(firstSpent);
-  const past = months.filter((m) => !m.forecast && !m.partial);
+  const months = firstSpent < 0 ? [] : b.months.slice(firstSpent);
+  const past = months.filter((m) => !m.partial);
   const typical = past.length ? [...past.map((m) => m.essential + m.discretionary)].sort((x, y) => x - y)[Math.floor(past.length / 2)] : 0;
-  const next = b.months.find((m) => m.forecast);
   const nMonths = Math.max(1, Math.round((Date.parse(tomorrow) - Date.parse(from)) / (30.44 * 86400000)));
   const people = [
     { key: 'jake', label: 'Jake', amount: b.people.jake, color: SERIES[0] },
@@ -200,18 +195,12 @@ export default function Personal() {
       <div className="grid personal-cards">
         <MetricCard label={`Spent, ${periodLabel}`} value={money(b.total)} sub={`about ${money(b.total / nMonths)} a month · Jake, Ashley and untagged`} />
         <MetricCard label="A typical month" value={money(typical)} sub={past.length ? `median of the last ${past.length} full months` : 'not enough history yet'} />
-        <MetricCard label={`Forecast for ${next ? monthName(next.month) : 'next month'}`} value={next ? money(next.essential + next.discretionary) : '—'}
-          sub={next ? `${money(next.essential)} essentials + ${money(next.discretionary)} discretionary` : ''} />
-        <MetricCard label="Discretionary a month" value={money(plan.discretionary.per_month)}
-          sub={plan.mode === 'plan' ? 'from the farm-profit plan' : plan.monthly_budget != null ? 'your budget' : 'what you actually spend (median of 6 months)'} />
+        <MetricCard label="Household budget" value={hb ? money(hb.monthly) : '—'}
+          sub={hb ? (hb.shortfall ? 'no room above the cash floor' : `a month · ${Math.round(hb.share * 100)}% of the room above the cash floor`) : ''} />
+        <MetricCard label="Left this month" value={hb ? money(hb.left_this_month) : '—'}
+          sub={hb ? `${money(hb.spent_this_month)} spent so far, not counting bills` : ''} />
       </div>
 
-      {plan.pace?.over && (
-        <p className="pace-warn" role="status">
-          Discretionary spending has run {plan.pace.over_pct}% over {money(plan.pace.budget_month)} a month two months running
-          ({plan.pace.last_two.map((m) => `${monthName(m.month)} ${money(m.spent)}`).join(', ')}).
-        </p>
-      )}
 
       <div className="panel">
         <div className="panel-header spend-header"><span>Where it goes — {periodLabel}</span><span className="split-lines">Click a slice or a row</span></div>
@@ -276,13 +265,12 @@ export default function Personal() {
       <div className="panel">
         <div className="panel-header spend-header">
           <span>Month by month</span>
-          <span className="pp-key"><span className="ps-swatch" style={{ background: ESS }} />Essentials<span className="ps-swatch" style={{ background: DISC, marginLeft: 12 }} />Discretionary<span className="ps-swatch pp-hatch-swatch" style={{ marginLeft: 12 }} />Forecast</span>
+          <span className="pp-key"><span className="ps-swatch" style={{ background: ESS }} />Essentials<span className="ps-swatch" style={{ background: DISC, marginLeft: 12 }} />Discretionary<span className="pp-tick-swatch" style={{ marginLeft: 12 }} />Not bills<span className="pp-dash-swatch" style={{ marginLeft: 12 }} />Budget</span>
         </div>
-        <div className="pp-bars-wrap"><MonthBars months={months} /></div>
+        <div className="pp-bars-wrap"><MonthBars months={months} budget={hb && !hb.shortfall ? hb.monthly : null} /></div>
         <p>
-          The last three bars are the forecast Cash Flow uses: essentials from what you spend
-          ({plan.essentials.basis}), less the bills, card statements and loan interest already in the forecast that month;
-          discretionary at {money(plan.discretionary.per_month)} a month.
+          Each bar is everything the household spent that month, bills included. The white tick is what wasn't a bill or
+          loan payment — what the household budget covers{hb && !hb.shortfall ? `; the dashed line is the budget, ${money(hb.monthly)} a month` : ''}.
         </p>
       </div>
 
@@ -305,54 +293,7 @@ export default function Personal() {
         </div>
       </div>
 
-      <BudgetFit onChanged={loadPlan} />
-
-      <div className="panel">
-        <div className="panel-header">Discretionary in the forecast</div>
-        <div className="pp-budget">
-          <span className="seg-toggle" role="group" aria-label="How discretionary is forecast">
-            {[['actual', 'What we actually spend'], ['plan', 'Plan from farm profit']].map(([k, l]) => (
-              <button key={k} type="button" aria-pressed={plan.mode === k} className={plan.mode === k ? 'on' : ''}
-                onClick={() => plan.mode !== k && send('PUT', '/api/personal/settings', { mode: k })}>{l}</button>
-            ))}
-          </span>
-          {plan.mode === 'actual' && (
-            <span className="pp-budget-set">
-              {budget == null ? (
-                <>
-                  <span>{plan.monthly_budget != null ? `Budget ${money(plan.monthly_budget)} a month` : `Median of the last 6 months: ${money(plan.typical_discretionary)} a month`}</span>
-                  <button type="button" className="small secondary" onClick={() => setBudget(plan.monthly_budget ?? '')}>{plan.monthly_budget != null ? 'Change budget' : 'Set a budget'}</button>
-                  {plan.monthly_budget != null && <button type="button" className="small-link" onClick={() => send('PUT', '/api/personal/settings', { monthly_budget: null })}>Use what we spend</button>}
-                </>
-              ) : (
-                <>
-                  <input type="number" min="0" step="50" aria-label="Monthly discretionary budget" value={budget} onChange={(e) => setBudget(e.target.value)} />
-                  <button type="button" className="small" onClick={() => send('PUT', '/api/personal/settings', { monthly_budget: budget === '' ? null : Number(budget) }).then((ok) => ok && setBudget(null))}>Save</button>
-                  <button type="button" className="small-link" onClick={() => setBudget(null)}>Cancel</button>
-                </>
-              )}
-            </span>
-          )}
-        </div>
-        {plan.mode === 'actual' ? (
-          <p>
-            No farm profit or tax in it: the forecast assumes discretionary spending carries on at {money(plan.discretionary.per_month)} a month.
-            {plan.discretionary_history?.length > 0 && ` Last months: ${plan.discretionary_history.map((m) => `${monthName(m.month)} ${money(m.amount)}`).join(', ')}.`}
-          </p>
-        ) : (
-          <>
-            <p>The yearly limit worked out from the farm's projected profit, after tax, savings and essentials. Uses the tax projection.</p>
-            <table className="plan-steps" data-nostack="">
-              <tbody>
-                {plan.steps.map((s) => (
-                  <tr key={s.key}><td>{s.label}</td><td className={`num ${s.amount < 0 ? 'out' : ''}`}>{s.amount < 0 ? '−' : s.key === 'profit' ? '' : '+'}{cents(Math.abs(s.amount))}</td></tr>
-                ))}
-                <tr className="plan-total"><td>Discretionary limit for {plan.year}</td><td className="num">{cents(plan.limit)}</td></tr>
-              </tbody>
-            </table>
-          </>
-        )}
-      </div>
+      <BudgetFit onLoaded={setHb} />
 
       <OwnerCheck onChanged={() => { loadPlan(); loadB(); }} />
 
