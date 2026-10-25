@@ -7,7 +7,7 @@ import { ownerSummary } from '../owners.jsx';
 // forecast and a way to edit them"). The forecast takes each unpaid bill
 // with a cycle and repeats it from its next due date (lib/billDates.js);
 // this shows exactly those, what each adds up to over the next 12 months,
-// and lets the amount, cycle and next date be changed in place.
+// and lets the amount, cycle and next date be changed in place, or the bill deleted.
 const CYCLES = { monthly: ['Monthly', 1], quarterly: ['Quarterly', 3], annual: ['Yearly', 12] };
 const iso = (d) => d.toISOString().slice(0, 10);
 const addMonths = (s, n) => { const [y, m, d] = s.split('-').map(Number); const t = new Date(Date.UTC(y, m - 1 + n, 1)); const last = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 0)).getUTCDate(); t.setUTCDate(Math.min(d, last)); return iso(t); };
@@ -73,6 +73,13 @@ function Row({ b, today, onSaved, max }) {
         <span className="rb-bar" aria-hidden="true"><span style={{ width: `${max ? Math.max(2, (year / max) * 100) : 0}%` }} /></span>
       </td>
       <td className="rb-status">
+        <button type="button" className="small-link rb-del" aria-label={`Delete ${b.name}`} onClick={async () => {
+          if (!window.confirm(`Delete "${b.name}"? It comes off Cash Flow and won't repeat. Payments already made stay in the ledger.`)) return;
+          setStatus('saving');
+          const r = await fetch(`/api/bills/${b.id}`, { method: 'DELETE' });
+          if (!r.ok) { const d = await r.json().catch(() => ({})); setStatus(d.error || 'Not deleted'); return; }
+          onSaved();
+        }}>Delete</button>
         {status === 'saving' ? <span className="split-lines">Saving…</span>
           : status === 'saved' ? <span className="rb-saved">Saved</span>
           : status ? <span className="review-error">{status}</span> : null}
@@ -110,7 +117,7 @@ export default function RecurringBills({ refreshKey, onChanged }) {
             <div><span className="split-lines">About a month</span><strong>{money(monthly)}</strong></div>
             <div><span className="split-lines">In Cash Flow's 12 months</span><strong>{money(year)}</strong></div>
           </div>
-          <p>Each is repeated on its cycle from its next due date. Change the amount, the cycle or the next date here and Cash Flow follows; "Stop repeating" leaves it as a single bill. Everything else about a bill is under Edit in the list below.</p>
+          <p>Each is repeated on its cycle from its next due date. Change the amount, the cycle or the next date here and Cash Flow follows; "Stop repeating" leaves it as a single bill; Delete takes it out altogether. Everything else about a bill is under Edit in the list below.</p>
           <div className="rb-wrap">
             <table className="rb-table">
               <thead><tr><th>Bill</th><th>Amount</th><th>Every</th><th>Next due</th><th className="num">A month</th><th className="num">In Cash Flow's 12 months</th><th /></tr></thead>

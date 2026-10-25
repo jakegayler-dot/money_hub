@@ -1933,3 +1933,8 @@ button:active { transform: none !important; }
 .bf-month-row .neg { color: var(--negative); }
 .bf-progress.bf-progress-wide { max-width: none; height: 8px; margin: 6px 0 4px; border-radius: 4px; }
 .bf-month p { margin: 2px 0 0; font-size: 12px; }
+.field-hint { font-size: 11px; color: var(--text-muted); margin: 4px 0 0; line-height: 1.45; }
+.lp-actions { display: inline-flex; gap: 10px; white-space: nowrap; }
+.lp-edit { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.lp-edit input[type="number"] { width: 110px; }
+.rb-del { color: var(--text-muted); }

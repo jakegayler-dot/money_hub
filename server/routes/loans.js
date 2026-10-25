@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { recordLoanPayment, removeTransaction, unsplitLoanPayment, syncLoanPieceOwners, linkLoanPaymentToTransaction, resplitLoanPayments } from '../lib/postings.js';
-import { undoActualPayment, namesLoan, closeToScheduled, repriceOpen } from '../lib/loanMatch.js';
+import { undoActualPayment, namesLoan, closeToScheduled, repriceOpen, applyPayoff } from '../lib/loanMatch.js';
 import { ledgerForSegment, segmentValues, validateSegment } from '../lib/segments.js';
 import { buildSchedule, scheduleFromTerms, dueDateFor, FREQUENCIES } from '../lib/amortization.js';
 import { toISODate, todayISO } from '../lib/dates.js';
@@ -123,6 +123,57 @@ router.post('/payments/:paymentId/unrecord', ah(async (req, res) => {
   });
   if (!result) return res.status(404).json({ error: 'not found' });
   res.json(result);
+}));
+
+// One future payment changed by hand (Jake, Oct 24): a different amount
+// (kept as entered from then on — the rest re-price around it at the
+// regular payment) or a different date; `manual: false` puts it back.
+router.patch('/payments/:paymentId', ah(async (req, res) => {
+  const b = req.body || {};
+  const out = await withTransaction(async (client) => {
+    const { rows: [p] } = await client.query('SELECT * FROM loan_payments WHERE id = $1 FOR UPDATE', [req.params.paymentId]);
+    if (!p) return null;
+    if (p.paid || p.is_adjustment) { const e = new Error('Only a payment not made yet can be changed. Unrecord it first.'); e.status = 400; throw e; }
+    if (p.is_payoff && (b.amount != null || b.due_date)) {
+      const e = new Error("This is the payoff: it's whatever is left on the payoff date. Change the loan's payoff date instead."); e.status = 400; throw e;
+    }
+    if (b.due_date) {
+      const { rows: [loan] } = await client.query('SELECT payoff_date FROM loans WHERE id = $1', [p.loan_id]);
+      if (loan.payoff_date && b.due_date >= toISODate(loan.payoff_date)) {
+        const e = new Error(`That's on or after the payoff date (${toISODate(loan.payoff_date)}).`); e.status = 400; throw e;
+      }
+      await client.query('UPDATE loan_payments SET due_date = $2 WHERE id = $1', [p.id, b.due_date]);
+    }
+    if (b.amount != null && b.amount !== '') {
+      const amt = round2(Number(b.amount));
+      if (!(amt > 0)) { const e = new Error('The amount must be more than zero. To drop the payment, delete it.'); e.status = 400; throw e; }
+      const interest = Math.min(amt, Number(p.interest_amount));
+      await client.query('UPDATE loan_payments SET principal_amount = $2, interest_amount = $3, is_manual = true WHERE id = $1', [p.id, round2(amt - interest), interest]);
+    } else if (b.manual === false) {
+      await client.query('UPDATE loan_payments SET is_manual = false WHERE id = $1', [p.id]);
+    }
+    await repriceOpen(client, p.loan_id);
+    const { rows: [after] } = await client.query('SELECT * FROM loan_payments WHERE id = $1', [p.id]);
+    return after || { id: p.id, gone: true };
+  });
+  if (!out) return res.status(404).json({ error: 'not found' });
+  res.json(out);
+}));
+
+// Drops one future payment; the rest re-price at the regular payment (the
+// balance it held moves later — set a payoff date to end the loan sooner).
+router.delete('/payments/:paymentId', ah(async (req, res) => {
+  const out = await withTransaction(async (client) => {
+    const { rows: [p] } = await client.query('SELECT * FROM loan_payments WHERE id = $1 FOR UPDATE', [req.params.paymentId]);
+    if (!p) return null;
+    if (p.paid || p.is_adjustment) { const e = new Error('Only a payment not made yet can be deleted. Unrecord it first.'); e.status = 400; throw e; }
+    if (p.is_payoff) { const e = new Error("This is the payoff. Clear the loan's payoff date to go back to regular payments."); e.status = 400; throw e; }
+    await client.query('DELETE FROM loan_payments WHERE id = $1', [p.id]);
+    await repriceOpen(client, p.loan_id);
+    return p;
+  });
+  if (!out) return res.status(404).json({ error: 'not found' });
+  res.status(204).end();
 }));
 
 // Loan book: outstanding balance (schedule rows marked paid or already due
@@ -394,6 +445,7 @@ router.post('/:id/verify', ah(async (req, res) => {
         );
       }
       rebased = true;
+      await applyPayoff(client, loan.id);
     }
 
     const effectivePayment = P ?? (newSchedule[0] ? newSchedule[0].principal_amount + newSchedule[0].interest_amount : nextScheduled);
@@ -481,6 +533,10 @@ router.post('/', ah(async (req, res) => {
       await client.query('UPDATE loans SET is_cra_tax = true WHERE id = $1', [created.id]);
       created.is_cra_tax = true;
     }
+    if (req.body.payoff_date) {
+      await client.query('UPDATE loans SET payoff_date = $2 WHERE id = $1', [created.id, req.body.payoff_date]);
+      created.payoff_date = req.body.payoff_date;
+    }
     if (promo_until) {
       await client.query('UPDATE loans SET promo_until = $2, promo_retro = $3 WHERE id = $1', [created.id, promo_until, !!promo_retro]);
       Object.assign(created, { promo_until, promo_retro: !!promo_retro });
@@ -497,6 +553,7 @@ router.post('/', ah(async (req, res) => {
         [created.id, row.due_date, row.principal_amount, row.interest_amount]
       );
     }
+    await applyPayoff(client, created.id); // a payoff date: the lump on it, nothing after
     return created;
   });
   res.status(201).json(loan);
@@ -576,6 +633,25 @@ router.patch('/:id', ah(async (req, res) => {
           `INSERT INTO loan_payments (loan_id, due_date, principal_amount, interest_amount) VALUES ($1,$2,$3,$4)`,
           [updated.id, row.due_date, row.principal_amount, row.interest_amount]
         );
+      }
+    }
+    // Payoff date: regular payments up to it, then everything left as one payment on it.
+    const curPayoff = cur.payoff_date ? toISODate(cur.payoff_date) : null;
+    const nextPayoff = b.payoff_date !== undefined ? (b.payoff_date || null) : curPayoff;
+    if (nextPayoff !== curPayoff) {
+      await client.query('UPDATE loans SET payoff_date = $2 WHERE id = $1', [updated.id, nextPayoff]);
+      updated.payoff_date = nextPayoff;
+    }
+    if (termsChanged || nextPayoff !== curPayoff) await applyPayoff(client, updated.id);
+    // The regular payment (what the lender takes each time): the open payments re-price at it,
+    // the schedule's dates and anything recorded stay as they are.
+    if (b.regular_payment != null && b.regular_payment !== '' && !termsChanged) {
+      const pay = round2(Number(b.regular_payment));
+      if (!(pay > 0)) { const e = new Error('The regular payment must be more than zero.'); e.status = 400; throw e; }
+      if (Math.abs(pay - Number(cur.verified_payment || 0)) >= 0.005) {
+        await client.query('UPDATE loans SET verified_payment = $2 WHERE id = $1', [updated.id, pay]);
+        updated.verified_payment = pay;
+        await repriceOpen(client, updated.id, { payment: pay });
       }
     }
     // Owed to CRA (a payment arrangement): turning it on or off re-files the payments already recorded.

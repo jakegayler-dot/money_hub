@@ -224,7 +224,10 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
               l.interest_rate_pct, l.rate_type, l.purpose, l.segment, l.is_segment_split, l.segment_grain_pct, l.segment_livestock_pct,
               l.segment_jake_pct, l.segment_ashley_pct
        FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
-       WHERE NOT lp.paid AND NOT lp.is_adjustment AND lp.due_date < $1 ORDER BY lp.due_date`, [endStr]),
+       WHERE NOT lp.paid AND NOT lp.is_adjustment AND lp.due_date < $1
+         -- A one-time bill that pays the loan off is in the forecast itself: the loan's payments from its due date on aren't.
+         AND NOT EXISTS (SELECT 1 FROM bills b WHERE b.loan_id = lp.loan_id AND b.status = 'unpaid' AND b.frequency = 'one_time' AND b.due_date <= lp.due_date)
+       ORDER BY lp.due_date`, [endStr]),
     pool.query(
       `SELECT *, expected_payment_date AS due_date, GREATEST(total_value - received_amount, 0) AS amount
        FROM sale_contracts WHERE status IN ('open', 'delivered') ORDER BY expected_payment_date, id`),

@@ -7,7 +7,7 @@ const emptyForm = {
   name: '', lender: '', purpose: 'term', linked_asset: '', principal: '',
   interest_rate_pct: '', rate_type: 'fixed', term_months: '', start_date: '',
   covenant_notes: '', covenant_date: '', asset_id: '',
-  ...emptyOwnerFields, payment_frequency: 'monthly', first_payment_date: '', promo_until: '', promo_retro: false, is_cra_tax: false,
+  ...emptyOwnerFields, payment_frequency: 'monthly', first_payment_date: '', promo_until: '', promo_retro: false, is_cra_tax: false, payoff_date: '',
 };
 
 // Tax owed to CRA under a payment arrangement: the interest isn't deductible, so it's kept off the farm's books.
@@ -78,6 +78,46 @@ function PromoFields({ state, setState }) {
   );
 }
 
+/** Change or drop one payment not made yet (Jake, Oct 24). */
+function PaymentActions({ p, onDone, onError }) {
+  const [editing, setEditing] = useState(false);
+  const total = Number(p.principal_amount) + Number(p.interest_amount);
+  const [amount, setAmount] = useState(total.toFixed(2));
+  const [due, setDue] = useState(String(p.due_date).slice(0, 10));
+  const call = async (method, body) => {
+    const r = await fetch(`/api/loans/payments/${p.id}`, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    if (!r.ok) { const d = await r.json().catch(() => ({})); onError(d.error || `HTTP ${r.status}`); return; }
+    setEditing(false); onDone();
+  };
+  if (p.paid || p.is_adjustment) return null;
+  if (p.is_payoff) return <span className="split-lines">Set by the payoff date</span>;
+  if (editing) {
+    return (
+      <span className="lp-edit">
+        <input type="number" step="0.01" min="0" value={amount} aria-label="Payment amount" onChange={(e) => setAmount(e.target.value)} />
+        <input type="date" value={due} aria-label="Due date" onChange={(e) => setDue(e.target.value)} />
+        <button type="button" className="small" onClick={() => {
+          const body = {};
+          if (Math.abs(Number(amount) - total) >= 0.005) body.amount = Number(amount);
+          if (due !== String(p.due_date).slice(0, 10)) body.due_date = due;
+          if (!Object.keys(body).length) { setEditing(false); return; }
+          call('PATCH', body);
+        }}>Save</button>
+        <button type="button" className="small-link" onClick={() => setEditing(false)}>Cancel</button>
+      </span>
+    );
+  }
+  return (
+    <span className="lp-actions">
+      <button type="button" className="small-link" onClick={() => setEditing(true)}>Change</button>
+      {p.is_manual && <button type="button" className="small-link" onClick={() => call('PATCH', { manual: false })}>Back to regular</button>}
+      <button type="button" className="small-link" onClick={() => {
+        if (window.confirm(`Delete the ${String(p.due_date).slice(0, 10)} payment? The rest re-price at the regular payment, so what it held moves later. To end the loan sooner, set a payoff date instead.`)) call('DELETE');
+      }}>Delete</button>
+    </span>
+  );
+}
+
 export default function Loans() {
   const [loans, setLoans] = useState([]);
   const [accounts, setAccounts] = useState([]);
@@ -120,7 +160,8 @@ export default function Loans() {
     fetch('/api/assets').then((r) => r.json()).then((d) => setAssets(Array.isArray(d) ? d : []));
   }, []);
 
-  const refreshAll = () => { load(); loadPlanner(); loadMatches(); setSchedules({}); };
+  const refreshAll = () => { load(); loadPlanner(); loadMatches(); setSchedules({}); if (expandedId) reloadSchedule(expandedId); };
+  const reloadSchedule = (id) => fetch(`/api/loans/${id}/payments`).then((r) => r.json()).then((data) => setSchedules((s) => ({ ...s, [id]: data }))).catch(() => {});
 
   const submit = async (e) => {
     e.preventDefault();
@@ -140,6 +181,7 @@ export default function Loans() {
         asset_id: form.asset_id ? Number(form.asset_id) : null,
         first_payment_date: form.first_payment_date || null,
         promo_until: form.promo_until || null, promo_retro: !!form.promo_until && !!form.promo_retro,
+        payoff_date: form.payoff_date || null,
       }),
     });
     if (!res.ok) {
@@ -172,6 +214,7 @@ export default function Loans() {
     setEstimateResult(data);
   };
 
+  const regular0 = (l) => (l.verified_payment != null ? Number(l.verified_payment).toFixed(2) : l.next_payment ? Number(l.next_payment.amount).toFixed(2) : '');
   const startEdit = (l) => {
     setEditingId(l.id);
     setEditForm({
@@ -186,6 +229,8 @@ export default function Loans() {
       promo_until: l.promo_until ? String(l.promo_until).slice(0, 10) : '', promo_retro: !!l.promo_retro,
       covenant_date: l.covenant_date?.slice(0, 10) || '', covenant_notes: l.covenant_notes || '',
       statement_names: l.statement_names || '', is_cra_tax: !!l.is_cra_tax,
+      payoff_date: l.payoff_date ? String(l.payoff_date).slice(0, 10) : '',
+      regular_payment: regular0(l), regular0: regular0(l),
     });
     setError(null);
   };
@@ -205,6 +250,9 @@ export default function Loans() {
         asset_id: editForm.asset_id ? Number(editForm.asset_id) : null,
         first_payment_date: editForm.first_payment_date || null,
         promo_until: editForm.promo_until || null, promo_retro: !!editForm.promo_until && !!editForm.promo_retro,
+        payoff_date: editForm.payoff_date || null,
+        regular_payment: editForm.regular_payment !== editForm.regular0 && editForm.regular_payment !== '' ? Number(editForm.regular_payment) : undefined,
+        regular0: undefined,
         covenant_date: editForm.covenant_date || null,
         covenant_notes: editForm.covenant_notes || null,
       }),
@@ -501,6 +549,12 @@ export default function Loans() {
                             <div className="field"><label>First payment date</label>
                               <input type="date" value={editForm.first_payment_date} onChange={(e) => setEditForm({ ...editForm, first_payment_date: e.target.value })} /></div>
                             <PromoFields state={editForm} setState={setEditForm} />
+                            <div className="field"><label>Regular payment</label>
+                              <input type="number" step="0.01" min="0" value={editForm.regular_payment} onChange={(e) => setEditForm({ ...editForm, regular_payment: e.target.value })} />
+                              <p className="field-hint">What the lender takes each time. Changing it re-prices the payments not made yet; the dates and anything recorded stay.</p></div>
+                            <div className="field"><label>Pay off in full on (optional)</label>
+                              <input type="date" value={editForm.payoff_date} onChange={(e) => setEditForm({ ...editForm, payoff_date: e.target.value })} />
+                              <p className="field-hint">Regular payments up to this date, then one last payment of everything left plus interest. Nothing after it.</p></div>
                             <div className="field"><label>Secured by asset</label>
                               <select value={editForm.asset_id} onChange={(e) => setEditForm({ ...editForm, asset_id: e.target.value })}>
                                 <option value="">— none —</option>
@@ -577,7 +631,7 @@ export default function Loans() {
                               <thead>
                                 <tr>
                                   <th>Due</th><th>Payment</th><th>Principal</th><th>Interest</th>
-                                  <th>Balance after</th>{schedules[l.id].asset && <th>Equity after</th>}<th>Status</th>
+                                  <th>Balance after</th>{schedules[l.id].asset && <th>Equity after</th>}<th>Status</th><th />
                                 </tr>
                               </thead>
                               <tbody>
@@ -594,8 +648,11 @@ export default function Loans() {
                                         : p.paid && p.is_extra ? <span className="badge pass" title="Paid with nothing due yet — all off the principal">EXTRA PAYMENT</span>
                                         : p.paid ? <span className="badge pass">{p.linked_transaction_id ? 'RECORDED' : 'PAID OUTSIDE'}</span>
                                         : p.due_date < today() ? <span className="badge fail">OVERDUE</span>
+                                        : p.is_payoff ? <span className="badge warn" title="Everything left plus interest, on the payoff date">PAYOFF</span>
+                                        : p.is_manual ? <span className="badge" title="Changed by hand: kept as entered when the rest re-price">CHANGED</span>
                                         : <span className="badge">SCHEDULED</span>}
                                     </td>
+                                    <td><PaymentActions p={p} onDone={() => { reloadSchedule(l.id); load(); loadPlanner(); }} onError={setError} /></td>
                                   </tr>
                                 ))}
                               </tbody>
@@ -767,6 +824,13 @@ export default function Loans() {
             </select>
           </div>
           <PromoFields state={form} setState={setForm} />
+          <div className="field">
+            <label>Pay off in full on (optional)</label>
+            <input type="date" value={form.payoff_date} onChange={(e) => setForm({ ...form, payoff_date: e.target.value })} />
+            <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '4px 0 0' }}>
+              A loan that ends in a lump sum: regular payments up to this date, then everything left plus interest in one payment.
+            </p>
+          </div>
           <div className="field">
             <label>First payment date (optional)</label>
             <input type="date" value={form.first_payment_date} onChange={(e) => setForm({ ...form, first_payment_date: e.target.value })} />

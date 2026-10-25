@@ -303,6 +303,7 @@ export async function payBill(client, billId, {
     `UPDATE bills SET status = 'paid', paid_date = $1, linked_transaction_id = $2 WHERE id = $3`,
     [date, tx ? tx.id : null, bill.id]
   );
+  if (tx) await payLoanFromBill(client, bill, tx.id);
   const nextBill = await rollBillForward(client, bill);
   return { bill: { ...bill, status: 'paid', paid_date: date, linked_transaction_id: tx?.id ?? null }, transaction: tx, nextBill };
 }
@@ -402,6 +403,7 @@ export async function linkBillsToTransaction(client, billIds, txId, { createdHer
       [tx.date, tx.id, !createdHere, b.id]);
     await rollBillForward(client, b);
   }
+  if (bills.length === 1) await payLoanFromBill(client, bills[0], tx.id);
   return { bills };
 }
 
@@ -748,6 +750,7 @@ export async function linkBillToTransaction(client, billId, txId) {
     const cat = bill.category_id || await categoryIdByName(client, bill.category);
     if (cat) await client.query('UPDATE transactions SET category_id = $1 WHERE id = $2', [cat, tx.id]);
   }
+  await payLoanFromBill(client, bill, tx.id);
   if (!tx.payee_id) await client.query('UPDATE transactions SET payee_id = $1 WHERE id = $2', [await payeeId(client, bill.name), tx.id]);
   if (bill.has_gst && tx.gst_amount == null && Number(bill.amount)) {
     await client.query('UPDATE transactions SET gst_amount = $1 WHERE id = $2', [billGst(bill, Math.abs(Number(tx.amount))), tx.id]);
@@ -981,7 +984,47 @@ export async function linkLoanPaymentToTransaction(client, paymentId, txId) {
   const payment = rows[0];
   if (!payment || payment.is_adjustment) throw new PostingError('Loan payment not found.');
   if (payment.paid) throw new PostingError('That loan payment is already recorded.');
-  // Never past an older payment on the same loan that's still open: the oldest open one is what was paid.
+  return attachLoanPayment(client, payment, tx);
+}
+
+/**
+ * A bill that pays a loan (Jake, Oct 24: the CRA payoff as a bill) was just
+ * paid by transaction `txId`: the same money is that loan's payment — its
+ * oldest open one, or an extra payment if nothing's due — booked principal
+ * and interest; a payment as big as the balance closes the loan. Not from a
+ * card (a loan is paid from a bank account), and not when the loan's already
+ * cleared: then it stays an ordinary bill payment.
+ */
+export async function payLoanFromBill(client, bill, txId) {
+  if (!bill?.loan_id || !txId) return null;
+  const { rows: [tx] } = await client.query('SELECT * FROM transactions WHERE id = $1', [txId]);
+  if (!tx || !tx.account_id || tx.credit_card_id || Number(tx.amount) >= 0) return null;
+  const { rows: [linked] } = await client.query('SELECT 1 FROM loan_payments WHERE linked_transaction_id = $1', [txId]);
+  if (linked) return null;
+  const { rows: [open] } = await client.query(
+    `SELECT * FROM loan_payments WHERE loan_id = $1 AND NOT paid AND NOT is_adjustment ORDER BY due_date, id LIMIT 1 FOR UPDATE`, [bill.loan_id]);
+  if (open) return attachLoanPayment(client, open, tx);
+  const { rows: [owed] } = await client.query(
+    `SELECT l.principal - COALESCE((SELECT SUM(principal_amount) FROM loan_payments WHERE loan_id = l.id AND paid), 0) AS left FROM loans l WHERE l.id = $1`, [bill.loan_id]);
+  if (!owed || Number(owed.left) <= 0.005) return null;
+  return { payment: await bookExtraLoanPayment(client, bill.loan_id, tx), extra: true };
+}
+
+/** Undoes payLoanFromBill when the bill is unpaid: the loan payment reopens, the transaction is left to the bill. */
+export async function unpayLoanFromBill(client, txId) {
+  if (!txId) return;
+  const { rows } = await client.query('SELECT * FROM loan_payments WHERE linked_transaction_id = $1 AND NOT is_adjustment', [txId]);
+  for (const p of rows) {
+    await undoActualPayment(client, p.id);
+    await client.query('UPDATE loan_payments SET paid = false, paid_date = NULL, linked_transaction_id = NULL, linked_existing = false WHERE id = $1', [p.id]);
+    await unsplitLoanPayment(client, txId);
+    await client.query('UPDATE transactions SET is_debt_service = false WHERE id = $1', [txId]);
+    if (p.is_extra) await client.query('DELETE FROM loan_payments WHERE id = $1', [p.id]);
+    await repriceOpen(client, p.loan_id);
+  }
+}
+
+async function attachLoanPayment(client, payment, tx) {  // Never past an older payment on the same loan that's still open: the oldest open one is what was paid.
   const { rows: [older] } = await client.query(
     `SELECT id, due_date FROM loan_payments WHERE loan_id = $1 AND NOT paid AND NOT is_adjustment AND (due_date, id) < ($2::date, $3)
      ORDER BY due_date, id LIMIT 1`, [payment.loan_id, payment.due_date, payment.id]);

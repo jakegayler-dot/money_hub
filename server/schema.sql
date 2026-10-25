@@ -1667,3 +1667,15 @@ ALTER TABLE credit_cards ADD COLUMN IF NOT EXISTS opening_balance_is_debt BOOLEA
 -- calendar (and Sentinel's) as a reminder to send it in. NULL = not set.
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS statement_day INTEGER CHECK (statement_day BETWEEN 1 AND 31);
 ALTER TABLE credit_cards ADD COLUMN IF NOT EXISTS statement_day INTEGER CHECK (statement_day BETWEEN 1 AND 31);
+
+-- A loan that ends in a lump sum (Jake, Oct 24: the CRA arrangement pays
+-- $4,389 a month, then the rest on Jan 1): regular payments up to the
+-- payoff date, then one payment of everything left plus its interest.
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS payoff_date DATE;
+ALTER TABLE loan_payments ADD COLUMN IF NOT EXISTS is_payoff BOOLEAN NOT NULL DEFAULT false;
+-- A future payment changed by hand: kept as entered when the rest is re-priced.
+ALTER TABLE loan_payments ADD COLUMN IF NOT EXISTS is_manual BOOLEAN NOT NULL DEFAULT false;
+-- A bill that pays a loan: paying the bill records the loan payment (a lump
+-- that big closes it), and the loan's own payments from the bill's due date
+-- on are left out of Cash Flow so the money isn't counted twice.
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS loan_id INTEGER REFERENCES loans(id) ON DELETE SET NULL;

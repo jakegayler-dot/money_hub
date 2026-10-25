@@ -5,8 +5,17 @@ import { validateSegment, segmentValues, SEGMENT_COLUMNS } from '../lib/segments
 import {
   payBill, removeTransaction, linkBillToTransaction, expenseCategoryFor, linkBillsToTransaction, payBills,
   applyVendorOwnerToBill, recordVendorDeposit, recordVendorCredit, applyVendorCredit, unapplyVendorCredit, refundVendorCredit, keepVendorCredit, removeVendorCredit, payeeId,
-  settleVendorAccount,
+  settleVendorAccount, unpayLoanFromBill,
 } from '../lib/postings.js';
+
+/** A bill that pays a loan (Jake, Oct 24): one-time only — a loan's regular payments are its own schedule. */
+async function loanFor(db, loanId, frequency) {
+  if (loanId == null || loanId === '') return null;
+  if ((frequency || 'one_time') !== 'one_time') { const e = new Error('Only a one-time bill can pay a loan — the loan schedules its own regular payments.'); e.status = 400; throw e; }
+  const { rows: [l] } = await db.query('SELECT id FROM loans WHERE id = $1', [Number(loanId)]);
+  if (!l) { const e = new Error('That loan is not on file.'); e.status = 400; throw e; }
+  return l.id;
+}
 
 /** After a vendor's bills or credits change: settle its account oldest first. */
 const settle = (payeeId) => (payeeId ? withTransaction((client) => settleVendorAccount(client, Number(payeeId))).catch((e) => console.error('Vendor settle failed', payeeId, e.message)) : null);
@@ -108,6 +117,7 @@ router.get('/', ah(async (req, res) => {
             CASE WHEN pc.id IS NULL THEN ec.name ELSE pc.name || ' › ' || ec.name END AS category_full,
             t.date AS paid_tx_date, t.amount AS paid_tx_amount, t.description AS paid_tx_description,
             a.name AS paid_account, cc.name AS paid_card,
+            COALESCE(NULLIF(ln.name, ''), ln.lender) AS loan_name,
             bill_owing(b, CURRENT_DATE) AS owing_now, bill_owing(b, b.due_date) AS owing_at_due, pv.name AS vendor,
             COALESCE((SELECT SUM(amount) FROM credit_applications WHERE bill_id = b.id), 0) AS deposit_applied,
             t.awaiting_statement AS paid_awaiting, (t.source IS NOT NULL) AS paid_from_statement,
@@ -121,6 +131,7 @@ router.get('/', ah(async (req, res) => {
      LEFT JOIN accounts a ON a.id = t.account_id
      LEFT JOIN credit_cards cc ON cc.id = t.credit_card_id
      LEFT JOIN payees pv ON pv.id = b.payee_id
+     LEFT JOIN loans ln ON ln.id = b.loan_id
      ${where}
      ORDER BY (b.status = 'unpaid') DESC, b.due_date ASC`,
     params
@@ -186,6 +197,8 @@ router.post('/', ah(async (req, res) => {
   const vendor = Number(req.body.payee_id) > 0 ? Number(req.body.payee_id)
     : await payeeId(pool, named ? named.trim() : vendorFromName(name));
   await pool.query('UPDATE bills SET payee_id = $2 WHERE id = $1', [rows[0].id, vendor]);
+  const loanId = await loanFor(pool, req.body.loan_id, frequency);
+  if (loanId) { await pool.query('UPDATE bills SET loan_id = $2 WHERE id = $1', [rows[0].id, loanId]); rows[0].loan_id = loanId; }
   // The vendor's owner split, when the caller didn't choose an owner (an
   // agent), or the vendor came from the name and the owner was left at the default.
   const noOwner = req.body.segment === undefined && req.body.is_segment_split === undefined;
@@ -263,6 +276,7 @@ router.post('/:id/unpay', ah(async (req, res) => {
       }
     }
     if (txId) {
+      await unpayLoanFromBill(client, txId); // a bill that paid a loan: that loan payment reopens
       if (!bill.linked_existing) {
         await removeTransaction(client, txId); // paid from this tab: the payment goes too
       } else {
@@ -661,6 +675,15 @@ router.patch('/:id', ah(async (req, res) => {
       }
       await client.query('UPDATE bills SET frequency = $2 WHERE id = $1', [updated.id, req.body.frequency]);
       updated.frequency = req.body.frequency;
+    }
+    // The loan it pays (null: none). Changing it doesn't touch a payment already made.
+    if (req.body.loan_id !== undefined) {
+      const loanId = await loanFor(client, req.body.loan_id, updated.frequency);
+      await client.query('UPDATE bills SET loan_id = $2 WHERE id = $1', [updated.id, loanId]);
+      updated.loan_id = loanId;
+    } else if (updated.loan_id && updated.frequency !== 'one_time') {
+      await client.query('UPDATE bills SET loan_id = NULL WHERE id = $1', [updated.id]);
+      updated.loan_id = null;
     }
     if (req.body.payee_id !== undefined) {
       await client.query('UPDATE bills SET payee_id = $2 WHERE id = $1', [updated.id, req.body.payee_id ? Number(req.body.payee_id) : null]);

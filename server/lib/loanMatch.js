@@ -17,6 +17,9 @@
 import { toISODate } from './dates.js';
 import { dueDateFor } from './amortization.js';
 
+/** The due date one period before `d` (biweekly: 14 days). */
+const addMonthsBack = (d, frequency) => dueDateFor(d, frequency, -1);
+
 const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const dayNum = (d) => { const [y, m, dd] = toISODate(d).split('-').map(Number); return Date.UTC(y, m - 1, dd) / 86400000; };
 const daysBetween = (a, b) => Math.max(0, dayNum(b) - dayNum(a));
@@ -102,7 +105,8 @@ export async function learnLoanName(client, loanId, tx) {
  * Extra dates are added at the loan's frequency if the balance outlasts them;
  * dates after it's cleared are dropped.
  */
-export function reamortize({ balance, ratePct, from, dates, payment = null, frequency = 'monthly' }) {
+export function reamortize({ balance, ratePct, from, dates, payment = null, frequency = 'monthly', fixed = [] }) {
+  // fixed[i]: a payment changed by hand — that total on that date, whatever the rest are.
   const rate = Number(ratePct) / 100;
   let bal = round2(balance);
   if (bal <= 0.005 || !dates.length) return [];
@@ -114,7 +118,7 @@ export function reamortize({ balance, ratePct, from, dates, payment = null, freq
       const mid = (lo + hi) / 2;
       let b = bal;
       let prev = from;
-      for (const d of dates) { b = b + b * rate * daysBetween(prev, d) / 365 - mid; prev = d; }
+      dates.forEach((d, i) => { b = b + b * rate * daysBetween(prev, d) / 365 - (fixed[i] != null ? fixed[i] : mid); prev = d; });
       if (b > 0) lo = mid; else hi = mid;
     }
     return round2(hi);
@@ -129,7 +133,7 @@ export function reamortize({ balance, ratePct, from, dates, payment = null, freq
     if (k >= all.length) all.push(dueDateFor(all[all.length - 1], frequency, 1));
     const d = all[k];
     const interest = round2(bal * rate * daysBetween(prev, d) / 365);
-    let principal = round2(pay - interest);
+    let principal = round2((fixed[k] != null ? Number(fixed[k]) : pay) - interest);
     const last = payment == null && k === dates.length - 1;
     if (principal >= bal || last) principal = bal;
     if (principal < 0) principal = 0;
@@ -158,13 +162,15 @@ async function lastSettled(client, loan, paymentId, date) {
 
 /** Rebuilds the open payments after `afterDate` from `balance`, at `payment` (or level). */
 async function rebuildRest(client, loan, { balance, from, afterDueDate, payment }) {
+  // The payoff lump isn't re-priced here: applyPayoff (below) sets it from whatever's left.
   const { rows: rest } = await client.query(
-    `SELECT id, due_date FROM loan_payments WHERE loan_id = $1 AND NOT paid AND NOT is_adjustment AND due_date > $2 ORDER BY due_date, id`,
+    `SELECT id, due_date, is_manual, principal_amount + interest_amount AS total FROM loan_payments
+     WHERE loan_id = $1 AND NOT paid AND NOT is_adjustment AND NOT is_payoff AND due_date > $2 ORDER BY due_date, id`,
     [loan.id, afterDueDate]);
-  if (!rest.length) return;
+  if (!rest.length) { await applyPayoff(client, loan.id); return; }
   const rows = reamortize({
     balance, ratePct: loan.interest_rate_pct, from, dates: rest.map((r) => toISODate(r.due_date)), payment,
-    frequency: loan.payment_frequency || 'monthly',
+    frequency: loan.payment_frequency || 'monthly', fixed: rest.map((r) => (r.is_manual ? Number(r.total) : null)),
   });
   for (let i = 0; i < Math.max(rows.length, rest.length); i++) {
     if (i < rest.length && i < rows.length) {
@@ -177,6 +183,46 @@ async function rebuildRest(client, loan, { balance, from, afterDueDate, payment 
         [loan.id, rows[i].due_date, rows[i].principal_amount, rows[i].interest_amount]);
     }
   }
+  await applyPayoff(client, loan.id);
+}
+
+/**
+ * A loan with a payoff date (Jake, Oct 24: the CRA arrangement — $4,389 a
+ * month, then the rest on Jan 1): nothing open is scheduled on or after the
+ * date except one last payment on it — every dollar still owed after the
+ * payments before it, plus the interest since the last of them.
+ * Without a payoff date, an old lump is taken out and the balance it held
+ * goes back over regular payments.
+ */
+export async function applyPayoff(client, loanId) {
+  const { rows: [loan] } = await client.query('SELECT * FROM loans WHERE id = $1', [loanId]);
+  if (!loan) return;
+  const pd = loan.payoff_date ? toISODate(loan.payoff_date) : null;
+  const { rowCount: dropped } = await client.query(
+    `DELETE FROM loan_payments WHERE loan_id = $1 AND NOT paid AND NOT is_adjustment AND (is_payoff OR ($2::date IS NOT NULL AND due_date >= $2::date))`,
+    [loanId, pd]);
+  const { rows: [r] } = await client.query(
+    `SELECT COALESCE(SUM(principal_amount), 0) AS covered,
+            MAX(CASE WHEN paid THEN COALESCE(paid_date, due_date) ELSE due_date END) AS last,
+            COUNT(*) FILTER (WHERE NOT paid AND NOT is_adjustment) AS open
+     FROM loan_payments WHERE loan_id = $1`, [loanId]);
+  const left = round2(Number(loan.principal) - Number(r.covered));
+  if (left <= 0.005) return;
+  const rate = Number(loan.interest_rate_pct) / 100;
+  if (pd) {
+    const from = [toISODate(loan.start_date), r.last ? toISODate(r.last) : null, loan.last_verified_on ? toISODate(loan.last_verified_on) : null]
+      .filter((d) => d && d < pd).sort().pop() || pd;
+    await client.query(
+      `INSERT INTO loan_payments (loan_id, due_date, principal_amount, interest_amount, is_payoff) VALUES ($1,$2,$3,$4,true)`,
+      [loanId, pd, left, round2(left * rate * daysBetween(from, pd) / 365)]);
+    return;
+  }
+  // No payoff date (any more): what the lump held goes back on regular payments after the last one.
+  if (!dropped) return;
+  const after = r.last ? toISODate(r.last) : toISODate(loan.start_date);
+  const d = dueDateFor(after, loan.payment_frequency || 'monthly', 1);
+  await client.query('INSERT INTO loan_payments (loan_id, due_date, principal_amount, interest_amount) VALUES ($1,$2,$3,0)', [loanId, d, left]);
+  await repriceOpen(client, loanId);
 }
 
 /**
@@ -238,17 +284,23 @@ export const dueSoonEnough = (dueDate, paidOn) => daysBetween(toISODate(paidOn),
  * settled, at the payment the open ones already ask for — so an extra
  * payment shortens the loan instead of changing the payment.
  */
-export async function repriceOpen(client, loanId) {
+export async function repriceOpen(client, loanId, { payment = null } = {}) {
   const { rows: [loan] } = await client.query('SELECT * FROM loans WHERE id = $1', [loanId]);
   if (!loan) return;
   const { rows: [r] } = await client.query(
     `SELECT COALESCE(SUM(principal_amount) FILTER (WHERE paid), 0) AS paid,
             MAX(COALESCE(paid_date, due_date)) FILTER (WHERE paid AND NOT is_adjustment) AS last
      FROM loan_payments WHERE loan_id = $1`, [loanId]);
+  // At the regular payment: the next one not changed by hand and not the payoff lump (else the verified one).
   const { rows: [next] } = await client.query(
-    `SELECT principal_amount + interest_amount AS total FROM loan_payments
-     WHERE loan_id = $1 AND NOT paid AND NOT is_adjustment ORDER BY due_date, id LIMIT 1`, [loanId]);
-  if (!next) return;
-  const from = [toISODate(loan.start_date), r.last ? toISODate(r.last) : null].filter(Boolean).sort().pop();
-  await rebuildRest(client, loan, { balance: round2(Number(loan.principal) - Number(r.paid)), from, afterDueDate: '1900-01-01', payment: Number(next.total) });
+    `SELECT principal_amount + interest_amount AS total, is_manual, is_payoff FROM loan_payments
+     WHERE loan_id = $1 AND NOT paid AND NOT is_adjustment ORDER BY (is_manual OR is_payoff), due_date, id LIMIT 1`, [loanId]);
+  if (!next) { await applyPayoff(client, loanId); return; }
+  const regular = payment != null ? Number(payment) : !next.is_manual && !next.is_payoff ? Number(next.total) : (loan.verified_payment != null ? Number(loan.verified_payment) : Number(next.total));
+  // Interest runs from the last payment (or the start) — but never more than one period before the first open payment.
+  const { rows: [first] } = await client.query(
+    'SELECT MIN(due_date) AS d FROM loan_payments WHERE loan_id = $1 AND NOT paid AND NOT is_adjustment', [loanId]);
+  const oneBefore = first?.d ? addMonthsBack(toISODate(first.d), loan.payment_frequency || 'monthly') : null;
+  const from = [toISODate(loan.start_date), r.last ? toISODate(r.last) : null, oneBefore].filter(Boolean).sort().pop();
+  await rebuildRest(client, loan, { balance: round2(Number(loan.principal) - Number(r.paid)), from, afterDueDate: '1900-01-01', payment: regular });
 }

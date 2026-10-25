@@ -37,9 +37,26 @@ const belongsTo = (b, owner) => {
   return owner === 'none' ? !b.segment : b.segment === owner;
 };
 
+// A one-time bill can pay a loan (Jake, Oct 24: the CRA payoff as a bill): paying the bill records the
+// loan payment, a lump that size closes the loan, and Cash Flow counts the bill instead of the loan's payments.
+function LoanField({ loans, value, onChange }) {
+  const open = loans.filter((l) => Number(l.outstanding_balance) > 0.005 || String(l.id) === String(value));
+  if (!open.length) return null;
+  return (
+    <div className="field">
+      <label>Pays a loan (optional)</label>
+      <select value={value || ''} onChange={(e) => onChange(e.target.value)}>
+        <option value="">— no —</option>
+        {open.map((l) => <option key={l.id} value={l.id}>{l.name || l.lender} — owes {money(Number(l.outstanding_balance))}</option>)}
+      </select>
+      <p className="field-hint">Paying this bill records it as that loan's payment (principal and interest); as much as the balance pays it off. Cash Flow counts this bill instead of the loan's payments from its due date on.</p>
+    </div>
+  );
+}
+
 const emptyForm = {
   name: '', payee_id: '', ledger: 'business', category_id: '', amount: '', frequency: 'one_time',
-  received_date: '', due_date: '', notes: '',
+  received_date: '', due_date: '', notes: '', loan_id: '',
   has_gst: false, gst_pct: '5',
   is_financed: false, finance_rate_pct: '', interest_free_until: '', balance_amount: '', balance_as_of: '',
   ...emptyOwnerFields,
@@ -127,7 +144,9 @@ export default function Bills() {
       .catch(() => setError('Failed to load bills.'));
   };
   useEffect(load, [filter]);
+  const [loans, setLoans] = useState([]);
   useEffect(() => {
+    fetch('/api/loans').then((r) => r.json()).then((d) => setLoans(Array.isArray(d) ? d : [])).catch(() => {});
     fetch('/api/accounts').then((r) => r.json()).then(setAccounts);
     const loadCats = () => fetch('/api/expenses').then((r) => r.json()).then((c) => setCategories(Array.isArray(c) ? c : []));
     loadCats();
@@ -177,6 +196,7 @@ export default function Bills() {
         received_date: form.received_date || null,
         notes: form.notes || null,
         gst_pct: form.has_gst ? Number(form.gst_pct) : 5,
+        loan_id: form.frequency === 'one_time' && form.loan_id ? Number(form.loan_id) : null,
         ...financePayload(form),
         ...ownerPayload(form),
       }),
@@ -225,7 +245,7 @@ export default function Bills() {
       notes: b.notes || '', has_gst: b.has_gst, gst_pct: b.gst_pct,
       is_financed: !!b.is_financed, finance_rate_pct: b.finance_rate_pct == null ? '' : Number(b.finance_rate_pct),
       interest_free_until: b.interest_free_until || '', balance_amount: b.balance_amount == null ? '' : Number(b.balance_amount),
-      balance_as_of: b.balance_as_of || '',
+      balance_as_of: b.balance_as_of || '', loan_id: b.loan_id ? String(b.loan_id) : '', frequency: b.frequency,
       ...ownerFieldsFrom(b),
     });
     setError(null);
@@ -244,6 +264,8 @@ export default function Bills() {
         payee_id: editForm.payee_id ? Number(editForm.payee_id) : null,
         amount: Number(editForm.amount),
         gst_pct: Number(editForm.gst_pct),
+        loan_id: editForm.frequency === 'one_time' && editForm.loan_id ? Number(editForm.loan_id) : null,
+        frequency: undefined,
         ...(bills.find((x) => x.id === id)?.status === 'paid' ? {} : financePayload(editForm)),
         ...ownerPayload(editForm),
       }),
@@ -380,6 +402,7 @@ export default function Bills() {
                         {b.name}
                         {b.frequency !== 'one_time' && <span className="tag">{{ monthly: 'Monthly', quarterly: 'Quarterly', annual: 'Yearly' }[b.frequency]}</span>}
                         {b.is_financed && <span className="tag">Interest</span>}
+                        {b.loan_name && <span className="tag" title="Paying this bill records the loan's payment">Pays {b.loan_name}</span>}
                         <div>
                           {b.invoice_receipt_id ? (
                             <a className="tag" style={{ marginLeft: 0 }} href={`/api/receipts/${b.invoice_receipt_id}/image`} target="_blank" rel="noreferrer">Invoice</a>
@@ -518,6 +541,7 @@ export default function Bills() {
                                 <label>Due date</label>
                                 <input type="date" disabled={b.status === 'paid'} value={editForm.due_date} onChange={(e) => setEditForm({ ...editForm, due_date: e.target.value })} />
                               </div>
+                              {b.frequency === 'one_time' && <LoanField loans={loans} value={editForm.loan_id} onChange={(v) => setEditForm({ ...editForm, loan_id: v })} />}
                               <div className="field">
                                 <label>
                                   <input type="checkbox" disabled={b.status === 'paid'} checked={editForm.has_gst} onChange={(e) => setEditForm({ ...editForm, has_gst: e.target.checked })} />
@@ -614,6 +638,7 @@ export default function Bills() {
               <option value="annual">Yearly (recurs automatically once paid)</option>
             </select>
           </div>
+          {form.frequency === 'one_time' && <LoanField loans={loans} value={form.loan_id} onChange={(v) => setForm({ ...form, loan_id: v })} />}
           <FinanceFields state={form} setState={setForm} />
           <div className="field">
             <label>Received date (optional)</label>
