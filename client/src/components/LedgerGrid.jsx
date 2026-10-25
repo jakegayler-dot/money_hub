@@ -14,7 +14,7 @@ import { cents } from './SplitEditor.jsx';
  */
 const COLS = ['date', 'account', 'description', 'payee', 'category', 'owner', 'amount', 'gst'];
 
-export default function LedgerGrid({ rows: sortedRows, sort, onSort, accounts, cards, categories, payees, balance, onPatched, onOpen, onAttach, onDelete, attaching, onReload }) {
+export default function LedgerGrid({ rows: sortedRows, sort, onSort, accounts, cards, categories, payees, balance, onPatched, onOpen, onAttach, onDelete, attaching, onReload, loanPayments = [] }) {
   const [status, setStatus] = useState({}); // id → 'saving' | 'saved' | error text
   const tableRef = useRef(null);
   // Rows keep their places while you type: an edited date or amount doesn't
@@ -76,10 +76,11 @@ export default function LedgerGrid({ rows: sortedRows, sort, onSort, accounts, c
     if (out) save(t, out.patch, out.local, el, el.defaultValue); else el.value = el.defaultValue;
   };
 
-  // What isn't a category, offered in the same picker: a transfer, a payment on one of the cards, money with CRA.
+  // What isn't a category, offered in the same picker: a transfer, a payment on one of the cards or loans, money with CRA.
   const movesFor = (t, amt) => {
     if (!t.account_id || t.credit_card_id || t.pays || t.transfer_peer_id) return [];
     return [
+      ...(amt < 0 && !t.is_split ? loanPayments.map((p) => ({ key: `loan:${p.id}`, label: `Loan payment → ${p.loan_name}`, hint: 'Loan' })) : []),
       ...(!t.is_transfer ? [{ key: 'transfer', label: 'Transfer between my accounts' }] : []),
       ...(amt < 0 ? (cards || []).filter((c) => c.status !== 'closed').map((c) => ({ key: `card:${c.id}`, label: `Card payment → ${c.name}${c.last4 ? ` ••${c.last4}` : ''}` })) : []),
       ...kindsFor(amt).filter((k) => k !== t.tax_kind).map((k) => ({ key: `tax:${k}`, label: TAX_KIND_LABELS[k], hint: 'CRA' })),
@@ -92,7 +93,12 @@ export default function LedgerGrid({ rows: sortedRows, sort, onSort, accounts, c
     }
     setStatus((s) => ({ ...s, [t.id]: 'saving' }));
     let err = null;
-    if (m.key.startsWith('card:')) {
+    if (m.key.startsWith('loan:')) {
+      // Was a transfer or money with CRA (a payment on a CRA arrangement): un-marked, then put on the loan.
+      const r = await fetch(`/api/transactions/${t.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_transfer: false, category_id: null, link_loan_payment_id: Number(m.key.slice(5)) }) }).catch(() => null);
+      if (!r?.ok) err = (await r?.json().catch(() => ({})))?.error || 'Not saved';
+    } else if (m.key.startsWith('card:')) {
       const r = await fetch(`/api/transactions/${t.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ link_card_id: Number(m.key.slice(5)), category_id: null }) }).catch(() => null);
       if (!r?.ok) err = (await r?.json().catch(() => ({})))?.error || 'Not saved';

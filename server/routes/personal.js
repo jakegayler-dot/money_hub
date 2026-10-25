@@ -3,6 +3,7 @@ import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { personalPlan, spendingBreakdown } from '../lib/personal.js';
 import { ownerCheck } from '../lib/ownerCheck.js';
+import { generateBudget, adoptBudget } from '../lib/budgetPlan.js';
 import { todayISO } from '../lib/dates.js';
 
 const router = Router();
@@ -48,6 +49,20 @@ router.put('/settings', ah(async (req, res) => {
     await setSetting('personal_discretionary_cap', cap);
   }
   res.json(await personalPlan(Number(todayISO().slice(0, 4))));
+}));
+
+// A household budget that keeps the forecast's cash above its floor for the next 12 months (lib/budgetPlan.js).
+router.get('/budget', ah(async (req, res) => { res.json(await generateBudget()); }));
+// Adopt it: generated afresh, then the forecast's discretionary budget and the category budgets.
+router.post('/budget/adopt', ah(async (req, res) => {
+  await adoptBudget(await generateBudget());
+  res.json(await generateBudget());
+}));
+// Stop using it: back to what you actually spend.
+router.delete('/budget/adopt', ah(async (req, res) => {
+  await setSetting('personal_discretionary_month', null);
+  await setSetting('personal_budget_plan', null);
+  res.json(await generateBudget());
 }));
 
 // A category's bucket: 'essential', 'discretionary', or null to go back to the default.

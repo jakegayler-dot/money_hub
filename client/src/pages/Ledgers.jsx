@@ -71,6 +71,28 @@ export default function Ledgers() {
   const [pieces, setPieces] = useState([newPiece(), newPiece()]);
   const [filter, setFilter] = useState('all');
   const [outstandingOnly, setOutstandingOnly] = useState(() => !!new URLSearchParams(window.location.search).get('outstanding'));
+  // Transfers whose other side is on file (and card payments) are noise in a list of spending: hidden unless asked for.
+  const [hidePaired, setHidePaired] = useState(() => { try { return localStorage.getItem('moneyhub.hidePaired') !== '0'; } catch { return true; } });
+  const changeHidePaired = (v) => { setHidePaired(v); try { localStorage.setItem('moneyhub.hidePaired', v ? '1' : '0'); } catch { /* private window */ } };
+  // Whose entries: any mix of Grain, Cattle, Jake, Ashley (none picked = everyone).
+  const [owners, setOwners] = useState(() => { try { return JSON.parse(localStorage.getItem('moneyhub.ledgerOwners')) || []; } catch { return []; } });
+  const toggleOwner = (k) => setOwners((cur) => {
+    const next = cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k];
+    try { localStorage.setItem('moneyhub.ledgerOwners', JSON.stringify(next)); } catch { /* private window */ }
+    return next;
+  });
+  const [pairNote, setPairNote] = useState(null);
+  const [pairing, setPairing] = useState(false);
+  const pairNow = async () => {
+    setPairing(true); setPairNote(null);
+    try {
+      const r = await fetch('/api/transactions/pair-transfers', { method: 'POST' });
+      const d = await r.json();
+      setPairNote(r.ok ? (d.paired ? `Paired ${d.paired} transfer${d.paired === 1 ? '' : 's'}.` : 'No more transfers to pair — the rest have no matching other side on file.') : d.error || 'Pairing failed.');
+      if (d.paired) load();
+    } catch (e) { setPairNote(e.message); }
+    setPairing(false);
+  };
   const [reviewOnly, setReviewOnly] = useState(false);
   const [unconfirmedOnly, setUnconfirmedOnly] = useState(() => !!new URLSearchParams(window.location.search).get('unconfirmed'));
   const [search, setSearch] = useState('');
@@ -140,6 +162,7 @@ export default function Ledgers() {
     if (unconfirmedOnly) params.set('unconfirmed', 'true');
     if (search.trim()) params.set('q', search.trim());
     if (payeeFilter) params.set('payee_id', payeeFilter);
+    if (owners.length) params.set('owners', owners.join(','));
     const [kind, whereId] = where.split(':');
     const one = kind === 'a' ? `account_id=${whereId}` : kind === 'c' ? `credit_card_id=${whereId}` : null;
     if (kind === 'a') params.set('account_id', whereId);
@@ -150,7 +173,7 @@ export default function Ledgers() {
     else setBalance(null);
   };
 
-  useEffect(load, [filter, reviewOnly, unconfirmedOnly, payeeFilter, where, focusId]);
+  useEffect(load, [filter, reviewOnly, unconfirmedOnly, payeeFilter, where, focusId, owners.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { try { window.localStorage.setItem('moneyhub.ledgerWhere', where); } catch { /* private mode */ } }, [where]);
   useEffect(() => {
     fetch('/api/accounts').then((r) => r.json()).then(setAccounts);
@@ -333,7 +356,9 @@ export default function Ledgers() {
     load();
   };
 
-  const filtered = outstandingOnly ? transactions.filter((t) => !t.cleared) : transactions;
+  const isPaired = (t) => t.is_transfer && (t.transfer_peer_id || (t.account_id && t.credit_card_id));
+  const pairedCount = transactions.filter(isPaired).length;
+  const filtered = transactions.filter((t) => (!outstandingOnly || !t.cleared) && (!hidePaired || focusId || !isPaired(t)));
   const visible = sortRows(filtered, sort);
   const outstandingCount = transactions.filter((t) => !t.cleared).length;
   const outstandingTotal = transactions
@@ -656,6 +681,13 @@ export default function Ledgers() {
                 onChange={(e) => setSearch(e.target.value)} style={{ width: 180 }} />
               <button type="submit" className="small secondary">Search</button>
             </form>
+            <span className="seg-toggle" role="group" aria-label="Whose entries">
+              <button type="button" aria-pressed={!owners.length} className={!owners.length ? 'on' : ''}
+                onClick={() => { setOwners([]); try { localStorage.setItem('moneyhub.ledgerOwners', '[]'); } catch { /* private window */ } }}>Everyone</button>
+              {[['grain', 'Grain'], ['livestock', 'Cattle'], ['jake', 'Jake'], ['ashley', 'Ashley'], ['none', 'No owner']].map(([k, l]) => (
+                <button key={k} type="button" aria-pressed={owners.includes(k)} className={owners.includes(k) ? 'on' : ''} onClick={() => toggleOwner(k)}>{l}</button>
+              ))}
+            </span>
             <label style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <input type="checkbox" checked={reviewOnly} onChange={(e) => setReviewOnly(e.target.checked)} />
               Needs review only
@@ -668,9 +700,20 @@ export default function Ledgers() {
               <input type="checkbox" checked={outstandingOnly} onChange={(e) => setOutstandingOnly(e.target.checked)} />
               Outstanding checks only
             </label>
+            <label style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <input type="checkbox" checked={hidePaired} onChange={(e) => changeHidePaired(e.target.checked)} />
+              Hide paired transfers{pairedCount ? ` (${pairedCount})` : ''}
+            </label>
+            <button type="button" className="small secondary" disabled={pairing} onClick={pairNow}
+              title="Matches each transfer with its other side on another of your accounts — same amount, within 5 days">Pair transfers</button>
           </span>
         </div>
         <input ref={fileRef} type="file" accept="image/*,application/pdf,.pdf" hidden onChange={(e) => attachFile(e.target.files?.[0])} />
+        {pairNote && <p className="pair-note" role="status">{pairNote}</p>}
+        {hidePaired && pairedCount > 0 && !focusId && (
+          <p className="pair-note">{pairedCount} transfer{pairedCount === 1 ? '' : 's'} between your own accounts and cards hidden — money moving between them, not in or out.{' '}
+            <button type="button" className="small-link" onClick={() => changeHidePaired(false)}>Show them</button></p>
+        )}
         {balance && (
           <div className="balance-strip">
             {balance.kind === 'account' ? (
@@ -699,7 +742,8 @@ export default function Ledgers() {
         ) : view === 'grid' ? (
           <LedgerGrid rows={visible} sort={sort}
             onSort={(key) => setSort((s) => (s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: key === 'date' || key === 'amount' ? 'desc' : 'asc' }))}
-            accounts={accounts} cards={cards} categories={categories} payees={payees} balance={balance} onReload={load}
+            accounts={accounts} cards={cards} categories={categories} payees={payees} balance={balance} onReload={() => { load(); loadLinkOptions(); }}
+            loanPayments={linkOptions.loan_payments}
             onPatched={(id, patch) => {
               setTransactions((ts) => ts.map((x) => (x.id === id ? { ...x, ...patch } : x)));
               if (patch.needs_review === false) window.dispatchEvent(new Event('review-changed'));

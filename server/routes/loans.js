@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
-import { recordLoanPayment, removeTransaction, unsplitLoanPayment, syncLoanPieceOwners, linkLoanPaymentToTransaction } from '../lib/postings.js';
+import { recordLoanPayment, removeTransaction, unsplitLoanPayment, syncLoanPieceOwners, linkLoanPaymentToTransaction, resplitLoanPayments } from '../lib/postings.js';
 import { undoActualPayment, namesLoan, closeToScheduled, repriceOpen } from '../lib/loanMatch.js';
 import { ledgerForSegment, segmentValues, validateSegment } from '../lib/segments.js';
 import { buildSchedule, scheduleFromTerms, dueDateFor, FREQUENCIES } from '../lib/amortization.js';
@@ -477,6 +477,10 @@ router.post('/', ah(async (req, res) => {
        payment_frequency, first_payment_date || null, isSplit, gPct, lPct, jPct, aPct]
     );
     const created = rows[0];
+    if (req.body.is_cra_tax) {
+      await client.query('UPDATE loans SET is_cra_tax = true WHERE id = $1', [created.id]);
+      created.is_cra_tax = true;
+    }
     if (promo_until) {
       await client.query('UPDATE loans SET promo_until = $2, promo_retro = $3 WHERE id = $1', [created.id, promo_until, !!promo_retro]);
       Object.assign(created, { promo_until, promo_retro: !!promo_retro });
@@ -574,8 +578,15 @@ router.patch('/:id', ah(async (req, res) => {
         );
       }
     }
+    // Owed to CRA (a payment arrangement): turning it on or off re-files the payments already recorded.
+    let refiled;
+    if (b.is_cra_tax !== undefined && !!b.is_cra_tax !== !!cur.is_cra_tax) {
+      await client.query('UPDATE loans SET is_cra_tax = $2 WHERE id = $1', [updated.id, !!b.is_cra_tax]);
+      updated.is_cra_tax = !!b.is_cra_tax;
+      refiled = await resplitLoanPayments(client, updated.id);
+    }
     await syncLoanPieceOwners(client, updated.id); // recorded payments follow the loan's owner split
-    return { ...updated, schedule_regenerated: termsChanged };
+    return { ...updated, schedule_regenerated: termsChanged, payments_refiled: refiled };
   });
 
   if (!loan) return res.status(404).json({ error: 'not found' });

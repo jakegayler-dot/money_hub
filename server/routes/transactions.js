@@ -25,6 +25,7 @@ const resettle = async (payees) => {
 };
 import { cardBalances } from '../lib/cardLedger.js';
 import { markTaxMove, unmarkTaxMove } from '../lib/taxMoves.js';
+import { pairTransfers } from '../lib/transferPairs.js';
 
 const router = Router();
 const r2 = (n) => Math.round(Number(n) * 100) / 100;
@@ -129,6 +130,19 @@ router.get('/', ah(async (req, res) => {
   if (q) add('(t.description ILIKE ? OR p.name ILIKE $' + (params.length + 1) + ')', `%${q}%`);
   if (req.query.payee_id) add('t.payee_id = ?', req.query.payee_id);
   if (req.query.unconfirmed === 'true') conditions.push(`NOT ${CONFIRMED_SQL('t')}`);
+  // Owners (Jake, Oct 24: view by Grain, Cattle, Ashley, Jake or any mix): an entry shows if any of
+  // the chosen owners has a share in it — its own owner, its split percentages, or any split piece's.
+  // 'none' = entries with no owner yet.
+  if (req.query.owners) {
+    const PCT = { grain: 'segment_grain_pct', livestock: 'segment_livestock_pct', jake: 'segment_jake_pct', ashley: 'segment_ashley_pct' };
+    const picked = String(req.query.owners).split(',').map((s) => s.trim()).filter((s) => PCT[s] || s === 'none');
+    if (picked.length) {
+      const own = (x) => picked.map((o) => (o === 'none'
+        ? `((${x}.segment IS NULL OR ${x}.segment = 'personal') AND NOT ${x}.is_segment_split)`
+        : `(${x}.segment = '${o}' OR (${x}.is_segment_split AND COALESCE(${x}.${PCT[o]}, 0) > 0))`)).join(' OR ');
+      conditions.push(`((NOT t.is_split AND (${own('t')})) OR (t.is_split AND EXISTS (SELECT 1 FROM transaction_splits s WHERE s.transaction_id = t.id AND (${own('s')}))))`);
+    }
+  }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   params.push(Math.min(Number(limit) || 200, 2000));
 
@@ -423,6 +437,12 @@ router.patch('/:id', ah(async (req, res) => {
       await client.query('UPDATE transactions SET tax_kind = NULL WHERE id = $1', [tx.id]);
       up[0].tax_kind = null;
     }
+    // A paired transfer given a category (or un-marked) isn't a transfer after all: the pair is undone, and
+    // the other side stays a one-sided transfer for you to sort out.
+    if (tx.transfer_peer_id && !finalTransfer) {
+      await client.query('UPDATE transactions SET transfer_peer_id = NULL WHERE id = ANY($1)', [[tx.id, tx.transfer_peer_id]]);
+      up[0].transfer_peer_id = null;
+    }
     if (splits !== null) {
       await client.query('DELETE FROM transaction_splits WHERE transaction_id = $1', [tx.id]);
       for (const s of splits) {
@@ -466,6 +486,14 @@ router.patch('/:id', ah(async (req, res) => {
     return { status: 200, body: up[0] };
   });
   if (result.status < 300) await resettle(await creditVendors(req.params.id)); // a payment on account changed
+  // Marked a transfer by hand: its other side may already be on file.
+  if (result.status < 300 && b.is_transfer === true && !result.body.transfer_peer_id) {
+    try {
+      const made = await withTransaction((c) => pairTransfers(c));
+      const mine = made.find((p) => p.out === Number(req.params.id) || p.in === Number(req.params.id));
+      if (mine) result.body.transfer_peer_id = mine.out === Number(req.params.id) ? mine.in : mine.out;
+    } catch (e) { console.error('Transfer pairing failed:', e.message); }
+  }
   res.status(result.status).json(result.body);
 }));
 
@@ -477,6 +505,12 @@ const taxError = (res, e) => {
   if (e.code === 'PERIOD_CLOSED' || /closed/i.test(e.message)) return res.status(409).json({ error: e.message });
   throw e;
 };
+// Pairs both sides of transfers between your own accounts (lib/transferPairs.js).
+router.post('/pair-transfers', ah(async (req, res) => {
+  const made = await withTransaction((c) => pairTransfers(c));
+  res.json({ paired: made.length, pairs: made });
+}));
+
 router.post('/:id/tax', ah(async (req, res) => {
   try {
     res.json(await withTransaction((c) => markTaxMove(c, Number(req.params.id), { kind: req.body?.kind, interest: req.body?.interest })));

@@ -1649,3 +1649,16 @@ CREATE TABLE IF NOT EXISTS points_entries (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_points_entries_program ON points_entries (program_id, date);
+
+-- A balance owed to CRA under a payment arrangement (Jake, Oct 24): a loan for
+-- the forecast, but its interest is not deductible (Income Tax Act s. 18(1)(t)),
+-- so it's booked to a personal category, not Interest › Loan interest
+-- (lib/postings.js splitLoanPayment).
+ALTER TABLE loans ADD COLUMN IF NOT EXISTS is_cra_tax BOOLEAN NOT NULL DEFAULT false;
+INSERT INTO expense_categories (name, class, ledger, kind)
+SELECT 'CRA interest & penalties (not deductible)', 'variable_seasonal', 'personal', 'expense'
+WHERE NOT EXISTS (SELECT 1 FROM expense_categories WHERE lower(name) = lower('CRA interest & penalties (not deductible)'));
+
+-- A card's balance when itemizing started is debt from before (Jake, Oct 24): paying it down is a
+-- transfer, not this year's spending. false = count it as spending (the old behaviour).
+ALTER TABLE credit_cards ADD COLUMN IF NOT EXISTS opening_balance_is_debt BOOLEAN NOT NULL DEFAULT true;

@@ -64,15 +64,22 @@ export async function categoryBuckets(db = pool) {
  * (exclusive), as lines { date, month 'YYYY-MM', bucket, category, amount }.
  */
 async function householdLines(from, to, buckets) {
+  // Each line also says whether it paid a bill or a loan (`scheduled`): those are forecast on their
+  // own dates, so the estimate of everything else leaves them out (Jake, Oct 24: an annual bill the
+  // typical month never saw was being subtracted from it, dropping the month's groceries and fuel).
   const byId = new Map(buckets.map((b) => [b.id, b]));
   const { rows: cats } = await pool.query('SELECT id, kind FROM expense_categories');
   const kindOf = new Map(cats.map((c) => [c.id, c.kind]));
   const { rows } = await pool.query(
-    `SELECT ${EARNING_COLUMNS}, l.date, l.category_id
+    `SELECT ${EARNING_COLUMNS}, l.date, l.category_id, l.transaction_id
      FROM transaction_lines l JOIN transactions t ON t.id = l.transaction_id
      LEFT JOIN loan_payments lp ON lp.linked_transaction_id = l.transaction_id
      WHERE l.is_transfer = false AND (l.is_debt_service = false OR l.split_id IS NOT NULL)
        AND l.date >= $1 AND l.date < $2`, [from, to]);
+  const { rows: sched } = await pool.query(
+    `SELECT linked_transaction_id AS id FROM bills WHERE linked_transaction_id IS NOT NULL
+     UNION SELECT linked_transaction_id FROM loan_payments WHERE linked_transaction_id IS NOT NULL`);
+  const scheduled = new Set(sched.map((r) => r.id));
   const spending = [];
   let income = 0;
   for (const l of rows) {
@@ -82,7 +89,11 @@ async function householdLines(from, to, buckets) {
     const kind = l.category_id ? kindOf.get(l.category_id) : (Number(l.amount) > 0 ? 'income' : 'expense');
     if (kind === 'income') { income += v; continue; }
     const b = l.category_id ? byId.get(l.category_id) : null;
-    spending.push({ date: toISODate(l.date), month: ym(l.date), bucket: b ? b.bucket : 'essential', category: b ? b.full : 'Uncategorized', amount: -v });
+    const w = ownerWeights(l);
+    const wsum = (w.jake + w.ashley + w.unassigned) || 1;
+    spending.push({ date: toISODate(l.date), month: ym(l.date), bucket: b ? b.bucket : 'essential', category: b ? b.full : 'Uncategorized',
+      category_id: l.category_id || null, amount: -v, scheduled: scheduled.has(l.transaction_id),
+      jake: -v * w.jake / wsum, ashley: -v * w.ashley / wsum });
   }
   return { spending, income: r2(income) };
 }
@@ -113,12 +124,19 @@ export async function essentialsModel(today = todayISO(), buckets = null) {
   const from = [shiftMonth(startKey, 1), yearAgo].sort().pop();
   const { spending } = await householdLines(`${from}-01`, `${thisMonth}-01`, cats);
   const byMonth = new Map(monthsBetween(from, lastFull).map((k) => [k, 0]));
-  for (const l of spending) if (l.bucket === 'essential' && byMonth.has(l.month)) byMonth.set(l.month, byMonth.get(l.month) + l.amount);
+  const unscheduled = new Map(byMonth); // the same, without bill and loan payments
+  for (const l of spending) {
+    if (l.bucket !== 'essential' || !byMonth.has(l.month)) continue;
+    byMonth.set(l.month, byMonth.get(l.month) + l.amount);
+    if (!l.scheduled) unscheduled.set(l.month, unscheduled.get(l.month) + l.amount);
+  }
   // A month with no essential spending at all is a gap in the records, not a free month.
   const months = [...byMonth].filter(([k, v]) => k <= lastFull && v > 0.005);
   const full = months.length >= 12;
   // The typical month: the median, so one big month (a repair, a lump card payment) doesn't set the forecast.
   const avg = median(months.map(([, v]) => v));
+  const kept = new Set(months.map(([k]) => k));
+  const avgU = median([...unscheduled].filter(([k]) => kept.has(k)).map(([, v]) => v));
   return {
     basis: full ? 'same month last year' : months.length ? `the typical (median) month of the ${months.length} on file, weighted toward the same month last year where there is one` : 'no history yet',
     months: months.map(([k, v]) => ({ month: k, amount: r2(v) })),
@@ -130,6 +148,14 @@ export async function essentialsModel(today = todayISO(), buckets = null) {
       if (!(ly > 0.005)) return r2(avg);
       const w = full ? 1 : months.length / 12;
       return r2(w * ly + (1 - w) * avg);
+    },
+    // Everything except bills and loan payments, which the forecast adds on their own dates.
+    unscheduled: (key) => {
+      const lyKey = shiftMonth(key, -12);
+      const ly = unscheduled.get(lyKey);
+      if (!kept.has(lyKey)) return r2(avgU);
+      const w = full ? 1 : months.length / 12;
+      return r2(w * ly + (1 - w) * avgU);
     },
   };
 }
@@ -262,7 +288,8 @@ async function discretionaryHistory(today, cats) {
   if (!keys.length) return [];
   const { spending } = await householdLines(`${keys[0]}-01`, `${cur}-01`, cats);
   const by = new Map(keys.map((k) => [k, 0]));
-  for (const l of spending) if (l.bucket === 'discretionary' && by.has(l.month)) by.set(l.month, by.get(l.month) + l.amount);
+  // Bills filed under a discretionary category (a streaming subscription) are forecast as bills, not here.
+  for (const l of spending) if (l.bucket === 'discretionary' && !l.scheduled && by.has(l.month)) by.set(l.month, by.get(l.month) + l.amount);
   return [...by].map(([month, amount]) => ({ month, amount: r2(amount) }));
 }
 
@@ -276,9 +303,11 @@ async function loadDeps() {
 
 /**
  * Cash Flow flows for personal spending, month by month over the window:
- * essentials at the history estimate less what's already in the forecast
- * for the household that month (personal bills, loan interest, fees,
- * personal estimates), and discretionary at the budget. All estimates.
+ * essentials from history without bill and loan payments (those are in the
+ * forecast on their own dates, whatever their frequency), less what else is
+ * already forecast for the household that month (card statements on cards
+ * that aren't itemized, fees, personal estimates); discretionary at the
+ * budget. All estimates.
  * `known(monthKey)` → household outflow already forecast that month.
  */
 export async function personalFlows({ meta, today, tax, known }) {
@@ -292,7 +321,7 @@ export async function personalFlows({ meta, today, tax, known }) {
     const key = `${m.year}-${pad(m.month)}`;
     if (key < curKey) continue;
     const date = key === curKey ? today : `${key}-15`;
-    let essential = ess.estimate(key) - known(key);
+    let essential = ess.unscheduled(key) - known(key);
     if (key === curKey) essential -= spentThisMonth.essential; // already spent this month is in the bank balance
     // This year: what's left of the limit, spread over the months left (this month's spending is already out of it).
     // Next year: this year's limit a month at a time, until next year's plan takes over.
@@ -371,4 +400,39 @@ export async function spendingBreakdown({ from, to, today = todayISO() }) {
     categories,
     months: [...[...hist.values()].map((h) => ({ ...h, essential: r2(h.essential), discretionary: r2(h.discretionary), partial: h.month === cur })), ...ahead],
   };
+}
+
+/**
+ * What the household typically spends by category, from the last `n` full
+ * months, without bill and loan payments (forecast on their own dates):
+ * { months, essential: [...], discretionary: [...], thisMonth: Map(category → spent) }.
+ * Each category: { category, monthly, jake, ashley, untagged } — monthly
+ * averages; jake/ashley/untagged split `monthly` by who spent it.
+ */
+export async function spendingMix(today = todayISO(), n = 6) {
+  const cats = await categoryBuckets();
+  const cur = ym(today);
+  const { rows: [first] } = await pool.query('SELECT MIN(date) AS d FROM transactions');
+  const start = first?.d ? shiftMonth(ym(first.d), 1) : cur;
+  const from = [shiftMonth(cur, -n), start].sort().pop();
+  const keys = from < cur ? monthsBetween(from, shiftMonth(cur, -1)) : [];
+  const { spending } = await householdLines(`${keys[0] || cur}-01`, addDay(today), cats);
+  const span = Math.max(1, keys.length);
+  const groups = { essential: new Map(), discretionary: new Map() };
+  const thisMonth = new Map();
+  for (const l of spending) {
+    if (l.scheduled) continue;
+    if (l.month === cur) { if (l.bucket === 'discretionary') thisMonth.set(l.category, (thisMonth.get(l.category) || 0) + l.amount); continue; }
+    if (!keys.includes(l.month)) continue;
+    const g = groups[l.bucket];
+    const c = g.get(l.category) || { category: l.category, category_ids: new Set(), total: 0, jake: 0, ashley: 0 };
+    c.total += l.amount; c.jake += l.jake; c.ashley += l.ashley;
+    if (l.category_id) c.category_ids.add(l.category_id);
+    g.set(l.category, c);
+  }
+  const out = (g) => [...g.values()].map((c) => ({
+    category: c.category, category_ids: [...c.category_ids], monthly: r2(c.total / span),
+    jake: r2(c.jake / span), ashley: r2(c.ashley / span), untagged: r2((c.total - c.jake - c.ashley) / span),
+  })).filter((c) => c.monthly > 0.5).sort((a, b) => b.monthly - a.monthly);
+  return { months: keys.length, essential: out(groups.essential), discretionary: out(groups.discretionary), thisMonth };
 }

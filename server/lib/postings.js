@@ -1068,10 +1068,46 @@ export async function recordLoanPayment(client, paymentId, {
 export const LOAN_INTEREST_MEMO = 'Loan interest — ';
 export const LOAN_PRINCIPAL_MEMO = 'Loan principal — ';
 
+// A balance owed to CRA under a payment arrangement (Jake, Oct 24) is a
+// loan for the forecast, but its interest isn't a farm cost: interest and
+// penalties under the Income Tax Act can't be deducted (s. 18(1)(t)). Its
+// interest goes to this personal category instead of Interest › Loan
+// interest, and the principal is income tax — a transfer, like any other
+// tax payment.
+export const CRA_INTEREST_CATEGORY = 'CRA interest & penalties (not deductible)';
+async function craInterestCategory(client) {
+  const { rows: [c] } = await client.query(`SELECT id FROM expense_categories WHERE lower(name) = lower($1) AND kind = 'expense' LIMIT 1`, [CRA_INTEREST_CATEGORY]);
+  if (c) return c.id;
+  const { rows: [n] } = await client.query(
+    `INSERT INTO expense_categories (name, class, ledger, kind) VALUES ($1, 'variable_seasonal', 'personal', 'expense') RETURNING id`, [CRA_INTEREST_CATEGORY]);
+  return n.id;
+}
+
+/** Re-files a loan's recorded payments after its CRA setting changes (closed months stay as they are). Returns how many. */
+export async function resplitLoanPayments(client, loanId) {
+  const { rows } = await client.query(
+    `SELECT lp.id, lp.linked_transaction_id AS tx, t.date FROM loan_payments lp JOIN transactions t ON t.id = lp.linked_transaction_id
+     WHERE lp.loan_id = $1 AND lp.paid`, [loanId]);
+  let n = 0;
+  for (const r of rows) {
+    if (await closedMonth(client, r.date)) continue;
+    const { rows: [has] } = await client.query(
+      `SELECT count(*)::int AS n FROM transaction_splits WHERE transaction_id = $1 AND (memo LIKE $2 OR memo LIKE $3)`,
+      [r.tx, `${LOAN_INTEREST_MEMO}%`, `${LOAN_PRINCIPAL_MEMO}%`]);
+    const { rows: [other] } = await client.query(
+      `SELECT count(*)::int AS n FROM transaction_splits WHERE transaction_id = $1 AND NOT (memo LIKE $2 OR memo LIKE $3)`,
+      [r.tx, `${LOAN_INTEREST_MEMO}%`, `${LOAN_PRINCIPAL_MEMO}%`]);
+    if (!has.n || other.n) continue; // not split as a loan payment, or split by hand: leave it
+    await unsplitLoanPayment(client, r.tx);
+    if (await splitLoanPayment(client, r.tx, r.id)) n++;
+  }
+  return n;
+}
+
 export async function splitLoanPayment(client, txId, paymentId) {
   const { rows: [tx] } = await client.query('SELECT * FROM transactions WHERE id = $1', [txId]);
   const { rows: [p] } = await client.query(
-    `SELECT lp.*, COALESCE(l.name, l.lender) AS loan_name, l.segment AS loan_segment, l.is_segment_split AS loan_split,
+    `SELECT lp.*, COALESCE(l.name, l.lender) AS loan_name, l.segment AS loan_segment, l.is_segment_split AS loan_split, l.is_cra_tax,
             l.segment_grain_pct, l.segment_livestock_pct, l.segment_jake_pct, l.segment_ashley_pct
      FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id WHERE lp.id = $1`, [paymentId]);
   if (!tx || !p || tx.is_split || Number(tx.amount) >= 0) return false;
@@ -1079,17 +1115,18 @@ export async function splitLoanPayment(client, txId, paymentId) {
   const paid = -Number(tx.amount);
   const interest = Math.min(round2(Number(p.interest_amount) || 0), paid);
   const principal = round2(paid - interest);
-  const interestCat = interest > 0 ? await expenseCategoryFor(client, 'Interest › Loan interest') : null;
+  const cra = !!p.is_cra_tax;
+  const interestCat = interest > 0 ? (cra ? await craInterestCategory(client) : await expenseCategoryFor(client, 'Interest › Loan interest')) : null;
   const owner = loanOwner(p) || ownerOf(tx); // the loan's owner split decides, not the payment entry's tag
   const pieces = [];
-  if (interest > 0.005) pieces.push({ amount: -interest, category_id: interestCat, memo: `${LOAN_INTEREST_MEMO}${p.loan_name}`, is_transfer: false });
-  if (principal > 0.005) pieces.push({ amount: -principal, category_id: null, memo: `${LOAN_PRINCIPAL_MEMO}${p.loan_name}`, is_transfer: true });
+  if (interest > 0.005) pieces.push({ amount: -interest, category_id: interestCat, memo: `${LOAN_INTEREST_MEMO}${p.loan_name}`, is_transfer: false, ledger: cra ? 'personal' : tx.ledger });
+  if (principal > 0.005) pieces.push({ amount: -principal, category_id: null, memo: `${LOAN_PRINCIPAL_MEMO}${p.loan_name}`, is_transfer: true, ledger: tx.ledger });
   if (!pieces.length) return false;
   for (const pc of pieces) {
     await client.query(
       `INSERT INTO transaction_splits (transaction_id, amount, category_id, memo, ledger, is_capex, is_transfer, ${SEG_COLS})
        VALUES ($1,$2,$3,$4,$5,false,$6,${SEGMENT_COLUMNS.map((_, i) => `$${7 + i}`).join(',')})`,
-      [tx.id, pc.amount, pc.category_id, pc.memo, tx.ledger, pc.is_transfer, ...SEGMENT_COLUMNS.map((k) => owner[k])]);
+      [tx.id, pc.amount, pc.category_id, pc.memo, pc.ledger, pc.is_transfer, ...SEGMENT_COLUMNS.map((k) => owner[k])]);
   }
   await client.query('UPDATE transactions SET is_split = true, category_id = NULL WHERE id = $1', [tx.id]);
   return true;
@@ -1549,8 +1586,13 @@ export async function reclassifyCardPayments(client, cardId) {
     `SELECT * FROM transactions WHERE credit_card_id = $1 AND account_id IS NOT NULL ORDER BY date, id`, [cardId]
   );
   const start = card.ledger_start_date ? toISODate(card.ledger_start_date) : null;
-  let preLedgerLeft = start ? Math.max(Number(card.ledger_opening_balance) || 0, 0) : 0;
+  // The balance the card already owed when itemizing started is debt from before (Jake, Oct 24: a balance
+  // carried from last year, paid this year, showed up as this year's uncategorized spending). Paying it
+  // down is a transfer, like loan principal — unless the card is set to count it as spending.
+  const openingIsDebt = card.opening_balance_is_debt !== false;
+  let preLedgerLeft = start && !openingIsDebt ? Math.max(Number(card.ledger_opening_balance) || 0, 0) : 0;
   for (const t of pays) {
+    if (await closedMonth(client, t.date)) continue; // a closed month's books stay as they were
     const paid = -Number(t.amount); // positive = money paid to the card
     let expensePart;
     if (!start || toISODate(t.date) < start) expensePart = paid;

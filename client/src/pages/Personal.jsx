@@ -3,6 +3,7 @@ import MetricCard from '../components/MetricCard.jsx';
 import { money, localToday } from '../format.js';
 import { cents } from '../components/SplitEditor.jsx';
 import OwnerCheck from '../components/OwnerCheck.jsx';
+import BudgetFit from '../components/BudgetFit.jsx';
 import { Pie } from '../components/MonthBreakdown.jsx';
 
 // Personal spending (Jake, 2026-10-24: rebuilt around where the money
@@ -236,6 +237,8 @@ export default function Personal() {
           <p>Each category's bucket is set below under "Which spending is which".</p>
         </div>
       </div>
+
+      <BudgetFit onChanged={loadPlan} />
 
       <div className="panel">
         <div className="panel-header">Discretionary in the forecast</div>

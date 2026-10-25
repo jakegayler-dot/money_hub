@@ -7,8 +7,23 @@ const emptyForm = {
   name: '', lender: '', purpose: 'term', linked_asset: '', principal: '',
   interest_rate_pct: '', rate_type: 'fixed', term_months: '', start_date: '',
   covenant_notes: '', covenant_date: '', asset_id: '',
-  ...emptyOwnerFields, payment_frequency: 'monthly', first_payment_date: '', promo_until: '', promo_retro: false,
+  ...emptyOwnerFields, payment_frequency: 'monthly', first_payment_date: '', promo_until: '', promo_retro: false, is_cra_tax: false,
 };
+
+// Tax owed to CRA under a payment arrangement: the interest isn't deductible, so it's kept off the farm's books.
+function CraField({ state, setState }) {
+  return (
+    <div className="field">
+      <label>
+        <input type="checkbox" checked={!!state.is_cra_tax} onChange={(e) => setState({ ...state, is_cra_tax: e.target.checked })} />
+        {' '}Tax owed to CRA (payment arrangement)
+      </label>
+      <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '4px 0 0' }}>
+        Payments count as income tax; CRA's interest is booked as non-deductible, off the farm's books.
+      </p>
+    </div>
+  );
+}
 
 // Payment frequencies offered by typical ag lenders — annual and
 // semi-annual are common, timed to harvest or calf-sale cash.
@@ -170,7 +185,7 @@ export default function Loans() {
       first_payment_date: l.first_payment_date ? String(l.first_payment_date).slice(0, 10) : '',
       promo_until: l.promo_until ? String(l.promo_until).slice(0, 10) : '', promo_retro: !!l.promo_retro,
       covenant_date: l.covenant_date?.slice(0, 10) || '', covenant_notes: l.covenant_notes || '',
-      statement_names: l.statement_names || '',
+      statement_names: l.statement_names || '', is_cra_tax: !!l.is_cra_tax,
     });
     setError(null);
   };
@@ -352,7 +367,7 @@ export default function Loans() {
                     <td>
                       <span className="loan-caret" aria-hidden="true">{expandedId === l.id ? '▾' : '▸'}</span>{' '}
                       {l.name || l.lender}
-                      <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>{l.name && l.lender ? `${l.lender} · ` : ''}{PURPOSE_LABELS[l.purpose] || l.purpose} · {ownerSummary(l)}</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>{l.name && l.lender ? `${l.lender} · ` : ''}{l.is_cra_tax ? 'Owed to CRA' : PURPOSE_LABELS[l.purpose] || l.purpose} · {ownerSummary(l)}</div>
                     </td>
                     <td>
                       {money(Number(l.outstanding_balance))}
@@ -463,6 +478,7 @@ export default function Loans() {
                                 {Object.entries(PURPOSE_LABELS).map(([v, lab]) => <option key={v} value={v}>{lab}</option>)}
                               </select></div>
                             <OwnerFields state={editForm} setState={setEditForm} label="Owner — what the money is used for" />
+                            <CraField state={editForm} setState={setEditForm} />
                             <div className="field"><label>Linked asset / property</label>
                               <input value={editForm.linked_asset} onChange={(e) => setEditForm({ ...editForm, linked_asset: e.target.value })} /></div>
                             <div className="field"><label>Outstanding balance / principal</label>
@@ -713,6 +729,7 @@ export default function Loans() {
             </select>
           </div>
           <OwnerFields state={form} setState={setForm} label="Owner — what the borrowed money is used for" />
+          <CraField state={form} setState={setForm} />
           {(form.purpose === 'capital_asset' || form.purpose === 'mortgage') && (
             <div className="field">
               <label>{form.purpose === 'mortgage' ? 'Property description' : 'Linked asset'}</label>

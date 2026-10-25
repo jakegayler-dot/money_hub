@@ -32,6 +32,8 @@ import calendarRoute from './routes/calendar.js';
 import receiptsRoute, { receiptUpload } from './routes/receipts.js';
 import groceriesRoute from './routes/groceries.js';
 import { readPending, matchPending } from './lib/receipts.js';
+import { pairTransfers } from './lib/transferPairs.js';
+import { reclassifyCardPayments } from './lib/postings.js';
 import { pairAllCardPayments, splitAllLoanPayments, syncLoanPieceOwners, settleAllVendorAccounts, reorderLoanPayments } from './lib/postings.js';
 import { withTransaction, pool } from './db.js';
 import { authRouter, requireSignIn, authEnabled } from './lib/appAuth.js';
@@ -147,6 +149,16 @@ app.listen(port, () => {
   setTimeout(() => withTransaction((c) => pairAllCardPayments(c))
     .then((n) => n && console.log(`Folded ${n} card-side payment line(s) into their bank-side payments.`))
     .catch((e) => console.error('Card payment pairing failed:', e.message)), 2000);
+  // Both sides of transfers between your own accounts, paired.
+  setTimeout(() => withTransaction((c) => pairTransfers(c))
+    .then((p) => p.length && console.log(`Paired ${p.length} transfer(s) between your accounts.`))
+    .catch((e) => console.error('Transfer pairing failed:', e.message)), 2200);
+  // Card payments re-filed under the current rules (a carried starting balance is debt, not spending).
+  setTimeout(() => withTransaction(async (c) => {
+    const { rows } = await c.query('SELECT id FROM credit_cards WHERE ledger_start_date IS NOT NULL');
+    for (const r of rows) await reclassifyCardPayments(c, r.id);
+    return rows.length;
+  }).catch((e) => console.error('Card payment re-filing failed:', e.message)), 2300);
   // Loan payments recorded before interest/principal were split out.
   setTimeout(() => withTransaction(async (c) => { const n = await splitAllLoanPayments(c); await syncLoanPieceOwners(c); return n; })
     .then((n) => n && console.log(`Split ${n} loan payment(s) into interest and principal.`))

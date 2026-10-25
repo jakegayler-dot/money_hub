@@ -9,6 +9,7 @@ import { OWNERS } from '../lib/segments.js';
 import { toISODate, todayISO, addDays } from '../lib/dates.js';
 import { processLine, reconcileImport, KINDS } from '../lib/statementIngest.js';
 import { recordStatementPoints } from '../lib/points.js';
+import { pairTransfers } from '../lib/transferPairs.js';
 import { anchorAccount, anchorCard, upsertCardStatement, PostingError, pairAllCardPayments } from '../lib/postings.js';
 
 const router = Router();
@@ -304,6 +305,8 @@ export async function ingestStatement({ source, statement = {}, lines } = {}, op
   }
   // A payment seen from both the bank and the card counts once.
   try { await withTransaction((c) => pairAllCardPayments(c)); } catch (e) { console.error('Card payment pairing failed:', e.message); }
+  // Transfers between your own accounts: both sides, once both statements are in.
+  try { await withTransaction((c) => pairTransfers(c)); } catch (e) { console.error('Transfer pairing failed:', e.message); }
   const { rows: [freshImp] } = await pool.query('SELECT * FROM statement_imports WHERE id = $1', [imp.id]);
   // New transactions may be what waiting receipts belong to.
   setImmediate(() => matchPending().catch(() => {}));

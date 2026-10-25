@@ -15,7 +15,7 @@
 //   4. Otherwise post it as a plain transaction (with its split pieces).
 
 import { looksLikeCraGst } from './gstMatch.js';
-import { looksLikeCraIncomeTax } from './taxMoves.js';
+import { looksLikeCraIncomeTax, guessTaxKind } from './taxMoves.js';
 import { validateSegment } from './segments.js';
 import { toISODate } from './dates.js';
 import { suggestLoanPayment } from './loanMatch.js';
@@ -233,6 +233,19 @@ async function processLineInner(client, { target, source, external_id, payload: 
     if (fed.length > 1) {
       return hold(`${fed.length} transactions for ${fmt(amount)} near ${date} came in from other feeds — which one is this, or is it new?`, fed.map(txCandidate));
     }
+  }
+
+  // A payment to CRA while a payment arrangement is open (a loan marked "Tax owed to CRA", Jake Oct 24):
+  // it pays the arrangement — its oldest open payment, at the amount the bank actually took — so the
+  // balance owed comes down. An instalment ("TAX INSTALMENT") is this year's tax, not the arrangement,
+  // and stays income tax; so does anything a person already categorized or approved.
+  const craText = `${p.description || ''} ${p.payee || ''}`;
+  if (!approved && !isCard && kind === 'standard' && amount < 0 && !p.loan_payment_id && !p.category && !p.category_id
+      && guessTaxKind(craText, amount) === 'income_tax_payment' && !/instal/i.test(craText)) {
+    const { rows: arrangement } = await client.query(
+      `SELECT DISTINCT ON (lp.loan_id) lp.id FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
+       WHERE l.is_cra_tax AND NOT lp.paid AND NOT lp.is_adjustment ORDER BY lp.loan_id, lp.due_date, lp.id`);
+    if (arrangement.length === 1) { kind = 'loan_payment'; p = { ...p, loan_payment_id: arrangement[0].id }; }
   }
 
   // GST/HST with CRA (a refund in, a remittance out) is a transfer: held so

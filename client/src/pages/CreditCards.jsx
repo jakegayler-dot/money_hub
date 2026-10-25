@@ -86,6 +86,7 @@ export default function CreditCards() {
       status: c.status, segment: c.segment || 'grain', notes: c.notes || '',
       current_balance: c.current_balance ?? '', current_balance_as_of: c.current_balance_as_of?.slice(0, 10) || '',
       payment_category_id: c.payment_category_id ? String(c.payment_category_id) : '',
+      opening_balance_is_debt: c.opening_balance_is_debt !== false,
     });
     setError(null);
   };
@@ -447,6 +448,16 @@ export default function CreditCards() {
                               <input type="date" value={editForm.current_balance_as_of} onChange={(e) => setEditForm({ ...editForm, current_balance_as_of: e.target.value })} /></div>
                             <div className="field"><label>Notes</label>
                               <input value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} /></div>
+                            {c.itemized && Number(c.ledger_opening_balance) > 0 && (
+                              <div className="field" style={{ gridColumn: 'span 2' }}><label>Paying off the {money(Number(c.ledger_opening_balance))} it owed on {c.ledger_start_date}</label>
+                                <select value={editForm.opening_balance_is_debt === false ? 'spending' : 'debt'}
+                                  onChange={(e) => setEditForm({ ...editForm, opening_balance_is_debt: e.target.value === 'debt' })}>
+                                  <option value="debt">Pays down debt from before — not spending</option>
+                                  <option value="spending">Counts as spending when it's paid</option>
+                                </select>
+                                <span className="split-lines">Those purchases were made before Money Hub tracked this card, so paying them off isn't this year's spending.</span>
+                              </div>
+                            )}
                             {!c.itemized && (
                               <div className="field" style={{ gridColumn: 'span 2' }}><label>Payments count as</label>
                                 <CategorySelect categories={categories} value={editForm.payment_category_id} emptyLabel="Uncategorized spending"

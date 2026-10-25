@@ -1819,3 +1819,26 @@ button:active { transform: none !important; }
   .pt-form-row input:not([type=checkbox]), .pt-form-row select, .pt-form-row .pt-note input { width: 100%; }
   .pt-form-row label { flex: 1 1 140px; }
 }
+
+/* Ledgers: paired transfers */
+.pair-note { margin: 0 16px 8px; font-size: 12.5px; color: var(--text-muted); }
+
+/* Personal: a budget that fits the forecast */
+.bf-head { padding: 12px 16px 4px; display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+.bf-big { font-family: var(--font-mono); font-size: 28px; color: var(--text); white-space: nowrap; }
+.bf-big span { font-size: 13px; color: var(--text-muted); }
+.bf-big.neg { color: var(--negative); }
+.bf-head p { flex: 1 1 320px; margin: 4px 0 0; font-size: 13px; line-height: 1.55; color: var(--text-muted); max-width: 80ch; }
+.bf-bars { padding: 8px 16px 0; max-width: 760px; }
+.bf-bars svg { width: 100%; height: auto; display: block; }
+.bf-caption { padding: 0 16px; }
+.bf-progress { display: block; height: 4px; margin: 4px 0 0 18px; max-width: 220px; background: var(--panel-alt); border-radius: 2px; overflow: hidden; }
+.bf-progress span { display: block; height: 100%; border-radius: 2px; }
+.bf-people { padding: 4px 16px 12px; max-width: 560px; }
+.bf-stack { display: flex; gap: 2px; height: 14px; margin: 6px 0; border-radius: 4px; overflow: hidden; }
+.bf-stack span { display: block; height: 100%; }
+.bf-people-key { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--text); }
+.bf-holds { padding: 4px 16px 8px; border-top: 1px solid var(--border); }
+.bf-holds .ps-legend { max-width: 560px; }
+.bf-indent { padding-left: 16px !important; color: var(--text-muted); }
+.bf-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 10px 16px 16px; border-top: 1px solid var(--border); }
