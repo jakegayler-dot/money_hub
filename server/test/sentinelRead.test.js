@@ -77,6 +77,9 @@ async function seed() {
     VALUES ($1, $2, 49000, 6, 49200, 6, 'statement')`, [ids.loan, d(-10)]);
 
   ids.card = (await one(`INSERT INTO credit_cards (name, issuer, last4, apr_purchase, current_balance, credit_limit) VALUES ('Visa Gold', 'TD', '4321', 20.99, 750, 5000) RETURNING id`)).id;
+  const prog = (await one(`INSERT INTO points_programs (name, owner, cents_per_point) VALUES ('Aeroplan', 'jake', 2) RETURNING id`)).id;
+  await db.query('UPDATE credit_cards SET points_program_id = $1 WHERE id = $2', [prog, ids.card]);
+  await db.query(`INSERT INTO points_entries (program_id, date, kind, points) VALUES ($1, '2026-09-30', 'balance', 40000)`, [prog]);
   await db.query(`INSERT INTO credit_card_statements (credit_card_id, statement_date, due_date, statement_balance, minimum_payment) VALUES ($1, $2, $3, 700, 25)`, [ids.card, d(-6), d(15)]);
   await db.query(`INSERT INTO credit_card_reward_categories (credit_card_id, category, rate_pct) VALUES ($1, 'Fuel', 2)`, [ids.card]);
 

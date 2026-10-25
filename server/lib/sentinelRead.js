@@ -26,6 +26,7 @@ import { runAndJudge, purchaseFromInput, agentAnswer } from './purchaseCheck.js'
 import { balanceSheetStatement } from './statement.js';
 import { grocerySummary, priceBook, latestAdvice, FOOD_TYPES } from './groceries.js';
 import { paystubSummary } from './paystubs.js';
+import { pointsSummary } from './points.js';
 
 export const APP = 'money_hub';
 export const DEFAULT_LIMIT = 50;
@@ -443,7 +444,7 @@ def({
   name: 'credit_cards', mode: 'js',
   description: 'Credit cards: balance owed now (positive), limit and utilization, rates and fee, next statement amount due, grace-period status and reward rates. Card numbers are never stored beyond the last 4.',
   fields: ['id', 'name', 'issuer', 'last4', 'status', 'balance_owed', 'currency', 'credit_limit', 'utilization_pct', 'apr_purchase', 'apr_cash_advance',
-    'annual_fee', 'annual_fee_month', 'grace_period_days', 'grace_period_intact', 'itemized', 'next_due', 'last_statement', 'rewards', 'owner', 'notes'],
+    'annual_fee', 'annual_fee_month', 'grace_period_days', 'grace_period_intact', 'itemized', 'next_due', 'last_statement', 'rewards', 'points_program_id', 'owner', 'notes'],
   search: ['name', 'issuer', 'notes'],
   filters: [f.jsEq('status', 'status', ['active', 'closed']), f.jsOwner()],
   load: async (q, ctx) => {
@@ -451,7 +452,7 @@ def({
       pool.query(`SELECT * FROM credit_cards ORDER BY (status = 'active') DESC, name`),
       pool.query(`SELECT id, credit_card_id, statement_date, due_date, statement_balance, minimum_payment, paid, paid_in_full, paid_amount
                   FROM credit_card_statements`),
-      pool.query(`SELECT credit_card_id, category, rate_pct FROM credit_card_reward_categories ORDER BY category`),
+      pool.query(`SELECT credit_card_id, category, rate_pct, points_per_dollar FROM credit_card_reward_categories ORDER BY category`),
     ]);
     const balances = await cardBalances(pool, cards);
     const cycle = (s) => toISODate(s.statement_date || s.due_date);
@@ -473,10 +474,29 @@ def({
           minimum_payment: money(nextDue.minimum_payment), overdue: day(nextDue.due_date) < ctx.today,
         } : null,
         last_statement: latest ? { statement_date: day(latest.statement_date), due_date: day(latest.due_date), balance: money(latest.statement_balance), paid: latest.paid } : null,
-        rewards: rewards.filter((r) => r.credit_card_id === c.id).map((r) => ({ category: r.category, rate_pct: num(r.rate_pct) })),
+        rewards: rewards.filter((r) => r.credit_card_id === c.id).map((r) => ({ category: r.category, rate_pct: num(r.rate_pct), points_per_dollar: num(r.points_per_dollar) })),
+        points_program_id: c.points_program_id || null,
         owner: ownerOf(c), notes: text(c.notes),
       };
     });
+  },
+});
+
+// ---------- card points ----------
+def({
+  name: 'card_points', mode: 'js',
+  description: 'Credit card points programs (Aeroplan, Avion, cash back…): balance, value in dollars at the owner\'s value per point, points on the way from spending since the last statement (estimated at earn rates), this year\'s spending and the points it earns by category, redemptions and what they saved. Points value is not on the balance sheet. A redemption is a saving, not income.',
+  fields: ['id', 'name', 'owner', 'unit', 'cents_per_point', 'cards', 'balance', 'as_of', 'value', 'currency', 'pending', 'year', 'saved_all_time', 'entries'],
+  search: ['name'],
+  filters: [],
+  load: async (q, ctx) => {
+    const s = await pointsSummary({ today: ctx.today });
+    return s.programs.map((p) => ({
+      id: p.id, name: p.name, owner: p.owner, unit: p.unit, cents_per_point: p.cents_per_point,
+      cards: p.cards.map((c) => c.name), balance: p.balance, as_of: p.as_of, value: p.value, currency: CURRENCY,
+      pending: p.pending, year: { ...p.year, by_category: p.year.by_category.slice(0, 12) }, saved_all_time: p.saved_all_time,
+      entries: p.entries.slice(0, 30),
+    }));
   },
 });
 

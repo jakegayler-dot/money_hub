@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from 'react';
 import { money, pct, localToday } from '../format.js';
 import { OWNER_LABELS } from '../owners.jsx';
 import CategorySelect from '../components/CategorySelect.jsx';
+import CardPoints from '../components/CardPoints.jsx';
 
 const emptyForm = {
   name: '', issuer: '', last4: '', credit_limit: '', apr_purchase: '', apr_cash_advance: '',
@@ -9,7 +10,7 @@ const emptyForm = {
   current_balance: '', current_balance_as_of: '',
 };
 const emptyStatement = { statement_date: '', due_date: '', statement_balance: '', minimum_payment: '', interest_amount: '', notes: '' };
-const emptyReward = { category: '', rate_pct: '', notes: '' };
+const emptyReward = { category: '', rate_pct: '', unit: 'pct', notes: '' };
 const today = () => localToday();
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const SEGMENT_LABELS = OWNER_LABELS;
@@ -35,6 +36,7 @@ export default function CreditCards() {
   const [cardTx, setCardTx] = useState({}); // cardId -> recent transactions charged to / paid on it
   const [ledgerForm, setLedgerForm] = useState({ start_date: '', opening_balance: '' });
   const [categories, setCategories] = useState([]);
+  const [pointsKey, setPointsKey] = useState(0);
 
   const load = () => { fetch('/api/credit-cards').then((r) => r.json()).then((d) => setCards(Array.isArray(d) ? d : [])); };
   useEffect(() => {
@@ -229,7 +231,9 @@ export default function CreditCards() {
     const res = await fetch(`/api/credit-cards/${cardId}/rewards`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...rewardForm, rate_pct: Number(rewardForm.rate_pct) }),
+      body: JSON.stringify(rewardForm.unit === 'pts'
+        ? { category: rewardForm.category, notes: rewardForm.notes, points_per_dollar: Number(rewardForm.rate_pct) }
+        : { category: rewardForm.category, notes: rewardForm.notes, rate_pct: Number(rewardForm.rate_pct) }),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -238,12 +242,14 @@ export default function CreditCards() {
     }
     setRewardForm(emptyReward);
     load();
+    setPointsKey((k) => k + 1);
   };
 
   const deleteReward = async (id) => {
     const res = await fetch(`/api/credit-cards/rewards/${id}`, { method: 'DELETE' });
     if (!res.ok) { setError(`Could not delete (HTTP ${res.status}).`); return; }
     load();
+    setPointsKey((k) => k + 1);
   };
 
   const runCalc = async () => {
@@ -507,7 +513,7 @@ export default function CreditCards() {
                             </div>
                           )}
 
-                          <div className="metric-label" style={{ margin: '0 0 8px' }}>Reward categories</div>
+                          <div className="metric-label" style={{ margin: '0 0 8px' }}>Earn rates</div>
                           {c.reward_categories.length === 0 ? (
                             <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '0 0 10px' }}>None entered yet.</p>
                           ) : (
@@ -517,7 +523,7 @@ export default function CreditCards() {
                                 {c.reward_categories.map((r) => (
                                   <tr key={r.id}>
                                     <td>{r.category}</td>
-                                    <td>{Number(r.rate_pct)}%</td>
+                                    <td>{r.points_per_dollar != null ? `${Number(r.points_per_dollar)} pts per $` : `${Number(r.rate_pct)}%`}</td>
                                     <td>{r.notes || '—'}</td>
                                     <td><button className="small secondary" onClick={() => deleteReward(r.id)}>Remove</button></td>
                                   </tr>
@@ -528,8 +534,11 @@ export default function CreditCards() {
                           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 16 }}>
                             <input placeholder="Category (e.g. Groceries, Everything else)" style={{ maxWidth: 220 }}
                               value={rewardForm.category} onChange={(e) => setRewardForm({ ...rewardForm, category: e.target.value })} />
-                            <input type="number" step="0.01" placeholder="Rate %" style={{ maxWidth: 90 }}
+                            <input type="number" step="0.01" placeholder={rewardForm.unit === 'pts' ? 'Points' : 'Rate %'} style={{ maxWidth: 90 }}
                               value={rewardForm.rate_pct} onChange={(e) => setRewardForm({ ...rewardForm, rate_pct: e.target.value })} />
+                            <select value={rewardForm.unit} style={{ maxWidth: 130 }} onChange={(e) => setRewardForm({ ...rewardForm, unit: e.target.value })}>
+                              <option value="pct">% back</option><option value="pts">points per $1</option>
+                            </select>
                             <input placeholder="Notes (optional)" style={{ maxWidth: 180 }}
                               value={rewardForm.notes} onChange={(e) => setRewardForm({ ...rewardForm, notes: e.target.value })} />
                             <button className="small" disabled={!rewardForm.category || rewardForm.rate_pct === ''} onClick={() => addReward(c.id)}>Add</button>
@@ -629,12 +638,13 @@ export default function CreditCards() {
         )}
       </div>
 
+      <CardPoints cards={cards} refreshKey={pointsKey} onChanged={load} />
+
       <div className="panel">
-        <div className="panel-header">Rewards calculator</div>
+        <div className="panel-header">Which card to use</div>
         <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '4px 0 12px' }}>
-          What a purchase would earn on each active card, by its best-matching category rate. This estimates one
-          purchase — it isn't a running total of rewards actually earned, since Money Hub doesn't know which card
-          paid for which ledger transaction.
+          What one purchase would earn on each active card, by its best-matching earn rate and, for points cards, its
+          program's value per point. Running totals of points are in Points above.
         </p>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', margin: '0 16px 12px' }}>
           <input type="number" step="0.01" placeholder="Purchase amount" style={{ maxWidth: 140 }}
@@ -651,8 +661,8 @@ export default function CreditCards() {
                 <tr key={r.credit_card_id}>
                   <td>{r.name}</td>
                   <td>{r.matched_category || '—'}</td>
-                  <td>{r.rate_pct}%</td>
-                  <td>{money(r.estimated_reward)}</td>
+                  <td>{r.rate_pct}%{r.program ? ` (${r.program})` : ''}</td>
+                  <td>{money(r.estimated_reward)}{r.estimated_points != null ? ` · ${r.estimated_points.toLocaleString('en-CA')} pts` : ''}</td>
                 </tr>
               ))}
             </tbody>

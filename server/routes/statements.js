@@ -8,6 +8,7 @@ import { autoLinkBillsSoon } from '../lib/billMatch.js';
 import { OWNERS } from '../lib/segments.js';
 import { toISODate, todayISO, addDays } from '../lib/dates.js';
 import { processLine, reconcileImport, KINDS } from '../lib/statementIngest.js';
+import { recordStatementPoints } from '../lib/points.js';
 import { anchorAccount, anchorCard, upsertCardStatement, PostingError, pairAllCardPayments } from '../lib/postings.js';
 
 const router = Router();
@@ -290,6 +291,12 @@ export async function ingestStatement({ source, statement = {}, lines } = {}, op
     });
   }
 
+  // Points printed on a card statement (earned, redeemed, balance).
+  let points = null;
+  if (isCard) {
+    try { points = await withTransaction((client) => recordStatementPoints(client, target.row, statement)); } catch (e) { console.error('Statement points failed:', e.message); points = { error: e.message }; }
+  }
+
   const summary = { posted: 0, matched: 0, held: 0, rejected: 0, errors: 0 };
   for (const r of results) {
     if (!r.ok) summary.errors += 1;
@@ -308,6 +315,7 @@ export async function ingestStatement({ source, statement = {}, lines } = {}, op
     anchored: anchored || undefined,
     received: lines.length,
     summary,
+    points: points || undefined,
     card_statement: cardStatement ? { id: cardStatement.id, due_date: toISODate(cardStatement.due_date), balance: Number(cardStatement.statement_balance), paid: cardStatement.paid } : undefined,
     reconciliation: await reconcileImport(pool, freshImp),
     results,

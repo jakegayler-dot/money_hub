@@ -1615,3 +1615,37 @@ CREATE TABLE IF NOT EXISTS grocery_corrections (
   food_type   TEXT NOT NULL,
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Credit card points (Jake, 2026-10-24; lib/points.js). A program holds one
+-- balance, fed by one or more cards. Its value per point is what a point
+-- redeems for the way you use them (1,000 points for a $10 credit = 1¢);
+-- 'dollars' programs (cash back) count in dollars.
+CREATE TABLE IF NOT EXISTS points_programs (
+  id               SERIAL PRIMARY KEY,
+  name             TEXT NOT NULL UNIQUE,
+  owner            TEXT NOT NULL DEFAULT 'jake' CHECK (owner IN ('jake', 'ashley', 'farm')),
+  unit             TEXT NOT NULL DEFAULT 'points' CHECK (unit IN ('points', 'dollars')),
+  cents_per_point  NUMERIC(8,4) NOT NULL DEFAULT 1,
+  notes            TEXT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE credit_cards ADD COLUMN IF NOT EXISTS points_program_id INTEGER REFERENCES points_programs(id) ON DELETE SET NULL;
+-- An earn rate in points per dollar ("3 points per $1 on groceries"); rate_pct stays for % back.
+ALTER TABLE credit_card_reward_categories ADD COLUMN IF NOT EXISTS points_per_dollar NUMERIC(8,3);
+-- The program's ledger: 'balance' rows are what the program reported on a
+-- date; the rest are moves, signed (earned and bonus +, redeemed and expired −).
+CREATE TABLE IF NOT EXISTS points_entries (
+  id              SERIAL PRIMARY KEY,
+  program_id      INTEGER NOT NULL REFERENCES points_programs(id) ON DELETE CASCADE,
+  credit_card_id  INTEGER REFERENCES credit_cards(id) ON DELETE SET NULL,
+  date            DATE NOT NULL,
+  kind            TEXT NOT NULL CHECK (kind IN ('balance', 'earned', 'bonus', 'redeemed', 'expired', 'adjusted')),
+  points          NUMERIC(14,2) NOT NULL,
+  value           NUMERIC(14,2),  -- a redemption: what it was worth in dollars
+  redeemed_for    TEXT,
+  note            TEXT,
+  source          TEXT NOT NULL DEFAULT 'hand' CHECK (source IN ('hand', 'statement')),
+  source_key      TEXT UNIQUE,    -- statement pushes: re-sending replaces
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_points_entries_program ON points_entries (program_id, date);

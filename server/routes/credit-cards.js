@@ -5,6 +5,7 @@ import { validateSegment } from '../lib/segments.js';
 import { todayISO, toISODate } from '../lib/dates.js';
 import { cardBalances } from '../lib/cardLedger.js';
 import { payCard, recomputeCardStatement, removeTransaction, upsertCardStatement, anchorCard, reclassifyCardPayments } from '../lib/postings.js';
+import { pointsSummary, addEntry, PROGRAM_OWNERS, rateFor, pointsPerDollar } from '../lib/points.js';
 
 const router = Router();
 const round2 = (n) => Math.round(n * 100) / 100;
@@ -194,24 +195,28 @@ router.post('/:id/start-ledger', ah(async (req, res) => {
 // ---- Reward categories --------------------------------------------------
 
 router.post('/:id/rewards', ah(async (req, res) => {
-  const { category, rate_pct, notes = null } = req.body;
+  const { category, rate_pct, points_per_dollar = null, notes = null } = req.body;
   if (!category) return res.status(400).json({ error: 'category is required' });
-  if (rate_pct == null || Number.isNaN(Number(rate_pct))) return res.status(400).json({ error: 'rate_pct is required' });
+  const hasPct = rate_pct != null && rate_pct !== '' && !Number.isNaN(Number(rate_pct));
+  const hasPts = points_per_dollar != null && points_per_dollar !== '' && !Number.isNaN(Number(points_per_dollar));
+  if (!hasPct && !hasPts) return res.status(400).json({ error: 'rate_pct (% back) or points_per_dollar is required' });
   const { rows } = await pool.query(
-    `INSERT INTO credit_card_reward_categories (credit_card_id, category, rate_pct, notes)
-     VALUES ($1,$2,$3,$4) RETURNING *`,
-    [req.params.id, category, Number(rate_pct), notes]
+    `INSERT INTO credit_card_reward_categories (credit_card_id, category, rate_pct, points_per_dollar, notes)
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [req.params.id, category, hasPct ? Number(rate_pct) : 0, hasPts ? Number(points_per_dollar) : null, notes]
   );
   res.status(201).json(rows[0]);
 }));
 
 router.patch('/rewards/:id', ah(async (req, res) => {
-  const { category, rate_pct, notes } = req.body;
+  const { category, rate_pct, points_per_dollar, notes } = req.body;
   const { rows } = await pool.query(
     `UPDATE credit_card_reward_categories SET
-       category = COALESCE($1, category), rate_pct = COALESCE($2, rate_pct), notes = COALESCE($3, notes)
+       category = COALESCE($1, category), rate_pct = COALESCE($2, rate_pct), notes = COALESCE($3, notes),
+       points_per_dollar = CASE WHEN $5 THEN $6 ELSE points_per_dollar END
      WHERE id = $4 RETURNING *`,
-    [category, rate_pct != null ? Number(rate_pct) : null, notes, req.params.id]
+    [category, rate_pct != null && rate_pct !== '' ? Number(rate_pct) : null, notes, req.params.id,
+     points_per_dollar !== undefined, points_per_dollar === '' || points_per_dollar == null ? null : Number(points_per_dollar)]
   );
   if (!rows.length) return res.status(404).json({ error: 'not found' });
   res.json(rows[0]);
@@ -366,20 +371,23 @@ router.get('/rewards/estimate', ah(async (req, res) => {
   const category = String(req.query.category || '').trim().toLowerCase();
   if (!amount || Number.isNaN(amount)) return res.status(400).json({ error: 'amount query param is required' });
 
-  const [{ rows: cards }, { rows: rewards }] = await Promise.all([
+  const [{ rows: cards }, { rows: rewards }, { rows: programs }] = await Promise.all([
     pool.query(`SELECT * FROM credit_cards WHERE status = 'active'`),
     pool.query(`SELECT * FROM credit_card_reward_categories`),
+    pool.query(`SELECT * FROM points_programs`),
   ]);
-  const byCard = new Map();
-  for (const r of rewards) {
-    if (!byCard.has(r.credit_card_id)) byCard.set(r.credit_card_id, []);
-    byCard.get(r.credit_card_id).push(r);
-  }
   const results = cards.map((c) => {
-    const cats = byCard.get(c.id) || [];
-    const exact = category ? cats.find((r) => r.category.toLowerCase() === category) : null;
-    const fallback = cats.find((r) => /everything else|other|general/i.test(r.category));
-    const match = exact || fallback || null;
+    const match = rateFor(rewards.filter((r) => r.credit_card_id === c.id), category, null);
+    const program = programs.find((p) => p.id === c.points_program_id) || null;
+    if (program) {
+      const pts = amount * pointsPerDollar(match, program);
+      const value = program.unit === 'dollars' ? pts : pts * (Number(program.cents_per_point) / 100);
+      return {
+        credit_card_id: c.id, name: c.name, matched_category: match ? match.category : null,
+        rate_pct: amount ? round2((value / amount) * 100) : 0, program: program.name,
+        estimated_points: program.unit === 'dollars' ? null : Math.round(pts), estimated_reward: round2(value),
+      };
+    }
     const rate = match ? Number(match.rate_pct) : 0;
     return {
       credit_card_id: c.id, name: c.name,
@@ -388,6 +396,93 @@ router.get('/rewards/estimate', ah(async (req, res) => {
     };
   }).sort((a, b) => b.estimated_reward - a.estimated_reward);
   res.json({ amount, category: category || null, cards: results });
+}));
+
+// ---- Points (lib/points.js) ---------------------------------------------
+// Programs, their balances and value, what spending earns, redemptions.
+router.get('/points', ah(async (req, res) => {
+  res.json(await pointsSummary({ year: req.query.year }));
+}));
+
+function programFields(b, cur = {}) {
+  const m = { ...cur };
+  for (const k of ['name', 'owner', 'unit', 'cents_per_point', 'notes']) if (b[k] !== undefined) m[k] = b[k];
+  if (!m.name || !String(m.name).trim()) return { error: 'name is required' };
+  if (!PROGRAM_OWNERS.includes(m.owner || 'jake')) return { error: `owner must be one of ${PROGRAM_OWNERS.join(', ')}` };
+  if (!['points', 'dollars'].includes(m.unit || 'points')) return { error: 'unit must be points or dollars' };
+  const cpp = m.unit === 'dollars' ? 100 : Number(m.cents_per_point ?? 1);
+  if (!(cpp >= 0) || cpp > 100) return { error: 'cents_per_point must be between 0 and 100' };
+  return { name: String(m.name).trim(), owner: m.owner || 'jake', unit: m.unit || 'points', cents_per_point: cpp, notes: m.notes || null };
+}
+
+async function linkCards(client, programId, cardIds) {
+  if (!Array.isArray(cardIds)) return;
+  await client.query('UPDATE credit_cards SET points_program_id = NULL WHERE points_program_id = $1 AND NOT (id = ANY($2))', [programId, cardIds.map(Number)]);
+  if (cardIds.length) await client.query('UPDATE credit_cards SET points_program_id = $1 WHERE id = ANY($2)', [programId, cardIds.map(Number)]);
+}
+
+router.post('/points/programs', ah(async (req, res) => {
+  const f = programFields(req.body || {});
+  if (f.error) return res.status(400).json({ error: f.error });
+  try {
+    await withTransaction(async (client) => {
+      const { rows: [p] } = await client.query(
+        `INSERT INTO points_programs (name, owner, unit, cents_per_point, notes) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [f.name, f.owner, f.unit, f.cents_per_point, f.notes]);
+      await linkCards(client, p.id, req.body.card_ids);
+      const b = req.body.balance;
+      if (b !== undefined && b !== null && b !== '') {
+        await addEntry(client, p.id, { kind: 'balance', points: b, date: req.body.balance_date || undefined, note: 'Starting balance' });
+      }
+    });
+  } catch (e) {
+    if (e.code === '23505') return res.status(400).json({ error: `There's already a program called "${f.name}".` });
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    throw e;
+  }
+  res.status(201).json(await pointsSummary({ year: req.query.year }));
+}));
+
+router.patch('/points/programs/:id', ah(async (req, res) => {
+  const { rows: cur } = await pool.query('SELECT * FROM points_programs WHERE id = $1', [req.params.id]);
+  if (!cur.length) return res.status(404).json({ error: 'not found' });
+  const f = programFields(req.body || {}, cur[0]);
+  if (f.error) return res.status(400).json({ error: f.error });
+  try {
+    await withTransaction(async (client) => {
+      await client.query(`UPDATE points_programs SET name = $1, owner = $2, unit = $3, cents_per_point = $4, notes = $5 WHERE id = $6`,
+        [f.name, f.owner, f.unit, f.cents_per_point, f.notes, req.params.id]);
+      await linkCards(client, Number(req.params.id), req.body.card_ids);
+    });
+  } catch (e) {
+    if (e.code === '23505') return res.status(400).json({ error: `There's already a program called "${f.name}".` });
+    throw e;
+  }
+  res.json(await pointsSummary({ year: req.query.year }));
+}));
+
+router.delete('/points/programs/:id', ah(async (req, res) => {
+  const { rowCount } = await pool.query('DELETE FROM points_programs WHERE id = $1', [req.params.id]);
+  if (!rowCount) return res.status(404).json({ error: 'not found' });
+  res.json(await pointsSummary({ year: req.query.year }));
+}));
+
+router.post('/points/programs/:id/entries', ah(async (req, res) => {
+  const { rows: cur } = await pool.query('SELECT id FROM points_programs WHERE id = $1', [req.params.id]);
+  if (!cur.length) return res.status(404).json({ error: 'not found' });
+  try {
+    await addEntry(pool, Number(req.params.id), { ...req.body, source: 'hand', source_key: null });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    throw e;
+  }
+  res.status(201).json(await pointsSummary({ year: req.query.year }));
+}));
+
+router.delete('/points/entries/:id', ah(async (req, res) => {
+  const { rowCount } = await pool.query('DELETE FROM points_entries WHERE id = $1', [req.params.id]);
+  if (!rowCount) return res.status(404).json({ error: 'not found' });
+  res.json(await pointsSummary({ year: req.query.year }));
 }));
 
 export default router;

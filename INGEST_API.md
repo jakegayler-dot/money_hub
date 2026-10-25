@@ -122,6 +122,8 @@ Same `X-Api-Key`. Returns every account (with `last4`), card, category, owner, u
 | `historical` | backfill only | `true` for past statements: a bill, loan or contract payment with nothing on file to match is posted directly (bill → expense, loan → debt service, settlement → income) instead of waiting for review. See *Loading history* |
 | `set_opening_balance` | backfill only | `true` on the **first** statement of each account/card you backfill: sets the balance on `period_start` to `opening_balance` and rebuilds today's balance from there. Needs `period_start` + `opening_balance` |
 | `due_date`, `minimum_payment`, `interest_charged` | card statements | With `period_end` + `closing_balance` these log the billing cycle, so the amount due shows up in the cash forecast |
+| `points_earned`, `points_bonus`, `points_redeemed`, `points_expired`, `points_balance` | card statements with points | Exactly as printed in the statement's rewards box, as positive numbers. Recorded on the card's points program at `period_end`; re-sending replaces them. `points_balance` is the closing points balance. For a cash-back card, send dollars |
+| `points_program` | first statement with points | The program's name as printed ("Aeroplan", "Avion Rewards", "Scene+", "Cash back"). Only used if the card isn't linked to a program yet |
 
 ### Lines (`lines[]`)
 
@@ -353,7 +355,7 @@ A transfer: `"category": "[Other Account Name]"` (Quicken's own form) or `"trans
 >
 > - **Credentials:** `MONEY_HUB_URL` and `INGEST_API_KEY` from environment variables. Never hardcode or print the key.
 > - **First:** `GET {MONEY_HUB_URL}/api/statements/reference` with header `X-Api-Key`. Use its accounts, cards, categories, owners, bills, loan payments and contracts — never invent any of them.
-> - **Per statement:** one `POST {MONEY_HUB_URL}/api/statements/ingest` (spec: INGEST_API.md §4). Identify the account by `account_last4` or the card by `card_last4`. Send `period_start`, `period_end`, `closing_balance`, and for cards `opening_balance` (the "previous balance"), `due_date`, `minimum_payment`, `interest_charged`.
+> - **Per statement:** one `POST {MONEY_HUB_URL}/api/statements/ingest` (spec: INGEST_API.md §4). Identify the account by `account_last4` or the card by `card_last4`. Send `period_start`, `period_end`, `closing_balance`, and for cards `opening_balance` (the "previous balance"), `due_date`, `minimum_payment`, `interest_charged`. If the card statement has a rewards or points box, also send `points_program`, `points_earned`, `points_redeemed` and `points_balance` (plus `points_bonus` / `points_expired` when printed) — positive numbers, exactly as printed; leave out any it doesn't show.
 > - **Send every line**, amounts signed from the owner's side (money out negative). Copy dates, amounts and descriptions exactly.
 > - **Label `kind`** only when the statement makes it clear (a named loan, a named bill, a card payment, a transfer between their own accounts). Otherwise `standard`.
 > - **Split** a line only when you have the receipt showing the breakdown; pieces must sum to the line.

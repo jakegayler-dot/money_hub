@@ -1280,7 +1280,9 @@ button.metric-card-button.active { border-color: rgba(201, 162, 39, 0.55); backg
 /* ---------- Ledger spreadsheet ---------- */
 
 .ledger-grid-wrap { overflow-x: auto; }
-.ledger-grid { min-width: 1100px; table-layout: fixed; }
+/* Description gets real room (Jake, Oct 24: it was squeezed to a few letters — it only got what the fixed columns left). */
+.ledger-grid { min-width: 1400px; table-layout: fixed; }
+.ledger-grid th:nth-child(3) { width: 300px; }
 .ledger-grid th { white-space: nowrap; }
 .ledger-grid th.bal { width: 108px; }
 .ledger-grid th:last-child { width: 104px; }
@@ -1777,3 +1779,43 @@ button:active { transform: none !important; }
 .tp-body { margin-top: 6px; padding: 8px 12px; background: var(--panel-alt); border-radius: 6px; }
 .tp-body p { margin: 0 0 6px; font-size: 13px; line-height: 1.55; color: var(--text); max-width: 90ch; }
 .tp-body a, .tp a { color: var(--gold-bright); }
+
+/* Credit cards: points */
+.pt > p { margin: 4px 0 12px; font-size: 13px; line-height: 1.55; color: var(--text-muted); max-width: 90ch; }
+.pt .tp-total { color: var(--gold-bright); }
+.pt-metrics { padding: 0 16px; }
+.pt-program { border-top: 1px solid var(--border); padding: 14px 16px 12px; }
+.pt-program-head { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+.pt-name { font-size: 15px; font-weight: 600; color: var(--text); }
+.pt-name .tag { font-weight: 400; margin-left: 6px; }
+.pt-balance { text-align: right; }
+.pt-balance-big { font-family: var(--font-mono); font-size: 22px; color: var(--text); }
+.pt-balance-big span { font-size: 13px; color: var(--text-muted); }
+.pt-pending, .pt-hint { margin: 8px 0 0; font-size: 13px; line-height: 1.5; max-width: 90ch; }
+.pt-pending { color: var(--text); }
+.pt-hint { color: var(--text-muted); }
+.pt > .pt-hint { margin: 10px 0 0; }
+.pt-year { display: flex; flex-wrap: wrap; gap: 10px 28px; margin: 12px 0 0; padding: 10px 12px; background: var(--panel-alt); border-radius: 6px; }
+.pt-year > div { display: flex; flex-direction: column; gap: 2px; }
+.pt-year strong { font-family: var(--font-mono); font-weight: 500; font-size: 15px; color: var(--text); }
+.pt-year strong.neg, .pt-ledger td.neg { color: var(--negative); }
+.pt-program .ps-pie-wrap { padding: 14px 0 6px; }
+.pt-form-row select.pt-kind { width: 250px; }
+.pt-cat-title { font-size: 14px; font-weight: 600; margin: 6px 0 2px; color: var(--text); }
+.pt-form { margin: 12px 0 0; display: flex; flex-direction: column; gap: 8px; }
+.pt-form-row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: flex-end; }
+.pt-form-row label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-muted); }
+.pt-form-row input:not([type=checkbox]), .pt-form-row select { width: 160px; }
+.pt-form-row .pt-note input { width: 200px; }
+.pt-form .split-lines { max-width: 90ch; line-height: 1.5; }
+.pt-cards { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; }
+.pt-cards label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); }
+.pt-ledger { margin-top: 12px; }
+.pt-ledger td.num, .pt-ledger th.num { text-align: right; font-family: var(--font-mono); }
+.pt-actions { display: flex; gap: 8px; flex-wrap: wrap; padding: 10px 0 0; }
+.pt > .pt-actions { padding: 12px 16px 16px; border-top: 1px solid var(--border); }
+@media (max-width: 640px) {
+  .pt-balance { text-align: left; }
+  .pt-form-row input:not([type=checkbox]), .pt-form-row select, .pt-form-row .pt-note input { width: 100%; }
+  .pt-form-row label { flex: 1 1 140px; }
+}
