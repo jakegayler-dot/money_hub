@@ -3,13 +3,23 @@ import { assertNoClosedFrom } from '../lib/periods.js';
 import { pool, withTransaction } from '../db.js';
 import { anchorAccount } from '../lib/postings.js';
 import { ah } from '../lib/asyncHandler.js';
+import { toISODate } from '../lib/dates.js';
 import { validateSegment, segmentValues, SEGMENT_COLUMNS } from '../lib/segments.js';
 
 const router = Router();
 
 router.get('/', ah(async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM accounts ORDER BY ledger, account_type');
-  res.json(rows);
+  // The day its statements usually end, from the last few statements sent in (to suggest a statement day).
+  const { rows: ends } = await pool.query(
+    `SELECT account_id, period_end FROM (
+       SELECT account_id, period_end, row_number() OVER (PARTITION BY account_id ORDER BY period_end DESC) AS n
+       FROM statement_imports WHERE account_id IS NOT NULL AND period_end IS NOT NULL) x WHERE n <= 6`);
+  const usual = (id) => {
+    const days = ends.filter((e) => e.account_id === id).map((e) => Number(toISODate(e.period_end).slice(8, 10)));
+    return days.length ? days.sort((a, b) => days.filter((x) => x === b).length - days.filter((x) => x === a).length)[0] : null;
+  };
+  res.json(rows.map((a) => ({ ...a, statement_day_usual: usual(a.id) })));
 }));
 
 // The owner fields on an account attribute its STARTING balance (what was
@@ -35,7 +45,10 @@ router.post('/', ah(async (req, res) => {
 }));
 
 router.patch('/:id', ah(async (req, res) => {
-  const { name, opening_balance, fee_amount, fee_frequency, fee_notes, last4 } = req.body;
+  const { name, opening_balance, fee_amount, fee_frequency, fee_notes, last4, statement_day } = req.body;
+  if (statement_day != null && statement_day !== '' && !(Number(statement_day) >= 1 && Number(statement_day) <= 31)) {
+    return res.status(400).json({ error: 'The statement day is a day of the month, 1 to 31.' });
+  }
 
   const { rows: currentRows } = await pool.query('SELECT * FROM accounts WHERE id = $1', [req.params.id]);
   if (!currentRows.length) return res.status(404).json({ error: 'not found' });
@@ -62,6 +75,11 @@ router.patch('/:id', ah(async (req, res) => {
     [name, opening_balance, fee_amount, fee_frequency, fee_notes, last4 !== undefined, last4 || null,
      ...segmentValues(effectiveSeg), req.params.id]
   );
+  if (statement_day !== undefined) {
+    const { rows: [u] } = await pool.query('UPDATE accounts SET statement_day = $2 WHERE id = $1 RETURNING *',
+      [req.params.id, statement_day === '' || statement_day == null ? null : Math.round(Number(statement_day))]);
+    return res.json(u);
+  }
   res.json(rows[0]);
 }));
 

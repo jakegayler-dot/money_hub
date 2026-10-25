@@ -12,7 +12,7 @@
 
 import { pool, withTransaction } from '../db.js';
 import { buildSnapshot, reginaToday, WINDOW_PAST_DAYS, WINDOW_FUTURE_DAYS } from './sentinelSnapshot.js';
-import { deadlineItems, taxItems, gstItems } from './calendar.js';
+import { deadlineItems, statementReleaseItems, taxItems, gstItems } from './calendar.js';
 import { buildSummary } from './sentinelSummary.js';
 import { liquidityFloor, termDebtCoverage, scheduledServiceBetween } from './calculations.js';
 import { loadBalanceSheet, inventoryOwnerRow } from './balanceSheet.js';
@@ -60,7 +60,8 @@ export async function loadSnapshotRows() {
                     WHERE lp.is_adjustment = false`),
       client.query(`SELECT s.id, s.credit_card_id, s.statement_date, s.due_date, s.statement_balance, s.minimum_payment,
                            s.paid, s.paid_date, s.paid_amount, s.notes, c.name AS card_name
-                    FROM credit_card_statements s JOIN credit_cards c ON c.id = s.credit_card_id`),
+                    FROM credit_card_statements s JOIN credit_cards c ON c.id = s.credit_card_id
+                    WHERE c.status = 'active'`), // a closed card's cycles don't go to the calendar
       client.query(`SELECT id, name, lender, covenant_date, covenant_notes FROM loans
                     WHERE covenant_date IS NOT NULL`),
       client.query(`SELECT id, commodity, counterparty, quantity, unit, total_value, received_amount, expected_payment_date,
@@ -83,7 +84,7 @@ export async function loadCalendarDeadlines(now = new Date()) {
   const today = reginaToday(now);
   const from = addDays(today, -WINDOW_PAST_DAYS);
   const to = addDays(today, WINDOW_FUTURE_DAYS);
-  const parts = await Promise.all([deadlineItems(from, to), taxItems(from, to), gstItems(from, to)]);
+  const parts = await Promise.all([deadlineItems(from, to), taxItems(from, to), gstItems(from, to), statementReleaseItems(from, to)]);
   return parts.flat();
 }
 

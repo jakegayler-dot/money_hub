@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 const CLASS_LABELS = {
@@ -60,6 +60,7 @@ export default function CategorySelect({
   const [active, setActive] = useState(0);
   const [hints, setHints] = useState(null);
   const [pos, setPos] = useState(null);
+  const [noFill, setNoFill] = useState(false); // just deleted: don't complete it back
   const inputRef = useRef(null);
   const listRef = useRef(null);
   const listId = useRef(`catlist-${Math.random().toString(36).slice(2, 9)}`).current;
@@ -112,10 +113,16 @@ export default function CategorySelect({
         if (list.length) { out.push({ type: 'head', label: k === 'income' ? 'All income' : 'All expenses' }); for (const c of list) out.push({ type: 'cat', c }); }
       }
     } else {
+      // What you've used before ranks first among equal matches: this payee's categories, then the most used.
+      const boost = new Map();
+      if (hints) {
+        (hints.most_used?.[preferKind === 'income' ? 'income' : 'expense'] || []).forEach((cid, i) => boost.set(cid, Math.max(0.2, 1.5 - i * 0.1)));
+        ((payeeId && hints.by_payee?.[payeeId]) || []).forEach((cid, i) => boost.set(cid, 4 - i * 0.2 + (boost.get(cid) || 0)));
+      }
       const ms = moves.filter((m) => words(m.label).length && score({ name: m.label, full_name: `${m.label} ${m.hint || ''}` }, q) >= 0);
       if (ms.length) { out.push({ type: 'head', label: 'Not income or spending' }); for (const m of ms) out.push({ type: 'move', m }); }
       for (const k of kindOrder) {
-        const list = known.map((c) => ({ c, s: kindOf(c) === k ? score(c, q) : -1 })).filter((x) => x.s >= 0)
+        const list = known.map((c) => { const sc = kindOf(c) === k ? score(c, q) : -1; return { c, s: sc >= 0 ? sc + (boost.get(c.id) || 0) : -1 }; }).filter((x) => x.s >= 0)
           .sort((a, b) => b.s - a.s || (a.c.full_name || a.c.name).localeCompare(b.c.full_name || b.c.name));
         if (list.length) { out.push({ type: 'head', label: k === 'income' ? 'Income' : 'Expenses' }); for (const x of list) out.push({ type: 'cat', c: x.c }); }
       }
@@ -128,7 +135,22 @@ export default function CategorySelect({
   useEffect(() => { setActive(pickable[0] ?? 0); }, [query, open]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { listRef.current?.querySelector(`[data-i="${active}"]`)?.scrollIntoView({ block: 'nearest' }); }, [active]);
 
-  const close = () => { setOpen(false); setQuery(''); };
+  // Filled in as you type: the rest of the highlighted category's name, selected, so typing on replaces
+  // it and Enter or Tab takes it. Only when what's typed is how its name (or full name) starts.
+  const fillText = (() => {
+    const it = items[active];
+    const q = query;
+    if (!open || noFill || !q.trim() || !it || (it.type !== 'cat' && it.type !== 'move')) return null;
+    for (const name of it.type === 'cat' ? [it.c.name, it.c.full_name] : [it.m.label]) {
+      if (name && name.length > q.length && norm(name).startsWith(norm(q))) return name; // in its own capitals
+    }
+    return null;
+  })();
+  useLayoutEffect(() => {
+    if (fillText && inputRef.current && document.activeElement === inputRef.current) inputRef.current.setSelectionRange(query.length, fillText.length);
+  }, [fillText, query]);
+
+  const close = () => { setOpen(false); setQuery(''); setNoFill(false); };
   const choose = (it) => {
     if (!it) return;
     if (it.type === 'cat') onChange(String(it.c.id));
@@ -150,7 +172,14 @@ export default function CategorySelect({
       if (e.key === 'PageUp') { e.preventDefault(); step(-8); return; }
       if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); choose(items[active]); return; }
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); return; }
-      if (e.key === 'Tab') { close(); return; }
+      // Tab takes what's filled in (or highlighted) once something's typed, then moves on.
+      if (e.key === 'Tab') { if (query.trim() && items[active] && items[active].type !== 'new') choose(items[active]); else close(); return; }
+      // → at the end of a filled-in name accepts the text, the way a browser's address bar does.
+      if (e.key === 'ArrowRight' && fillText) {
+        e.preventDefault(); const t = fillText; setQuery(t);
+        requestAnimationFrame(() => inputRef.current?.setSelectionRange(t.length, t.length));
+        return;
+      }
       return;
     }
     if (!onKeyDown && (e.key === 'ArrowDown' || e.key === 'Enter')) { e.preventDefault(); setOpen(true); return; }
@@ -176,9 +205,12 @@ export default function CategorySelect({
           disabled={disabled}
           required={required}
           placeholder={open ? 'Type to search…' : emptyLabel}
-          value={open ? query : label}
+          value={open ? (fillText || query) : label}
           title={label || undefined}
-          onChange={(e) => { setQuery(e.target.value); if (!open) setOpen(true); }}
+          onChange={(e) => {
+            setNoFill(String(e.nativeEvent?.inputType || '').startsWith('delete'));
+            setQuery(e.target.value); if (!open) setOpen(true);
+          }}
           onMouseDown={() => { if (!disabled && !open) setOpen(true); }}
           onKeyDown={keyDown}
           onBlur={close}

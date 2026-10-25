@@ -393,7 +393,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
 
   // Personal spending: essentials from what the household actually spends
   // apart from bills and loan payments (forecast on their own dates), less
-  // card statements, fees and personal estimates already here that month;
+  // fees and personal estimates already here that month;
   // discretionary at the budget.
   let personal = null;
   try {
@@ -405,7 +405,9 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
       // so the statement due that month is part of the month's essentials, not on top of them.
       // Bills and loan payments aren't here: the essentials estimate already leaves them out of history,
       // so they're simply added on their own dates (a yearly bill no longer eats the month's groceries).
-      const amt = ['fee', 'estimate_out', 'card'].includes(f.kind) ? -f.amount * share : 0;
+      // Nor are card statements: a statement pays for purchases already made, and the estimate is for
+      // spending still to come — taking one off the other dropped November's essentials to $114.
+      const amt = ['fee', 'estimate_out'].includes(f.kind) ? -f.amount * share : 0;
       if (amt) knownOut.set(f.date.slice(0, 7), (knownOut.get(f.date.slice(0, 7)) || 0) + amt);
     }
     const r = await personalFlows({ meta: lwin.meta, today, tax: taxY0, known: (k) => knownOut.get(k) || 0 });

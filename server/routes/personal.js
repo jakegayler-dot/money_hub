@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
-import { personalPlan, spendingBreakdown } from '../lib/personal.js';
+import { personalPlan, spendingBreakdown, categoryEntries } from '../lib/personal.js';
 import { ownerCheck } from '../lib/ownerCheck.js';
 import { generateBudget, adoptBudget } from '../lib/budgetPlan.js';
 import { todayISO } from '../lib/dates.js';
@@ -63,6 +63,17 @@ router.delete('/budget/adopt', ah(async (req, res) => {
   await setSetting('personal_discretionary_month', null);
   await setSetting('personal_budget_plan', null);
   res.json(await generateBudget());
+}));
+
+// The entries behind a category's spending this year (or ?from=&to=, to exclusive).
+router.get('/entries', ah(async (req, res) => {
+  const id = Number(req.query.category_id);
+  if (!id) return res.status(400).json({ error: 'category_id is required' });
+  const today = todayISO();
+  const iso = (d) => (/^\d{4}-\d{2}-\d{2}$/.test(String(d || '')) ? String(d) : null);
+  const from = iso(req.query.from) || `${today.slice(0, 4)}-01-01`;
+  const to = iso(req.query.to) || new Date(Date.parse(`${today}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
+  res.json(await categoryEntries({ category_id: id, from, to }));
 }));
 
 // A category's bucket: 'essential', 'discretionary', or null to go back to the default.

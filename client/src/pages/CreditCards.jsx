@@ -87,6 +87,7 @@ export default function CreditCards() {
       current_balance: c.current_balance ?? '', current_balance_as_of: c.current_balance_as_of?.slice(0, 10) || '',
       payment_category_id: c.payment_category_id ? String(c.payment_category_id) : '',
       opening_balance_is_debt: c.opening_balance_is_debt !== false,
+      statement_day: c.statement_day ?? '',
     });
     setError(null);
   };
@@ -261,7 +262,7 @@ export default function CreditCards() {
   };
 
   const totalBalance = cards.reduce((s, c) => s + Number(c.outstanding_balance), 0);
-  const anyGraceLost = cards.some((c) => c.grace_period_intact === false);
+  const anyGraceLost = cards.some((c) => c.status !== 'closed' && c.grace_period_intact === false); // closed cards: no warnings
 
   return (
     <>
@@ -448,6 +449,11 @@ export default function CreditCards() {
                               <input type="date" value={editForm.current_balance_as_of} onChange={(e) => setEditForm({ ...editForm, current_balance_as_of: e.target.value })} /></div>
                             <div className="field"><label>Notes</label>
                               <input value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} /></div>
+                            <div className="field"><label>Statement comes out on day</label>
+                              <input type="number" min="1" max="31" placeholder={c.statement_day_usual ? `usually the ${c.statement_day_usual}` : '1–31'}
+                                value={editForm.statement_day} onChange={(e) => setEditForm({ ...editForm, statement_day: e.target.value })} />
+                              <span className="split-lines">On the calendar every month{c.statement_day_usual && editForm.statement_day === '' ? ` — its statements usually close on the ${c.statement_day_usual}` : ''}.</span>
+                            </div>
                             {c.itemized && Number(c.ledger_opening_balance) > 0 && (
                               <div className="field" style={{ gridColumn: 'span 2' }}><label>Paying off the {money(Number(c.ledger_opening_balance))} it owed on {c.ledger_start_date}</label>
                                 <select value={editForm.opening_balance_is_debt === false ? 'spending' : 'debt'}

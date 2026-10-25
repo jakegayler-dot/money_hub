@@ -55,6 +55,11 @@ router.get('/', ah(async (req, res) => {
     // Grace period survives only if the last statement whose deadline has
     // come (paid, or past due) was paid IN FULL by its due date.
     const decided = own.find((st) => st.paid || toISODate(st.due_date) < today) || null;
+    // A closed card raises no warnings: no grace period to keep, nothing flagged overdue.
+    const closed = c.status === 'closed';
+    // The day its statements usually come out, from the last few on file (to suggest a statement day).
+    const days = own.slice(0, 6).map((st) => st.statement_date && Number(toISODate(st.statement_date).slice(8, 10))).filter(Boolean);
+    const usual = days.length ? days.sort((a, b) => days.filter((x) => x === b).length - days.filter((x) => x === a).length)[0] : null;
 
     return {
       ...c,
@@ -67,10 +72,11 @@ router.get('/', ah(async (req, res) => {
         amount: round2(Number(nextDue.statement_balance) - Number(nextDue.paid_amount || 0)),
         paid_so_far: Number(nextDue.paid_amount || 0),
         due_date: toISODate(nextDue.due_date),
-        overdue: toISODate(nextDue.due_date) < today,
+        overdue: !closed && toISODate(nextDue.due_date) < today,
       } : null,
-      overdue_count: nextDue && toISODate(nextDue.due_date) < today ? 1 : 0,
-      grace_period_intact: decided ? decided.paid_in_full === true : null,
+      overdue_count: !closed && nextDue && toISODate(nextDue.due_date) < today ? 1 : 0,
+      grace_period_intact: closed || !decided ? null : decided.paid_in_full === true,
+      statement_day_usual: usual,
       last_statement: lastAny ? {
         id: lastAny.id, due_date: toISODate(lastAny.due_date),
         balance: Number(lastAny.statement_balance), paid: lastAny.paid, paid_in_full: lastAny.paid_in_full,
@@ -119,7 +125,7 @@ router.patch('/:id', ah(async (req, res) => {
        name = $1, issuer = $2, last4 = $3, credit_limit = $4, apr_purchase = $5, apr_cash_advance = $6,
        annual_fee = $7, annual_fee_month = $8, grace_period_days = $9, status = $10, segment = $11,
        notes = $12, current_balance = $13, current_balance_as_of = $14, payment_category_id = $16,
-       opening_balance_is_debt = $17
+       opening_balance_is_debt = $17, statement_day = $18
      WHERE id = $15 RETURNING *`,
     [merged.name, merged.issuer || null, merged.last4 || null, merged.credit_limit || null,
      Number(merged.apr_purchase), merged.apr_cash_advance === '' ? null : merged.apr_cash_advance,
@@ -127,7 +133,8 @@ router.patch('/:id', ah(async (req, res) => {
      Number(merged.grace_period_days) || 21, merged.status, merged.segment || null, merged.notes || null,
      merged.current_balance === '' ? null : merged.current_balance, merged.current_balance_as_of || null,
      req.params.id, merged.payment_category_id ? Number(merged.payment_category_id) : null,
-     merged.opening_balance_is_debt !== false]
+     merged.opening_balance_is_debt !== false,
+     merged.statement_day === '' || merged.statement_day == null ? null : Math.min(31, Math.max(1, Math.round(Number(merged.statement_day))))]
   );
   // A new spending category re-files the payments that had the old one (or none), then re-runs the split
   // between spending and transfer.

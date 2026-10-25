@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
 import { money } from '../format.js';
-import { Pie } from './MonthBreakdown.jsx';
+import { Pie } from './Pie.jsx';
+import { SERIES, OTHER } from '../chartColors.js';
 
 // A household budget that keeps the forecast's cash above its floor for the
 // next 12 months (server/lib/budgetPlan.js): the most a month for
 // discretionary spending, shared by category and by person the way the
 // household actually spends, with a button to adopt it.
-const PALETTE = ['#c9a227', '#5b8def', '#2bb0a1', '#e0835a', '#9b85ee', '#6fbf73', '#d46a9a', '#e8b04a', '#5fd3e6', '#b0896a', '#8fa3b8', '#7f8ce0'];
-const PEOPLE = [['jake', 'Jake', '#5b8def'], ['ashley', 'Ashley', '#d46a9a'], ['untagged', 'Not tagged', '#6b7480']];
+const PEOPLE = [['jake', 'Jake', SERIES[0]], ['ashley', 'Ashley', SERIES[4]], ['untagged', 'Not tagged', OTHER]];
 
 /** Cash above the floor at each month-end, as bars from zero; the tightest one marked. */
 function HeadroomBars({ path, tightest }) {
@@ -27,7 +27,7 @@ function HeadroomBars({ path, tightest }) {
           const tight = p.month === tightest;
           return (
             <g key={p.month}>
-              <rect x={x} y={top} width={bw} height={ht} rx="3" fill={p.headroom < 0 ? 'var(--negative)' : tight ? 'var(--gold)' : '#5b8def'} opacity={tight || p.headroom < 0 ? 1 : 0.75}>
+              <rect x={x} y={top} width={bw} height={ht} rx="3" fill={p.headroom < 0 ? 'var(--negative)' : tight ? 'var(--gold)' : SERIES[0]} opacity={tight || p.headroom < 0 ? 1 : 0.75}>
                 <title>{`${p.month}: ${money(p.headroom)} above the floor (now: ${money(p.now)})`}</title>
               </rect>
               <text x={x + bw / 2} y={h + 14} textAnchor="middle" fontSize="10" fill="var(--text-muted)">{p.month.slice(0, 3)}</text>
@@ -57,7 +57,7 @@ export default function BudgetFit({ onChanged }) {
   };
   if (!d) return err ? <div className="panel"><p className="review-error">{err}</p></div> : null;
 
-  const slices = d.categories.map((c, i) => ({ key: c.category, label: c.category, amount: c.amount, color: PALETTE[i % PALETTE.length], c }));
+  const slices = d.categories.map((c, i) => ({ key: c.category, label: c.category, amount: c.amount, color: i < SERIES.length ? SERIES[i] : OTHER, c }));
   const cur = slices.find((s) => s.key === sel);
   const adopted = d.adopted;
   const inUse = adopted && adopted.monthly === d.monthly;
@@ -98,7 +98,7 @@ export default function BudgetFit({ onChanged }) {
 
       {slices.length > 0 && (
         <div className="ps-pie-wrap">
-          <Pie slices={slices} selected={sel} onSelect={setSel} size={200} label="Budget by category" />
+          <Pie slices={slices} selected={sel} onSelect={setSel} size={220} label="Budget by category" centerTitle="A month" />
           <div className="ps-pie-side">
             {cur ? (
               <div>

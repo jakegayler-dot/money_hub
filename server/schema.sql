@@ -1662,3 +1662,8 @@ WHERE NOT EXISTS (SELECT 1 FROM expense_categories WHERE lower(name) = lower('CR
 -- A card's balance when itemizing started is debt from before (Jake, Oct 24): paying it down is a
 -- transfer, not this year's spending. false = count it as spending (the old behaviour).
 ALTER TABLE credit_cards ADD COLUMN IF NOT EXISTS opening_balance_is_debt BOOLEAN NOT NULL DEFAULT true;
+
+-- The day of the month an account's or card's statement comes out (Jake, Oct 24): on the money
+-- calendar (and Sentinel's) as a reminder to send it in. NULL = not set.
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS statement_day INTEGER CHECK (statement_day BETWEEN 1 AND 31);
+ALTER TABLE credit_cards ADD COLUMN IF NOT EXISTS statement_day INTEGER CHECK (statement_day BETWEEN 1 AND 31);

@@ -468,10 +468,10 @@ def({
         utilization_pct: c.credit_limit ? Math.round((outstanding / Number(c.credit_limit)) * 10000) / 100 : null,
         apr_purchase: num(c.apr_purchase), apr_cash_advance: num(c.apr_cash_advance), annual_fee: money(c.annual_fee),
         annual_fee_month: c.annual_fee_month, grace_period_days: c.grace_period_days,
-        grace_period_intact: decided ? decided.paid_in_full === true : null, itemized,
+        grace_period_intact: c.status === 'closed' || !decided ? null : decided.paid_in_full === true, itemized, // closed: no grace to keep
         next_due: nextDue ? {
           due_date: day(nextDue.due_date), amount: money(Number(nextDue.statement_balance) - Number(nextDue.paid_amount || 0)),
-          minimum_payment: money(nextDue.minimum_payment), overdue: day(nextDue.due_date) < ctx.today,
+          minimum_payment: money(nextDue.minimum_payment), overdue: c.status !== 'closed' && day(nextDue.due_date) < ctx.today,
         } : null,
         last_statement: latest ? { statement_date: day(latest.statement_date), due_date: day(latest.due_date), balance: money(latest.statement_balance), paid: latest.paid } : null,
         rewards: rewards.filter((r) => r.credit_card_id === c.id).map((r) => ({ category: r.category, rate_pct: num(r.rate_pct), points_per_dollar: num(r.points_per_dollar) })),

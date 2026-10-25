@@ -119,10 +119,36 @@ export async function gstItems(from, to) {
   return out;
 }
 
+/**
+ * Statements coming out in [from, to]: each account and open card with a
+ * statement day, every month (a day past the month's end falls on its last
+ * day). A reminder to send the statement in.
+ */
+export async function statementReleaseItems(from, to, db = pool) {
+  const [{ rows: accts }, { rows: cards }] = await Promise.all([
+    db.query('SELECT id, name, statement_day FROM accounts WHERE statement_day IS NOT NULL'),
+    db.query(`SELECT id, name, statement_day FROM credit_cards WHERE statement_day IS NOT NULL AND status = 'active'`),
+  ]);
+  const out = [];
+  const [fy, fm] = from.split('-').map(Number);
+  const [ty, tm] = to.split('-').map(Number);
+  for (const [prefix, list] of [['a', accts], ['c', cards]]) {
+    for (const x of list) {
+      for (let y = fy, m = fm; y < ty || (y === ty && m <= tm); m === 12 ? (y++, m = 1) : m++) {
+        const date = `${y}-${pad(m)}-${pad(Math.min(Number(x.statement_day), lastDay(y, m)))}`;
+        if (date < from || date > to) continue;
+        out.push({ id: `stmt-out:${prefix}${x.id}:${date}`, date, kind: 'statement', title: `Statement out — ${x.name}`, amount: null,
+          notes: 'Send it in so the ledger stays current.', link: prefix === 'c' ? '/credit-cards' : '/accounts' });
+      }
+    }
+  }
+  return out;
+}
+
 /** Everything on the money calendar from `from` to `to` (inclusive), soonest first. */
 export async function calendarItems({ from, to, today = todayISO() }) {
   const toExcl = addDays(to, 1);
-  const [{ rows: bills }, { rows: pays }, { rows: cards }, { rows: contracts }, { rows: loans }, deadlines, tax, gst] = await Promise.all([
+  const [{ rows: bills }, { rows: pays }, { rows: cards }, { rows: contracts }, { rows: loans }, deadlines, tax, gst, releases] = await Promise.all([
     pool.query(`SELECT b.*, p.name AS vendor FROM bills b LEFT JOIN payees p ON p.id = b.payee_id WHERE b.status = 'unpaid'`),
     pool.query(`SELECT lp.*, COALESCE(NULLIF(l.name, ''), l.lender) AS loan FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
                 WHERE NOT lp.paid AND NOT lp.is_adjustment AND lp.due_date <= $1`, [to]),
@@ -130,9 +156,9 @@ export async function calendarItems({ from, to, today = todayISO() }) {
                 FROM (${LATEST_STATEMENTS_SQL}) s JOIN credit_cards cc ON cc.id = s.credit_card_id WHERE NOT s.paid AND cc.status = 'active'`),
     pool.query(`SELECT * FROM sale_contracts WHERE status IN ('open', 'delivered') AND expected_payment_date IS NOT NULL`),
     pool.query(`SELECT id, COALESCE(NULLIF(name, ''), lender) AS name, covenant_date, covenant_notes FROM loans WHERE covenant_date IS NOT NULL`),
-    deadlineItems(from, to), taxItems(from, to), gstItems(from, to),
+    deadlineItems(from, to), taxItems(from, to), gstItems(from, to), statementReleaseItems(from, to),
   ]);
-  const items = [...deadlines, ...tax, ...gst];
+  const items = [...deadlines, ...tax, ...gst, ...releases];
   for (const b of bills) {
     // Overdue ones show on today; a recurring one also shows its next cycles.
     for (const d of billDates(b, today, toExcl)) {

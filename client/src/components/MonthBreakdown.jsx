@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Pie } from './Pie.jsx';
 import { money } from '../format.js';
 import { cents } from './SplitEditor.jsx';
 
@@ -48,41 +49,8 @@ export function groupOf(it) {
   }
 }
 
-const arc = (cx, cy, r, a0, a1) => {
-  const p = (a) => [cx + r * Math.sin(a), cy - r * Math.cos(a)];
-  const [x0, y0] = p(a0); const [x1, y1] = p(a1);
-  return `M${cx},${cy} L${x0},${y0} A${r},${r} 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${x1},${y1} Z`;
-};
-
-/** A clickable pie: slices [{ key, label, amount, color }] (amounts positive). */
-export function Pie({ slices, selected, onSelect, size = 180, label }) {
-  const total = slices.reduce((a, s) => a + s.amount, 0) || 1;
-  const r = size / 2 - 8;
-  const c = size / 2;
-  let a = 0;
-  return (
-    <svg className="mb-pie" width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="group" aria-label={label}>
-      {slices.length === 1 ? (
-        <circle cx={c} cy={c} r={r} fill={slices[0].color} className="mb-slice" tabIndex={0} role="button"
-          onClick={() => onSelect(selected === slices[0].key ? null : slices[0].key)} />
-      ) : slices.map((s) => {
-        const a0 = a; a += (s.amount / total) * Math.PI * 2;
-        const mid = (a0 + a) / 2;
-        const out = selected === s.key ? 6 : 0;
-        return (
-          <path key={s.key} d={arc(c + out * Math.sin(mid), c - out * Math.cos(mid), r, a0, a)} fill={s.color}
-            stroke="var(--panel)" strokeWidth="2" strokeLinejoin="round" tabIndex={0} role="button"
-            className={`mb-slice${selected && selected !== s.key ? ' dim' : ''}`} aria-pressed={selected === s.key}
-            aria-label={`${s.label}: ${cents(s.amount)}`}
-            onClick={() => onSelect(selected === s.key ? null : s.key)}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(selected === s.key ? null : s.key); } }}>
-            <title>{`${s.label}: ${cents(s.amount)} (${Math.round((s.amount / total) * 1000) / 10}%)`}</title>
-          </path>
-        );
-      })}
-    </svg>
-  );
-}
+// The chart itself lives in Pie.jsx; re-exported here for the pages that import it from this file.
+export { Pie };
 
 function ItemRow({ it }) {
   return (

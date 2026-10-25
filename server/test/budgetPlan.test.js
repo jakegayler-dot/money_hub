@@ -83,3 +83,13 @@ test('owner splits work with itemized card purchases (the forecast crashed on th
   const s = await ownerSplits('2026-10-24');
   assert.ok(s.household.ashley > 0);
 });
+
+test('a month with next to nothing in it is a gap in the records, never "last year" (Nov forecast was $114)', async () => {
+  // Stray entries from before the records really start: a few dollars last November.
+  await db.query(`INSERT INTO transactions (account_id, ledger, date, amount, description, category_id, segment) VALUES
+    ($1, 'personal', '2025-10-03', -5, 'x', $2, 'jake'), ($1, 'personal', '2025-11-12', -114, 'x', $2, 'jake')`, [acct, groc]);
+  const ess = await essentialsModel('2026-10-24');
+  assert.ok(ess.gaps.includes('2025-11'));
+  assert.equal(ess.unscheduled('2026-11'), 1000);
+  assert.ok(ess.estimate('2026-11') > 900);
+});

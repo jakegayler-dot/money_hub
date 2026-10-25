@@ -98,6 +98,15 @@ async function householdLines(from, to, buckets) {
   return { spending, income: r2(income) };
 }
 
+/** Whose a line is, in words: "Jake", or the split — "Grain 70% · Jake 30%" — so a farm entry with a personal share shows. */
+function whoseLabel(w) {
+  if (w.jake >= 0.999) return 'Jake';
+  if (w.ashley >= 0.999) return 'Ashley';
+  const parts = [['grain', 'Grain'], ['livestock', 'Cattle'], ['jake', 'Jake'], ['ashley', 'Ashley'], ['unassigned', 'not tagged']]
+    .filter(([k]) => w[k] > 0.001).map(([k, l]) => `${l} ${Math.round(w[k] * 100)}%`);
+  return parts.length > 1 ? parts.join(' / ') : w.unassigned > 0.999 ? 'Not tagged' : parts[0] || 'Not tagged';
+}
+
 /** Months 'YYYY-MM' from a to b inclusive. */
 function monthsBetween(a, b) {
   const out = [];
@@ -130,8 +139,14 @@ export async function essentialsModel(today = todayISO(), buckets = null) {
     byMonth.set(l.month, byMonth.get(l.month) + l.amount);
     if (!l.scheduled) unscheduled.set(l.month, unscheduled.get(l.month) + l.amount);
   }
-  // A month with no essential spending at all is a gap in the records, not a free month.
-  const months = [...byMonth].filter(([k, v]) => k <= lastFull && v > 0.005);
+  // A month with no essential spending at all is a gap in the records, not a free month — and so is one
+  // with next to nothing in it (Jake, Oct 24: last November held $114 of stray entries from before his
+  // records really started, and became this November's whole forecast). Under GAP of the typical month
+  // is missing records, not a cheap month: left out of the median and never used as "last year".
+  const GAP = 0.35;
+  const nonzero = [...byMonth].filter(([k, v]) => k <= lastFull && v > 0.005);
+  const mid = median(nonzero.map(([, v]) => v));
+  const months = nonzero.filter(([, v]) => v >= GAP * mid);
   const full = months.length >= 12;
   // The typical month: the median, so one big month (a repair, a lump card payment) doesn't set the forecast.
   const avg = median(months.map(([, v]) => v));
@@ -139,13 +154,15 @@ export async function essentialsModel(today = todayISO(), buckets = null) {
   const avgU = median([...unscheduled].filter(([k]) => kept.has(k)).map(([, v]) => v));
   return {
     basis: full ? 'same month last year' : months.length ? `the typical (median) month of the ${months.length} on file, weighted toward the same month last year where there is one` : 'no history yet',
+    gaps: nonzero.filter(([, v]) => v < GAP * mid).map(([k]) => k), // months too thin to trust
     months: months.map(([k, v]) => ({ month: k, amount: r2(v) })),
     // The same month last year carries weight as history builds: all of it
     // with a full year, months/12 of it before that (the rest from the
     // average), so a seasonal month shows up as soon as it's been seen once.
     estimate: (key) => {
-      const ly = byMonth.get(shiftMonth(key, -12));
-      if (!(ly > 0.005)) return r2(avg);
+      const lyKey = shiftMonth(key, -12);
+      const ly = byMonth.get(lyKey);
+      if (!kept.has(lyKey)) return r2(avg);
       const w = full ? 1 : months.length / 12;
       return r2(w * ly + (1 - w) * avg);
     },
@@ -315,7 +332,10 @@ export async function personalFlows({ meta, today, tax, known }) {
   const ess = await essentialsModel(today);
   const curKey = ym(today);
   const thisYear = Number(curKey.slice(0, 4));
-  const spentThisMonth = plan.months.find((m) => m.month === curKey) || { essential: 0 };
+  // Spent so far this month, apart from bills and loan payments (those come off their own forecast items).
+  const { spending: cm } = await householdLines(`${curKey}-01`, addDay(today), await categoryBuckets());
+  const spentThisMonth = { essential: 0, discretionary: 0 };
+  for (const l of cm) if (!l.scheduled && l.month === curKey) spentThisMonth[l.bucket] += l.amount;
   const out = [];
   for (const m of meta) {
     const key = `${m.year}-${pad(m.month)}`;
@@ -325,7 +345,10 @@ export async function personalFlows({ meta, today, tax, known }) {
     if (key === curKey) essential -= spentThisMonth.essential; // already spent this month is in the bank balance
     // This year: what's left of the limit, spread over the months left (this month's spending is already out of it).
     // Next year: this year's limit a month at a time, until next year's plan takes over.
-    const disc = m.year === thisYear || plan.mode === 'actual' ? plan.discretionary.per_month : plan.limit / 12;
+    let disc = m.year === thisYear || plan.mode === 'actual' ? plan.discretionary.per_month : plan.limit / 12;
+    // This month: what's already been spent on discretionary is in the bank balance (and in the card's unbilled
+    // charges), so only what's left of the month's amount is still to come.
+    if (key === curKey && plan.mode === 'actual') disc = Math.max(0, disc - (spentThisMonth.discretionary || 0));
     if (essential > 0.5) out.push({ key: `personal:ess:${key}`, kind: 'personal', label: 'Personal essentials (from what you spend)', date, amount: -r2(essential), farm: 0, estimate: true, ref: { bucket: 'essential' } });
     if (disc > 0.5) out.push({ key: `personal:disc:${key}`, kind: 'personal', label: 'Discretionary budget', date, amount: -r2(disc), farm: 0, estimate: true, ref: { bucket: 'discretionary' } });
   }
@@ -378,7 +401,7 @@ export async function spendingBreakdown({ from, to, today = todayISO() }) {
     const w = ownerWeights(l);
     const personal = w.jake + w.ashley + w.unassigned || 1;
     // The ledger entries behind the category (Jake, Oct 24: he could only find them by searching the ledger).
-    const whose = w.jake >= 0.999 ? 'Jake' : w.ashley >= 0.999 ? 'Ashley' : w.jake + w.ashley > 0.001 ? 'Split' : 'Not tagged';
+    const whose = whoseLabel(w);
     c.entries.push({ id: l.transaction_id, date: toISODate(l.date), description: l.line_description || l.description || '',
       payee: l.payee || null, paid_with: l.paid_with || null, amount: r2(v), whose, split: l.split_id != null });
     people.jake += v * (w.jake / personal); people.ashley += v * (w.ashley / personal); people.unassigned += v * (w.unassigned / personal);
@@ -444,4 +467,33 @@ export async function spendingMix(today = todayISO(), n = 6) {
     jake: r2(c.jake / span), ashley: r2(c.ashley / span), untagged: r2((c.total - c.jake - c.ashley) / span),
   })).filter((c) => c.monthly > 0.5).sort((a, b) => b.monthly - a.monthly);
   return { months: keys.length, essential: out(groups.essential), discretionary: out(groups.discretionary), thisMonth };
+}
+
+/**
+ * The ledger entries behind one category's household spending from `from`
+ * to `to` (exclusive), newest first — what "Which spending is which" adds up
+ * (Jake, Oct 24: the totals showed, the transactions didn't).
+ */
+export async function categoryEntries({ category_id, from, to }) {
+  const { rows } = await pool.query(
+    `SELECT ${EARNING_COLUMNS}, l.date, l.category_id, l.transaction_id, l.description AS line_description,
+            p.name AS payee, t.description, COALESCE(cc.name, a.name) AS paid_with
+     FROM transaction_lines l JOIN transactions t ON t.id = l.transaction_id
+     LEFT JOIN loan_payments lp ON lp.linked_transaction_id = l.transaction_id
+     LEFT JOIN payees p ON p.id = t.payee_id
+     LEFT JOIN accounts a ON a.id = t.account_id
+     LEFT JOIN credit_cards cc ON cc.id = t.credit_card_id
+     WHERE l.is_transfer = false AND (l.is_debt_service = false OR l.split_id IS NOT NULL)
+       AND l.category_id = $1 AND l.date >= $2 AND l.date < $3`, [category_id, from, to]);
+  const out = [];
+  for (const l of rows) {
+    if (l.is_capex) continue;
+    const v = -lineValue(l, 'household');
+    if (Math.abs(v) < 0.005) continue;
+    const w = ownerWeights(l);
+    const whose = whoseLabel(w);
+    out.push({ id: l.transaction_id, date: toISODate(l.date), description: l.line_description || l.description || '',
+      payee: l.payee || null, paid_with: l.paid_with || null, amount: r2(v), whose, split: l.split_id != null });
+  }
+  return out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.id - a.id));
 }

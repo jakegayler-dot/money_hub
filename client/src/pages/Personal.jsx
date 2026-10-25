@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import MetricCard from '../components/MetricCard.jsx';
 import { money, localToday } from '../format.js';
 import { cents } from '../components/SplitEditor.jsx';
 import OwnerCheck from '../components/OwnerCheck.jsx';
 import BudgetFit from '../components/BudgetFit.jsx';
-import { Pie } from '../components/MonthBreakdown.jsx';
+import { Pie } from '../components/Pie.jsx';
+import { SERIES, OTHER, foldSlices } from '../chartColors.js';
 
 // Personal spending (Jake, 2026-10-24: rebuilt around where the money
 // actually goes). Household spending — Jake, Ashley and unassigned —
@@ -17,9 +18,8 @@ import { Pie } from '../components/MonthBreakdown.jsx';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const monthName = (key) => MONTHS[Number(key.slice(5, 7)) - 1];
-const PALETTE = ['#c9a227', '#5b8def', '#2bb0a1', '#e0835a', '#9b85ee', '#6fbf73', '#d46a9a', '#e8b04a', '#5fd3e6', '#b0896a', '#8fa3b8', '#7f8ce0'];
-const ESS = '#5b8def';
-const DISC = '#e0835a';
+const ESS = SERIES[0];
+const DISC = SERIES[1];
 
 const today = localToday();
 const shift = (ymd, months) => { const d = new Date(`${ymd.slice(0, 7)}-01T00:00:00Z`); d.setUTCMonth(d.getUTCMonth() + months); return d.toISOString().slice(0, 10); };
@@ -71,9 +71,9 @@ function MonthBars({ months }) {
 }
 
 /** The ledger entries behind a subcategory, newest first; each opens in the ledger. */
-function Entries({ entries }) {
+function Entries({ entries, showCategory = false }) {
   const [all, setAll] = useState(false);
-  const shown = all ? entries : entries.slice(0, 25);
+  const shown = all ? entries : entries.slice(0, 50);
   return (
     <div className="ps-entries">
       <table data-nostack="">
@@ -83,24 +83,25 @@ function Entries({ entries }) {
               <td className="ps-e-date">{e.date}</td>
               <td>
                 <Link to={`/ledgers?edit=${e.id}`} className="ps-e-link">{e.payee || e.description || 'Entry'}</Link>
-                <div className="split-lines">{[e.payee && e.description !== e.payee ? e.description : null, e.paid_with, e.whose, e.split ? 'part of a split' : null].filter(Boolean).join(' · ')}</div>
+                <div className="split-lines">{[showCategory ? e.category : null, e.payee && e.description !== e.payee ? e.description : null, e.paid_with, e.whose, e.split ? 'part of a split' : null].filter(Boolean).join(' · ')}</div>
               </td>
               <td className="num">{cents(e.amount)}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      {entries.length > 25 && <button type="button" className="small-link" onClick={() => setAll(!all)}>{all ? 'Show the latest 25' : `Show all ${entries.length}`}</button>}
+      {entries.length > 50 && <button type="button" className="small-link" onClick={() => setAll(!all)}>{all ? 'Show the latest 50' : `Show all ${entries.length}`}</button>}
     </div>
   );
 }
 
-function Legend({ items, total, selected, onSelect }) {
+function Legend({ items, total, selected, onSelect, onHover }) {
   return (
     <table className="ps-legend" data-nostack="">
       <tbody>
         {items.map((s) => (
           <tr key={s.key} className={`ps-legend-row${selected === s.key ? ' on' : ''}`} tabIndex={0} onClick={() => onSelect?.(selected === s.key ? null : s.key)}
+            onMouseEnter={() => onHover?.(s.key)} onMouseLeave={() => onHover?.(null)} onFocus={() => onHover?.(s.key)} onBlur={() => onHover?.(null)}
             onKeyDown={(e) => { if (e.key === 'Enter') onSelect?.(selected === s.key ? null : s.key); }}>
             <td><span className="ps-swatch" style={{ background: s.color }} />{s.label}</td>
             <td className="num">{money(Math.round(s.amount))}</td>
@@ -118,16 +119,25 @@ export default function Personal() {
   const [plan, setPlan] = useState(null);
   const [error, setError] = useState(null);
   const [sel, setSel] = useState(null);
+  const [hl, setHl] = useState(null); // legend row pointed at
   const [budget, setBudget] = useState(null); // monthly budget being edited
   const [showCats, setShowCats] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [openSub, setOpenSub] = useState(null); // which subcategory's entries are showing
+  const [catOpen, setCatOpen] = useState(null); // { id, entries } — a "Which spending is which" row opened
+  const openCat = async (c) => {
+    if (catOpen?.id === c.id) { setCatOpen(null); return; }
+    setCatOpen({ id: c.id, entries: null });
+    const r = await fetch(`/api/personal/entries?category_id=${c.id}`).then((x) => x.json()).catch(() => []);
+    setCatOpen((cur) => (cur?.id === c.id ? { id: c.id, entries: Array.isArray(r) ? r : [] } : cur));
+  };
 
   const from = PERIODS.find(([k]) => k === period)[2];
   const loadPlan = () => fetch('/api/personal').then((r) => r.json()).then((d) => (d.error ? setError(d.error) : setPlan(d))).catch((e) => setError(e.message));
   const loadB = () => fetch(`/api/personal/breakdown?from=${from}&to=${tomorrow}`).then((r) => r.json()).then((d) => (d.error ? setError(d.error) : setB(d))).catch((e) => setError(e.message));
   useEffect(() => { loadPlan(); }, []);
-  useEffect(() => { setSel(null); loadB(); }, [period]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setSel(null); setOpenSub(null); loadB(); }, [period]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setOpenSub(null); }, [sel]);
 
   const send = async (method, url, body) => {
     setError(null);
@@ -142,11 +152,18 @@ export default function Personal() {
   if (error && !plan) return <div className="empty-state">Could not load personal spending: {error}</div>;
   if (!plan || !b) return <div className="empty-state">Loading…</div>;
 
-  const cats = b.categories.map((c, i) => ({ key: c.name, label: c.name, amount: c.amount, color: PALETTE[i % PALETTE.length], c }));
-  const top = cats.slice(0, 9);
-  const rest = cats.slice(9);
-  const slices = rest.length ? [...top, { key: '__rest', label: `${rest.length} more`, amount: rest.reduce((a, s) => a + s.amount, 0), color: '#6b7480', rest }] : top;
-  const cur = slices.find((s) => s.key === sel);
+  // Eight categories in the palette's fixed order, the rest folded into one neutral slice.
+  const cats = b.categories.map((c, i) => ({ key: c.name, label: c.name, amount: c.amount, color: i < SERIES.length ? SERIES[i] : OTHER, c }));
+  const slices = foldSlices(cats, { otherLabel: (n) => `${n} smaller categories` });
+  const cur = slices.find((s) => s.key === sel) || cats.find((c) => c.key === sel);
+  // Every entry behind the period's spending, labelled with its category; narrowed by what's picked.
+  const allEntries = b.categories.flatMap((g) => g.children.flatMap((ch) => (ch.entries || []).map((e) => ({
+    ...e, top: g.name, sub: ch.name, category: ch.name === g.name ? g.name : `${g.name} › ${ch.name}` }))));
+  const entriesShown = allEntries
+    .filter((e) => !cur || cur.rest || e.top === cur.label)
+    .filter((e) => !openSub || !cur || `${cur.label}|${e.sub}` === openSub)
+    .sort((a, b2) => (a.date < b2.date ? 1 : a.date > b2.date ? -1 : b2.id - a.id));
+  const entriesTotal = entriesShown.reduce((a, e) => a + e.amount, 0);
   // Months before the records start are gaps, not months of no spending.
   const firstSpent = b.months.findIndex((m) => m.essential + m.discretionary > 0.5);
   const months = firstSpent < 0 ? b.months.filter((m) => m.forecast) : b.months.slice(firstSpent);
@@ -155,9 +172,9 @@ export default function Personal() {
   const next = b.months.find((m) => m.forecast);
   const nMonths = Math.max(1, Math.round((Date.parse(tomorrow) - Date.parse(from)) / (30.44 * 86400000)));
   const people = [
-    { key: 'ashley', label: 'Ashley', amount: b.people.ashley, color: '#d46a9a' },
-    { key: 'jake', label: 'Jake', amount: b.people.jake, color: '#5b8def' },
-    { key: 'unassigned', label: 'Not tagged to anyone', amount: b.people.unassigned, color: '#6b7480' },
+    { key: 'jake', label: 'Jake', amount: b.people.jake, color: SERIES[0] },
+    { key: 'ashley', label: 'Ashley', amount: b.people.ashley, color: SERIES[4] },
+    { key: 'unassigned', label: 'Not tagged to anyone', amount: b.people.unassigned, color: OTHER },
   ].filter((p) => p.amount > 0.5);
   const kinds = [
     { key: 'essential', label: 'Essentials', amount: b.buckets.essential, color: ESS },
@@ -197,14 +214,18 @@ export default function Personal() {
         <div className="panel-header spend-header"><span>Where it goes — {periodLabel}</span><span className="split-lines">Click a slice or a row</span></div>
         {!cats.length ? <div className="empty-state">No household spending in this period.</div> : (
           <div className="ps-pie-wrap">
-            <Pie slices={slices} selected={sel} onSelect={setSel} size={240} label="Household spending by category" />
+            <Pie slices={slices} selected={sel} onSelect={setSel} size={260} label="Household spending by category" centerTitle={periodLabel === 'this year' ? 'Spent this year' : 'Spent'} highlight={hl} />
             <div className="ps-pie-side">
               {cur ? (
                 <div className="ps-detail">
                   <div className="ps-detail-head"><span className="ps-swatch" style={{ background: cur.color }} />{cur.label}</div>
                   <div className="ps-detail-big">{cents(cur.amount)} <span>{b.total ? Math.round((cur.amount / b.total) * 1000) / 10 : 0}% · about {money(cur.amount / nMonths)} a month</span></div>
                   {cur.rest ? (
-                    <ul className="ps-lines">{cur.rest.map((r) => <li key={r.key}><span>{r.label}</span><span>{cents(r.amount)}</span></li>)}</ul>
+                    <ul className="ps-lines">{cur.rest.map((r) => (
+                      <li key={r.key} className="ps-line-pick" tabIndex={0} onClick={() => setSel(r.key)} onKeyDown={(e) => { if (e.key === 'Enter') setSel(r.key); }}>
+                        <span>{r.label}</span><span>{cents(r.amount)}</span>
+                      </li>
+                    ))}</ul>
                   ) : (
                     <>
                       {cur.c.discretionary > 0.5 && cur.c.essential > 0.5 && (
@@ -213,18 +234,13 @@ export default function Personal() {
                       <ul className="pp-subs">
                         {cur.c.children.map((ch) => {
                           const key = `${cur.label}|${ch.name}`;
-                          const open = openSub === key || cur.c.children.length === 1;
+                          const on = openSub === key;
                           return (
-                            <li key={ch.name}>
+                            <li key={ch.name} className={`pp-sub-pick${on ? ' on' : ''}`} tabIndex={0} aria-pressed={on}
+                              onClick={() => setOpenSub(on ? null : key)} onKeyDown={(e) => { if (e.key === 'Enter') setOpenSub(on ? null : key); }}>
                               <div className="pp-sub-head"><span>{ch.name === cur.label ? 'Directly under it' : ch.name} <span className="split-lines">· {ch.count}</span></span><b>{cents(ch.amount)}</b></div>
                               <div className="pp-sub-bar"><span style={{ width: `${Math.max(2, (ch.amount / cur.amount) * 100)}%`, background: cur.color }} /></div>
                               <div className="split-lines">{ch.payees.map((p) => `${p.name} ${money(p.amount)}`).join(' · ')}</div>
-                              {cur.c.children.length > 1 && (
-                                <button type="button" className="small-link" aria-expanded={open} onClick={() => setOpenSub(open ? null : key)}>
-                                  {open ? 'Hide entries' : `Show the ${ch.count} entr${ch.count === 1 ? 'y' : 'ies'}`}
-                                </button>
-                              )}
-                              {open && ch.entries && <Entries entries={ch.entries} />}
                             </li>
                           );
                         })}
@@ -237,10 +253,21 @@ export default function Personal() {
                   )}
                   <button type="button" className="small-link" onClick={() => setSel(null)}>Back to all</button>
                 </div>
-              ) : <Legend items={slices} total={b.total} selected={sel} onSelect={setSel} />}
+              ) : <Legend items={slices} total={b.total} selected={sel} onSelect={(k) => { setSel(k); setHl(null); }} onHover={setHl} />}
             </div>
           </div>
         )}
+      </div>
+
+      <div className="panel" id="ps-entries">
+        <div className="panel-header spend-header">
+          <span>Entries — {cur && !cur.rest ? (openSub ? openSub.split('|').join(' › ').replace(/^(.+) › \1$/, '$1') : cur.label) : 'all household spending'}, {periodLabel}</span>
+          <span className="split-lines">{entriesShown.length} · {cents(entriesTotal)}</span>
+        </div>
+        <p>{cur && !cur.rest ? 'Click a subcategory above to narrow it; ' : 'Click a category above to narrow it; '}click an entry to open it in the ledger.
+          {(cur && !cur.rest) && <> <button type="button" className="small-link" onClick={() => setSel(null)}>Show everything</button></>}</p>
+        {entriesShown.length ? <div className="ps-entries-panel"><Entries entries={entriesShown} showCategory={!cur || cur.rest || cur.c?.children.length > 1} /></div>
+          : <div className="empty-state">No entries.</div>}
       </div>
 
       <div className="panel">
@@ -260,7 +287,7 @@ export default function Personal() {
         <div className="panel">
           <div className="panel-header">Who spent it — {periodLabel}</div>
           <div className="ps-pie-wrap">
-            {people.length ? <Pie slices={people} selected={null} onSelect={() => {}} size={150} label="Spending by person" /> : null}
+            {people.length ? <Pie slices={people} size={170} label="Spending by person" /> : null}
             <div className="ps-pie-side"><Legend items={people} total={b.total} /></div>
           </div>
           {b.people.unassigned > 0.5 && <p>Untagged personal spending counts for both of you in the forecast. Tag it in Ledgers to see it here.</p>}
@@ -268,7 +295,7 @@ export default function Personal() {
         <div className="panel">
           <div className="panel-header">Essential or discretionary — {periodLabel}</div>
           <div className="ps-pie-wrap">
-            {kinds.length ? <Pie slices={kinds} selected={null} onSelect={() => {}} size={150} label="Essential or discretionary" /> : null}
+            {kinds.length ? <Pie slices={kinds} size={170} label="Essential or discretionary" /> : null}
             <div className="ps-pie-side"><Legend items={kinds} total={b.total} /></div>
           </div>
           <p>Each category's bucket is set below under "Which spending is which".</p>
@@ -328,7 +355,7 @@ export default function Personal() {
 
       <div className="panel">
         <div className="panel-header personal-cats-head">
-          <span>Which spending is which</span>
+          <span>Which spending is which <span className="split-lines">— spent so far in {plan.year}; click a category for its entries</span></span>
           <span>
             {showCats && <button type="button" className="small-link" onClick={() => setShowAll(!showAll)} style={{ marginRight: 12 }}>{showAll ? 'Only categories you spent in' : 'All categories'}</button>}
             <button type="button" className="small-link" onClick={() => setShowCats(!showCats)}>{showCats ? 'Hide' : 'Show'}</button>
@@ -338,8 +365,16 @@ export default function Personal() {
           <table className="personal-cats">
             <tbody>
               {shown.map((c) => (
-                <tr key={c.id}>
-                  <td>{c.full}{!c.set && <span className="split-lines"> · default</span>}</td>
+                <Fragment key={c.id}>
+                <tr>
+                  <td>
+                    {c.spent > 0.005 ? (
+                      <button type="button" className="pc-open" aria-expanded={catOpen?.id === c.id} onClick={() => openCat(c)}>
+                        <span className="pc-caret" aria-hidden="true">{catOpen?.id === c.id ? '▾' : '▸'}</span>{c.full}
+                      </button>
+                    ) : c.full}
+                    {!c.set && <span className="split-lines"> · default</span>}
+                  </td>
                   <td className="num">{c.spent > 0.005 ? cents(c.spent) : ''}</td>
                   <td>
                     <span className="seg-toggle" role="group" aria-label={`Bucket for ${c.full}`}>
@@ -350,6 +385,16 @@ export default function Personal() {
                     </span>
                   </td>
                 </tr>
+                {catOpen?.id === c.id && (
+                  <tr className="pc-entries-row">
+                    <td colSpan={3}>
+                      {!catOpen.entries ? <span className="split-lines">Loading…</span>
+                        : catOpen.entries.length ? <Entries entries={catOpen.entries} />
+                        : <span className="split-lines">No entries this year.</span>}
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>

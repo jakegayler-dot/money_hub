@@ -1,4 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
+import { Pie } from '../components/Pie.jsx';
+import { SERIES, OTHER } from '../chartColors.js';
 import { uploadBody } from './Receipts.jsx';
 import MetricCard from '../components/MetricCard.jsx';
 import { money } from '../format.js';
@@ -15,16 +17,17 @@ const WHO = [['ashley', 'Ashley'], ['jake', 'Jake']];
 
 // Each part of gross pay: label, colour, and what it is in plain words.
 const PARTS = [
-  { key: 'net', label: 'Take-home', color: '#c9a227' },
-  { key: 'income_tax', label: 'Income tax', color: '#5b8def' },
-  { key: 'cpp', label: 'CPP', color: '#2bb0a1', types: ['cpp', 'cpp2'] },
-  { key: 'ei', label: 'EI', color: '#9b85ee' },
-  { key: 'pension', label: 'Pension', color: '#e0835a' },
-  { key: 'rrsp', label: 'Group RRSP', color: '#e8b04a' },
-  { key: 'holdback', label: 'Held for summer', color: '#6fbf73' },
-  { key: 'benefits', label: 'Benefits', color: '#d46a9a' },
-  { key: 'union_dues', label: 'Union & professional dues', color: '#8fa3b8' },
-  { key: 'other', label: 'Other', color: '#6b7480' },
+  // Fixed per part (validated palette, chartColors.js), so a part keeps its colour across views.
+  { key: 'net', label: 'Take-home', color: SERIES[2] },
+  { key: 'income_tax', label: 'Income tax', color: SERIES[0] },
+  { key: 'cpp', label: 'CPP', color: SERIES[3], types: ['cpp', 'cpp2'] },
+  { key: 'ei', label: 'EI', color: SERIES[6] },
+  { key: 'pension', label: 'Pension', color: SERIES[1] },
+  { key: 'rrsp', label: 'Group RRSP', color: SERIES[5] },
+  { key: 'holdback', label: 'Held for summer', color: SERIES[4] },
+  { key: 'benefits', label: 'Benefits', color: SERIES[7] },
+  { key: 'union_dues', label: 'Union & professional dues', color: '#8b93a1' },
+  { key: 'other', label: 'Other', color: OTHER },
 ];
 const TYPE_LABEL = {
   income_tax: 'Income tax', cpp: 'CPP', cpp2: 'CPP2', ei: 'EI', pension: 'Pension', rrsp: 'Group RRSP',
@@ -87,45 +90,20 @@ const ABOUT = {
   other: 'Deductions not yet identified: say what each is under "What comes off".',
 };
 
-const arc = (cx, cy, r, a0, a1) => {
-  const p = (a) => [cx + r * Math.sin(a), cy - r * Math.cos(a)];
-  const [x0, y0] = p(a0); const [x1, y1] = p(a1);
-  return `M${cx},${cy} L${x0},${y0} A${r},${r} 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${x1},${y1} Z`;
-};
 
 /** Where gross pay goes, as a pie: take-home and each deduction. Click a slice (or its row) for what's in it. */
 function WhereItGoes({ parts, gross, caption, perPays, labelRows }) {
   const shown = parts.filter((p) => p.amount > 0.005);
   const [sel, setSel] = useState(null);
   useEffect(() => { setSel(null); }, [caption]);
-  const total = shown.reduce((a, p) => a + p.amount, 0) || 1;
-  let a = 0;
-  const slices = shown.map((p) => {
-    const a0 = a; a += (p.amount / total) * Math.PI * 2;
-    return { ...p, a0, a1: a };
-  });
+  const [hl, setHl] = useState(null);
   const pick = (k) => setSel(sel === k ? null : k);
   const cur = shown.find((p) => p.key === sel);
   const inside = cur && cur.key !== 'net' ? labelRows(typesOf(cur)) : [];
   return (
     <div className="ps-pie-wrap">
-      <svg className="ps-pie" viewBox="0 0 220 220" role="group" aria-label={`${caption}: where the pay goes`}>
-        {slices.length === 1 ? (
-          <circle cx="110" cy="110" r="100" fill={slices[0].color} />
-        ) : slices.map((p) => {
-          const mid = (p.a0 + p.a1) / 2;
-          const out = sel === p.key ? 7 : 0;
-          return (
-            <path key={p.key} d={arc(110 + out * Math.sin(mid), 110 - out * Math.cos(mid), 100, p.a0, p.a1)}
-              fill={p.color} stroke="var(--panel)" strokeWidth="2" strokeLinejoin="round"
-              className={`ps-slice${sel && sel !== p.key ? ' dim' : ''}`} tabIndex={0} role="button"
-              aria-pressed={sel === p.key} aria-label={`${p.label}: ${cents(p.amount)}, ${pct(p.amount, gross)}%`}
-              onClick={() => pick(p.key)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(p.key); } }}>
-              <title>{`${p.label}: ${cents(p.amount)} (${pct(p.amount, gross)}%)`}</title>
-            </path>
-          );
-        })}
-      </svg>
+      <Pie slices={shown.map((p) => ({ key: p.key, label: p.label, amount: p.amount, color: p.color }))} selected={sel} onSelect={setSel}
+        size={240} label={`${caption}: where the pay goes`} centerTitle="Gross pay" format={(v) => cents(v)} highlight={hl} />
       <div className="ps-pie-side">
         {cur ? (
           <div className="ps-detail">
@@ -145,6 +123,7 @@ function WhereItGoes({ parts, gross, caption, perPays, labelRows }) {
             <tbody>
               {shown.map((p) => (
                 <tr key={p.key} className="ps-legend-row" tabIndex={0} onClick={() => pick(p.key)}
+                  onMouseEnter={() => setHl(p.key)} onMouseLeave={() => setHl(null)}
                   onKeyDown={(e) => { if (e.key === 'Enter') pick(p.key); }}>
                   <td><span className="ps-swatch" style={{ background: p.color }} />{p.label}</td>
                   <td className="num">{cents(p.amount)}</td>

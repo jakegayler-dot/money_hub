@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import MetricCard from './MetricCard.jsx';
-import { Pie } from './MonthBreakdown.jsx';
+import { Pie } from './Pie.jsx';
+import { SERIES, OTHER } from '../chartColors.js';
 import { money, localToday } from '../format.js';
 
 // Credit card points (server/lib/points.js): each program's balance and
 // what it's worth, points on the way from spending since the last
 // statement, what this year's spending earns by category, and the ledger
 // of balances, earnings and redemptions.
-const PALETTE = ['#c9a227', '#5b8def', '#2bb0a1', '#e0835a', '#9b85ee', '#6fbf73', '#d46a9a', '#e8b04a', '#5fd3e6', '#b0896a', '#8fa3b8', '#7f8ce0'];
+const PALETTE = [...SERIES, OTHER, OTHER, OTHER, OTHER]; // past eight, a neutral
 const OWNERS = { jake: 'Jake', ashley: 'Ashley', farm: 'Farm' };
 const KIND_LABELS = { balance: 'Balance', earned: 'Earned', bonus: 'Bonus', redeemed: 'Redeemed', expired: 'Expired', adjusted: 'Adjustment' };
 const pts = (n) => new Intl.NumberFormat('en-CA', { maximumFractionDigits: 0 }).format(Math.round(n || 0));
@@ -180,7 +181,7 @@ function Program({ p, cards, redeemedFor, call }) {
 
       {slices.length > 0 && (
         <div className="ps-pie-wrap">
-          {slices.length > 1 && <Pie slices={slices} selected={sel} onSelect={setSel} size={180} label={`${p.name} points by spending category`} />}
+          {slices.length > 1 && <Pie slices={slices} selected={sel} onSelect={setSel} size={190} label={`${p.name} points by spending category`} format={(v) => amt(p, v)} centerTitle="Earned this year" />}
           <div className="ps-pie-side">
             {cur ? (
               <div>
@@ -292,7 +293,7 @@ export default function CardPoints({ cards, refreshKey, onChanged }) {
 
       {progSlices.length > 1 && (
         <div className="ps-pie-wrap">
-          <Pie slices={progSlices} selected={sel} onSelect={setSel} size={160} label="Points value by program" />
+          <Pie slices={progSlices} selected={sel} onSelect={setSel} size={180} label="Points value by program" centerTitle="Points worth" />
           <div className="ps-pie-side">
             <div className="split-lines" style={{ marginBottom: 6 }}>Value by program — click one to see only it</div>
             <Legend items={progSlices} total={t.value} selected={sel} onSelect={setSel} fmt={(s) => money(s.amount)} />

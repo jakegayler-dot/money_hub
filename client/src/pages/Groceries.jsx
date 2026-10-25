@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { money, unitPrice } from '../format.js';
 import { cents } from '../components/SplitEditor.jsx';
 import MetricCard from '../components/MetricCard.jsx';
-import { Pie } from '../components/MonthBreakdown.jsx';
+import { Pie } from '../components/Pie.jsx';
+import { SERIES, OTHER } from '../chartColors.js';
 
 // Groceries: every grocery receipt catalogued line by line (server/lib/groceries.js).
 // Spending by food type against a typical month, the price of each item at
@@ -86,9 +87,11 @@ export default function Groceries() {
   );
 }
 
+// Each food type keeps its colour on every chart and period: the eight biggest types take the validated
+// palette (chartColors.js); the small ones share a neutral.
 const TYPE_COLORS = {
-  produce: '#6fbf73', 'meat & seafood': '#e0835a', 'dairy & eggs': '#e8d58a', bakery: '#c9a227', pantry: '#b0896a', frozen: '#5fd3e6',
-  'snacks & sweets': '#d46a9a', drinks: '#5b8def', 'deli & prepared': '#9b85ee', baby: '#f2a6c4', household: '#8fa3b8', 'personal care': '#7f8ce0', other: '#6b7480',
+  pantry: SERIES[0], 'meat & seafood': SERIES[1], drinks: SERIES[2], 'dairy & eggs': SERIES[3],
+  'snacks & sweets': SERIES[4], produce: SERIES[5], 'deli & prepared': SERIES[6], frozen: SERIES[7],
 };
 const cap = (t) => t.charAt(0).toUpperCase() + t.slice(1);
 
@@ -138,11 +141,11 @@ function Spending({ s, types, budget, topItems, onBudget }) {
   const ms = s.months.slice(-span);
   const byType = {};
   for (const m of ms) for (const [t, v] of Object.entries(m.by_type)) byType[t] = (byType[t] || 0) + v;
-  const slices = types.filter((t) => byType[t] > 0.5).map((t) => ({ key: t, label: cap(t), amount: byType[t], color: TYPE_COLORS[t] || '#6b7480' }))
+  const slices = types.filter((t) => byType[t] > 0.5).map((t) => ({ key: t, label: cap(t), amount: byType[t], color: TYPE_COLORS[t] || OTHER }))
     .sort((a, b) => b.amount - a.amount);
   const total = slices.reduce((a, x) => a + x.amount, 0);
   const cur = slices.find((x) => x.key === sel);
-  const stores = s.stores.map((x, i) => ({ key: x.store, label: x.store, amount: x.amount, color: ['#5b8def', '#6fbf73', '#e0835a', '#c9a227', '#9b85ee', '#d46a9a', '#8fa3b8'][i % 7] }));
+  const stores = s.stores.map((x, i) => ({ key: x.store, label: x.store, amount: x.amount, color: i < SERIES.length ? SERIES[i] : OTHER }));
   return (
     <>
       <div className="grid personal-cards">
@@ -236,7 +239,7 @@ function Spending({ s, types, budget, topItems, onBudget }) {
         <div className="panel">
           <div className="panel-header">Where you shop — last 6 months</div>
           <div className="ps-pie-wrap">
-            <Pie slices={stores} selected={null} onSelect={() => {}} size={150} label="Grocery spending by store" />
+            <Pie slices={stores} size={170} label="Grocery spending by store" centerTitle="All stores" />
             <div className="ps-pie-side">
               <table className="ps-legend" data-nostack="">
                 <tbody>

@@ -5,12 +5,13 @@ const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const FREQ = { monthly: 'Monthly', quarterly: 'Quarterly', annual: 'Yearly' };
-const KIND = { bill: 'Bill', loan: 'Loan', card: 'Card', contract: 'Sale', tax: 'Tax', gst: 'GST', program: 'Program', year_end: 'Year-end', custom: 'Reminder' };
+const KIND = { bill: 'Bill', loan: 'Loan', card: 'Card', contract: 'Sale', tax: 'Tax', gst: 'GST', program: 'Program', year_end: 'Year-end', custom: 'Reminder', statement: 'Statement' };
 const FILTERS = [
   ['all', 'Everything'],
   ['money', 'Payments', (i) => ['bill', 'loan', 'card', 'contract'].includes(i.kind)],
   ['tax', 'Tax & GST', (i) => ['tax', 'gst'].includes(i.kind)],
   ['program', 'Programs & deadlines', (i) => ['program', 'year_end', 'custom'].includes(i.kind)],
+  ['statement', 'Statements out', (i) => i.kind === 'statement'],
 ];
 const dayOf = (d) => { const [y, m, dd] = d.split('-').map(Number); return new Date(Date.UTC(y, m - 1, dd)).getUTCDay(); };
 

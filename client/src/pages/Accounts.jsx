@@ -67,7 +67,7 @@ export default function Accounts() {
     const res = await fetch(`/api/accounts/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...ownerPayload(ownerEdit), last4: ownerEdit.last4 || null }),
+      body: JSON.stringify({ ...ownerPayload(ownerEdit), last4: ownerEdit.last4 || null, statement_day: ownerEdit.statement_day === '' ? null : Number(ownerEdit.statement_day) }),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -121,7 +121,7 @@ export default function Accounts() {
                       className="small secondary"
                       onClick={() => {
                         if (editingId === a.id) { setEditingId(null); setOwnerEdit(null); }
-                        else { setEditingId(a.id); setOwnerEdit({ ...ownerFieldsFrom(a), last4: a.last4 || '', anchor_date: '', anchor_balance: '' }); }
+                        else { setEditingId(a.id); setOwnerEdit({ ...ownerFieldsFrom(a), last4: a.last4 || '', statement_day: a.statement_day ?? '', anchor_date: '', anchor_balance: '' }); }
                       }}
                     >
                       {editingId === a.id ? 'Close' : 'Edit'}
@@ -140,6 +140,11 @@ export default function Accounts() {
                         <div className="field">
                           <label>Last 4 digits of the account number — lets statements be matched to this account</label>
                           <input maxLength={4} value={ownerEdit.last4} onChange={(e) => setOwnerEdit({ ...ownerEdit, last4: e.target.value.replace(/\D/g, '') })} />
+                        </div>
+                        <div className="field">
+                          <label>Statement comes out on day — goes on the calendar every month</label>
+                          <input type="number" min="1" max="31" style={{ maxWidth: 140 }} placeholder={a.statement_day_usual ? `usually the ${a.statement_day_usual}` : '1–31'}
+                            value={ownerEdit.statement_day} onChange={(e) => setOwnerEdit({ ...ownerEdit, statement_day: e.target.value })} />
                         </div>
                         <div>
                           <button className="small" onClick={() => saveOwner(a.id)}>Save</button>
