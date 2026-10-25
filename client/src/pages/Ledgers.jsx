@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { removeDoc } from '../removeDoc.js';
 import { uploadBody } from './Receipts.jsx';
 
@@ -175,6 +176,13 @@ export default function Ledgers() {
 
   useEffect(load, [filter, reviewOnly, unconfirmedOnly, payeeFilter, where, focusId, owners.join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { try { window.localStorage.setItem('moneyhub.ledgerWhere', where); } catch { /* private mode */ } }, [where]);
+  // The sidebar's account list links here with ?account= / ?card=: follow it when it changes while this page is open.
+  const loc = useLocation();
+  useEffect(() => {
+    const q = new URLSearchParams(loc.search);
+    const w = q.get('account') ? `a:${q.get('account')}` : q.get('card') ? `c:${q.get('card')}` : null;
+    if (w) setWhere(w);
+  }, [loc.search]);
   useEffect(() => {
     fetch('/api/accounts').then((r) => r.json()).then(setAccounts);
     fetch('/api/credit-cards').then((r) => r.json()).then((c) => setCards(c.filter((x) => x.status === 'active')));

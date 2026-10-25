@@ -6,7 +6,8 @@ import { cents } from '../components/SplitEditor.jsx';
 import OwnerCheck from '../components/OwnerCheck.jsx';
 import BudgetFit from '../components/BudgetFit.jsx';
 import { Pie } from '../components/Pie.jsx';
-import { SERIES, OTHER, foldSlices } from '../chartColors.js';
+import { SERIES, SERIES_WIDE, OTHER, foldSlices } from '../chartColors.js';
+import { Pie3D } from '../components/Pie3D.jsx';
 
 // Personal spending (Jake, 2026-10-24: rebuilt around where the money
 // actually goes). Household spending — Jake, Ashley and unassigned —
@@ -152,9 +153,11 @@ export default function Personal() {
   if (error && !plan) return <div className="empty-state">Could not load personal spending: {error}</div>;
   if (!plan || !b) return <div className="empty-state">Loading…</div>;
 
-  // Eight categories in the palette's fixed order, the rest folded into one neutral slice.
-  const cats = b.categories.map((c, i) => ({ key: c.name, label: c.name, amount: c.amount, color: i < SERIES.length ? SERIES[i] : OTHER, c }));
-  const slices = foldSlices(cats, { otherLabel: (n) => `${n} smaller categories` });
+  // Every category that's at least 3% of the spending gets its own slice; the smaller ones share one.
+  const slices = foldSlices(b.categories.map((c) => ({ key: c.name, label: c.name, amount: c.amount, c })),
+    { minShare: 0.03, palette: SERIES_WIDE, otherLabel: (n) => `${n} under 3% each` });
+  const cats = b.categories.map((c) => ({ key: c.name, label: c.name, amount: c.amount, c,
+    color: slices.find((x) => x.key === c.name)?.color || OTHER }));
   const cur = slices.find((s) => s.key === sel) || cats.find((c) => c.key === sel);
   // Every entry behind the period's spending, labelled with its category; narrowed by what's picked.
   const allEntries = b.categories.flatMap((g) => g.children.flatMap((ch) => (ch.entries || []).map((e) => ({
@@ -214,7 +217,7 @@ export default function Personal() {
         <div className="panel-header spend-header"><span>Where it goes — {periodLabel}</span><span className="split-lines">Click a slice or a row</span></div>
         {!cats.length ? <div className="empty-state">No household spending in this period.</div> : (
           <div className="ps-pie-wrap">
-            <Pie slices={slices} selected={sel} onSelect={setSel} size={260} label="Household spending by category" centerTitle={periodLabel === 'this year' ? 'Spent this year' : 'Spent'} highlight={hl} />
+            <Pie3D slices={slices} selected={sel} onSelect={setSel} size={340} label="Household spending by category" centerTitle={periodLabel === 'this year' ? 'Spent this year' : 'Spent'} highlight={hl} />
             <div className="ps-pie-side">
               {cur ? (
                 <div className="ps-detail">

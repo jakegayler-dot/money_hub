@@ -4,6 +4,8 @@ import { pool, withTransaction } from '../db.js';
 import { anchorAccount } from '../lib/postings.js';
 import { ah } from '../lib/asyncHandler.js';
 import { toISODate } from '../lib/dates.js';
+import { loadBalanceSheet } from '../lib/balanceSheet.js';
+import { cardBalances } from '../lib/cardLedger.js';
 import { validateSegment, segmentValues, SEGMENT_COLUMNS } from '../lib/segments.js';
 
 const router = Router();
@@ -20,6 +22,29 @@ router.get('/', ah(async (req, res) => {
     return days.length ? days.sort((a, b) => days.filter((x) => x === b).length - days.filter((x) => x === a).length)[0] : null;
   };
   res.json(rows.map((a) => ({ ...a, statement_day_usual: usual(a.id) })));
+}));
+
+// The sidebar's account list (Jake, Oct 24: laid out like Quicken): every bank account with its
+// balance today, every open card with what's owed, every loan with what's left — each group's total.
+router.get('/sidebar', ah(async (req, res) => {
+  const [{ rows: accts }, { rows: cards }, sheet] = await Promise.all([
+    pool.query('SELECT id, name, account_type, opening_balance FROM accounts ORDER BY ledger, account_type, name'),
+    pool.query(`SELECT * FROM credit_cards WHERE status = 'active' ORDER BY name`),
+    loadBalanceSheet(),
+  ]);
+  const owed = await cardBalances(pool, cards);
+  const r2 = (n) => Math.round(Number(n) * 100) / 100;
+  const banking = accts.map((a) => ({ id: a.id, name: a.name, balance: r2(a.opening_balance), type: a.account_type }));
+  const cardList = cards.map((c) => ({ id: c.id, name: c.name, balance: -r2(owed.get(c.id)?.outstanding || 0) }));
+  const loans = sheet.loans.filter((l) => l.outstanding > 0.5).map((l) => ({ id: l.id, name: l.name || l.lender, balance: -r2(l.outstanding) }))
+    .sort((a, b) => a.balance - b.balance);
+  const sum = (xs) => r2(xs.reduce((t, x) => t + x.balance, 0));
+  res.json({
+    banking: { total: sum(banking), items: banking },
+    cards: { total: sum(cardList), items: cardList },
+    loans: { total: sum(loans), items: loans },
+    net: r2(sum(banking) + sum(cardList) + sum(loans)),
+  });
 }));
 
 // The owner fields on an account attribute its STARTING balance (what was

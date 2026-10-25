@@ -55,7 +55,7 @@ body {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 204px 1fr;
+  grid-template-columns: 236px 1fr;
   min-height: 100vh;
 }
 
@@ -1871,3 +1871,36 @@ button:active { transform: none !important; }
 .pc-open:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
 .pc-caret { display: inline-block; width: 14px; color: var(--text-muted); }
 .pc-entries-row td { background: var(--panel-alt); padding: 4px 12px 10px !important; }
+
+/* Sidebar: sections and the account list (Sidebar.jsx) */
+.sidebar { overflow-y: auto; }
+.nav-section { margin-top: 12px; }
+.sidebar > nav > .nav-link { padding: 7px 12px; }
+.nav-section-head { margin: 0 0 4px; padding: 0 12px; font-size: 11.5px; font-weight: 600; color: var(--text-faint); letter-spacing: 0.02em; }
+.nav-section .nav-link.sub { padding: 5px 12px; font-size: 13px; }
+.nav-section .nav-link.sub.active::before { left: 0; }
+.acct-list { padding: 0 4px 0 6px; }
+.acct-group { margin-bottom: 4px; }
+.acct-head { display: flex; align-items: center; gap: 4px; padding: 3px 6px 3px 0; }
+.acct-fold { all: unset; cursor: pointer; display: grid; place-items: center; width: 16px; height: 18px; color: var(--text-faint); flex: none; }
+.acct-fold:focus-visible { outline: 2px solid var(--gold); border-radius: 3px; }
+.acct-title { flex: 1; color: var(--text-muted); text-decoration: none; font-size: 13px; }
+.acct-title:hover, .acct-title.active { color: var(--text); }
+.acct-row { display: flex; align-items: baseline; gap: 8px; padding: 4px 6px 4px 20px; border-radius: var(--radius-sm); text-decoration: none; color: var(--text-muted); font-size: 12.5px; }
+.acct-row:hover { color: var(--text); background: rgba(255, 255, 255, 0.035); }
+.acct-row.active { color: var(--gold-bright); background: var(--gold-soft); }
+.acct-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-amt { font-family: var(--font-mono); font-size: 12px; color: var(--text); white-space: nowrap; }
+.acct-row .acct-amt { color: var(--text-muted); }
+.acct-amt.neg, .acct-row .acct-amt.neg { color: var(--negative); }
+.acct-net { display: flex; justify-content: space-between; padding: 6px 6px 2px 20px; margin-top: 2px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--text-muted); }
+@media (max-width: 1100px) {
+  .sidebar { overflow-y: visible; }
+  .nav-sub-accts { min-width: 300px; }
+}
+
+/* 3D donut (Pie3D.jsx) */
+.pie3d { flex: none; display: block; overflow: visible; max-width: 100%; height: auto; }
+.pie3d-slice { cursor: pointer; outline: none; }
+.pie3d-slice[role="img"] { cursor: default; }
+.pie3d-slice:focus-visible { stroke: var(--text); stroke-width: 2; }
