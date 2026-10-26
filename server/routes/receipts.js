@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { isAuthorized } from '../lib/appAuth.js';
-import { processReceipt, matchReceipt, attachReceipt, readAndAttach, readerEnabled } from '../lib/receipts.js';
+import { processReceipt, matchReceipt, attachReceipt, readAndAttach, readerEnabled, extract } from '../lib/receipts.js';
 import { toISODate } from '../lib/dates.js';
 
 // Upload is mounted before the sign-in guard so the iPhone Shortcut can
@@ -214,6 +214,22 @@ router.post('/:id/retry', ah(async (req, res) => {
   await processReceipt(Number(req.params.id));
   const { rows } = await pool.query(`${LIST} WHERE r.id = $1`, [req.params.id]);
   res.json(rows[0] ? shape(rows[0]) : null);
+}));
+
+// Reads the document again for its item lines only (Jake, Oct 25: receipts read before kept at most 15).
+// Everything else — the date, total, match and category — stays as it is; groceries are catalogued again.
+router.post('/:id/read-items', ah(async (req, res) => {
+  const { rows: [r] } = await pool.query('SELECT * FROM receipts WHERE id = $1', [req.params.id]);
+  if (!r) return res.status(404).json({ error: 'not found' });
+  if (!readerEnabled()) return res.status(400).json({ error: 'The receipt reader is not set up.' });
+  const fresh = await extract(r);
+  const items = Array.isArray(fresh.items) ? fresh.items : [];
+  if (!items.length) return res.status(422).json({ error: 'No item lines could be read on it.' });
+  await pool.query('UPDATE receipts SET extracted = $2 WHERE id = $1', [r.id, { ...(r.extracted || {}), items }]);
+  const { catalogueIfGrocery } = await import('../lib/groceries.js');
+  await catalogueIfGrocery(r.id, { push: false }).catch(() => null);
+  const { rows } = await pool.query(`${LIST} WHERE r.id = $1`, [r.id]);
+  res.json(shape(rows[0]));
 }));
 
 // Correct what was read (or type it in when there's no reader), then match again.

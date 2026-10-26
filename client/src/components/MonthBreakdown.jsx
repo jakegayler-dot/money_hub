@@ -12,6 +12,7 @@ import { cents } from './SplitEditor.jsx';
 // Groups, each with a colour and where its figures come from.
 export const GROUPS = {
   contracts: { label: 'Grain & cattle contracts', color: '#c9a227', link: '/contracts', from: 'Open sale contracts, on their expected payment date.' },
+  invoices: { label: 'Invoices owed to the farm', color: '#4fb3a0', link: '/invoices', from: 'Invoices the farm sent that aren\'t paid yet, on their due date (an overdue one counts now).' },
   wages: { label: 'Wages', color: '#6fbf73', link: '/paystubs', from: 'The paystubs: recent take-home pay on the usual pay schedule, with CPP and EI stopping once they reach the year\'s maximum, and the summer holdback in July and August.' },
   est_in: { label: 'Estimated income', color: '#2bb0a1', link: '/cash-flow', from: 'Your cash estimates on this page (Estimates, below).' },
   inventory: { label: 'Inventory sales', color: '#5b8def', link: '/assets', from: 'Unsold grain and cattle at today\'s prices, in the month you expect to sell them.' },
@@ -33,6 +34,7 @@ export function groupOf(it) {
   const inflow = it.amount > 0;
   switch (it.kind) {
     case 'contract': return 'contracts';
+    case 'receivable': return 'invoices';
     case 'estimate_in': return it.ref?.paystub ? 'wages' : 'est_in';
     case 'inventory': return 'inventory';
     case 'gst': return inflow ? 'gst_in' : 'gst_out';

@@ -25,6 +25,7 @@ export const GROUPS = [
     { to: '/personal', label: 'Spending & budget' },
     { to: '/cash-flow', label: 'Cash flow' },
     { to: '/bills', label: 'Bills' },
+    { to: '/invoices', label: 'Invoices & receipts' },
     { to: '/calendar', label: 'Calendar' },
     { to: '/paystubs', label: 'Paystubs' },
     { to: '/groceries', label: 'Groceries' },

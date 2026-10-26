@@ -54,7 +54,7 @@ Record what you read by calling the record_document tool with these fields (angl
   "party": <the business as printed — reuse the spelling from KNOWN BUSINESSES when it's the same one>,
   "card_last4": <last 4 digits of the card or account used, if printed, else null>,
   "cheque_number": <if it says it was paid by cheque, the cheque number as written (digits only), else null>,
-  "items": [<main lines as {"description": <text as printed>, "amount": <number>}, at most 15>],
+  "items": [<EVERY item line on the document, in printed order, as {"description": <text as printed>, "amount": <number>} — never skip, merge or summarise lines, however many there are>],
   "category": <exact name from CATEGORIES, chosen by the rules below, or null>,
   "category_reason": <a few words: the printed words the category is based on>,
   "farm_share_pct": <0–100: share that's farm (grain/cattle) rather than household, or null if you can't tell>,
@@ -143,7 +143,7 @@ export async function documentBlocks(receipt) {
 }
 
 /** Sends the image to Claude and returns the parsed fields. */
-async function extract(receipt) {
+export async function extract(receipt) {
   const [{ rows: cats }, { rows: payees }, { rows: past }] = await Promise.all([
     pool.query(`SELECT CASE WHEN p.id IS NULL THEN c.name ELSE p.name || ' › ' || c.name END AS full, c.kind
                 FROM expense_categories c LEFT JOIN expense_categories p ON p.id = c.parent_id ORDER BY 1`),
@@ -189,8 +189,8 @@ async function extract(receipt) {
       },
       body: JSON.stringify({
         model: MODEL,
-        // A long till slip (dozens of lines) needs room; the reply is cut off otherwise.
-        max_tokens: 4096,
+        // Every line is read (Jake, Oct 25: a 30-line receipt kept only 15) — a long till slip needs room.
+        max_tokens: 16000,
         tools: [{
           name: 'record_document',
           description: 'Record the fields read from the document. Always call this, even when the document is hard to read.',

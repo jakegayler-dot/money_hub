@@ -187,6 +187,14 @@ export async function calendarItems({ from, to, today = todayISO() }) {
     if (d < from || d > to || left < 0.5) continue;
     items.push({ id: `contract:${c.id}`, date: d, kind: 'contract', title: `${c.commodity}${c.counterparty ? ` — ${c.counterparty}` : ''} payment expected`, amount: r2(left), link: '/contracts' });
   }
+  // Invoices the farm sent, on their due date (Jake, Oct 26).
+  const { rows: invoices } = await pool.query(`SELECT id, number, party_name, total, due_date FROM farm_documents WHERE kind = 'invoice' AND status = 'open' AND due_date IS NOT NULL`).catch(() => ({ rows: [] }));
+  for (const v of invoices) {
+    const d = toISODate(v.due_date);
+    const date = d < today ? today : d;
+    if (date < from || date > to) continue;
+    items.push({ id: `invoice:${v.id}`, date, kind: 'contract', title: `${v.number} — ${v.party_name} owes`, amount: r2(Number(v.total)), overdue: d < today, due: d, link: '/invoices' });
+  }
   for (const l of loans) {
     const d = toISODate(l.covenant_date);
     if (d < from || d > to) continue;

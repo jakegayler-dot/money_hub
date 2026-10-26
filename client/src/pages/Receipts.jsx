@@ -225,6 +225,8 @@ export function ReceiptRow({ r, act }) {
         {Array.isArray(ex.items) && ex.items.length > 0 && (
           <details className="split-lines"><summary>{ex.items.length} item{ex.items.length === 1 ? '' : 's'}</summary>
             {ex.items.map((it, i) => <div key={i}>{it.description} — {cents(it.amount)}</div>)}
+            {/* Read before Oct 25, a receipt kept at most 15 lines: this reads every one (nothing else changes). */}
+            <button type="button" className="small-link" onClick={() => act('POST', `/api/receipts/${r.id}/read-items`)}>Missing items? Read every line again</button>
           </details>
         )}
 

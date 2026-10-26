@@ -185,10 +185,14 @@ export async function removeTransaction(client, txId) {
      UNION ALL SELECT 'contract deposit', c.commodity FROM contract_payments cp JOIN sale_contracts c ON c.id = cp.contract_id
                WHERE cp.transaction_id = $1
      UNION ALL SELECT 'vendor deposit', p.name FROM vendor_credits vc JOIN payees p ON p.id = vc.payee_id
-               WHERE vc.transaction_id = $1 OR vc.refund_transaction_id = $1`,
+               WHERE vc.transaction_id = $1 OR vc.refund_transaction_id = $1
+     UNION ALL SELECT 'farm document', number FROM farm_documents WHERE transaction_id = $1`,
     [txId]
   );
   if (blockers.length) {
+    if (blockers[0].kind === 'farm document') {
+      throw new PostingError(`This is the payment on ${blockers[0].label} — undo it on the Invoices page so the document reopens too.`);
+    }
     const b = blockers[0];
     if (b.kind === 'vendor deposit') {
       throw new PostingError(`This is a deposit with ${b.label} — remove it on the Bills tab (by vendor) first.`);
@@ -713,7 +717,8 @@ async function existingLink(client, txId) {
                WHERE cp.transaction_id = $1
      UNION ALL SELECT 'a deposit with ' || p.name FROM vendor_credits vc JOIN payees p ON p.id = vc.payee_id
                WHERE vc.transaction_id = $1 OR vc.refund_transaction_id = $1
-     UNION ALL SELECT 'a card payment' FROM transactions WHERE id = $1 AND credit_card_id IS NOT NULL AND account_id IS NOT NULL`,
+     UNION ALL SELECT 'a card payment' FROM transactions WHERE id = $1 AND credit_card_id IS NOT NULL AND account_id IS NOT NULL
+     UNION ALL SELECT number FROM farm_documents WHERE transaction_id = $1`,
     [txId]
   );
   return rows[0]?.what || null;

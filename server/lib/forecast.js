@@ -293,6 +293,21 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     }
   }
 
+  // Invoices the farm sent that aren't paid yet (Jake, Oct 26): money in on the due date (30 days
+  // after the invoice without one); an overdue one counts now.
+  const { rows: invoices } = await pool.query(
+    `SELECT * FROM farm_documents WHERE kind = 'invoice' AND status = 'open'`).catch(() => ({ rows: [] }));
+  for (const d of invoices) {
+    const due = d.due_date ? toISODate(d.due_date) : addDays(toISODate(d.date), 30);
+    if (due >= endStr) continue;
+    const farm = businessShare(d);
+    add({
+      key: `invoice:${d.id}`, kind: 'receivable', label: `${d.number} — ${d.party_name}`, date: due < today ? today : due,
+      amount: Number(d.total), farm, owners: own(d), taxable: Number(d.subtotal) * farm, overdue: due < today,
+      ref: { invoice_id: d.id },
+    });
+  }
+
   // Estimates (each occurrence from today) and uncontracted inventory sales.
   for (const e of estimates) {
     const farm = businessShare(e);
@@ -616,7 +631,7 @@ export function evaluate(flows, ctx, { scope = 'everything', accountIds = null }
     const m = months[i];
     m.items.push({ ...f, amount });
     switch (f.kind) {
-      case 'contract': m.contractInflows += amount; break;
+      case 'contract': case 'receivable': m.contractInflows += amount; break;
       case 'estimate_in': case 'inventory': m.estimatedInflows += amount; break;
       case 'estimate_out': m.estimatedOutflows -= amount; break;
       case 'bill': m.unpaidBillsDue -= amount; break;

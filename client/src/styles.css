@@ -1938,3 +1938,23 @@ button:active { transform: none !important; }
 .lp-edit { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .lp-edit input[type="number"] { width: 110px; }
 .rb-del { color: var(--text-muted); }
+.fd-lines-wrap { padding: 8px 16px 4px; overflow-x: auto; }
+.fd-lines { width: 100%; min-width: 760px; }
+.fd-lines td { vertical-align: middle; padding: 4px 6px; }
+.fd-lines input:not([type="checkbox"]) { width: 100%; }
+.fd-lines .fd-num { width: 90px; text-align: right; }
+.fd-lines .fd-cat { min-width: 200px; }
+.fd-foot { display: flex; gap: 24px; padding: 12px 16px; align-items: flex-start; flex-wrap: wrap; }
+.fd-foot-left { flex: 1 1 420px; display: grid; gap: 10px; }
+.fd-totals { min-width: 220px; }
+.fd-totals td { padding: 4px 6px; }
+.fd-totals .fd-total td { font-weight: 600; font-size: 15px; border-top: 1px solid var(--border-strong); }
+.fd-acts { display: flex; gap: 10px; flex-wrap: wrap; white-space: nowrap; }
+.fd-void td { opacity: 0.5; }
+.fd-pay { padding: 8px 4px; display: grid; gap: 8px; }
+.fd-pay-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.fd-cand { display: flex; gap: 10px; align-items: center; font-size: 13px; margin-top: 4px; }
+.fd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px 16px; align-items: start; }
+.fd-grid .field { margin: 0; }
+.fd-editor textarea, .fd-foot textarea { width: 100%; background: var(--panel-alt); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font: inherit; resize: vertical; }
+.fd-totals .num { text-align: right; }

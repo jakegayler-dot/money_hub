@@ -1679,3 +1679,39 @@ ALTER TABLE loan_payments ADD COLUMN IF NOT EXISTS is_manual BOOLEAN NOT NULL DE
 -- that big closes it), and the loan's own payments from the bill's due date
 -- on are left out of Cash Flow so the money isn't counted twice.
 ALTER TABLE bills ADD COLUMN IF NOT EXISTS loan_id INTEGER REFERENCES loans(id) ON DELETE SET NULL;
+
+-- Invoices and receipts the farm writes (Jake, Oct 26): an invoice to a
+-- customer (hay, custom work, a private cattle sale) is money owed to the
+-- farm until it's paid, then its receipt; a sale receipt is paid on the
+-- spot; a payment receipt is the farm paying someone (land rent, casual
+-- labour, a cash buy) for them to sign. Each is booked to the ledger when
+-- money moves, and printed as a PDF.
+CREATE TABLE IF NOT EXISTS farm_documents (
+  id             SERIAL PRIMARY KEY,
+  kind           TEXT NOT NULL CHECK (kind IN ('invoice', 'sale_receipt', 'payment_receipt')),
+  number         TEXT NOT NULL UNIQUE,
+  receipt_number TEXT UNIQUE,              -- an invoice's receipt, once it's paid
+  party_name     TEXT NOT NULL,
+  party_address  TEXT,
+  payee_id       INTEGER REFERENCES payees(id),
+  date           DATE NOT NULL,
+  due_date       DATE,
+  lines          JSONB NOT NULL DEFAULT '[]', -- [{ description, qty, unit_price, gst, category_id }]
+  subtotal       NUMERIC(14,2) NOT NULL DEFAULT 0,
+  gst            NUMERIC(14,2) NOT NULL DEFAULT 0,
+  total          NUMERIC(14,2) NOT NULL DEFAULT 0,
+  notes          TEXT,
+  paid_by        TEXT,                     -- 'cash' | 'cheque' | 'e-transfer' | other, with any number
+  status         TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'paid', 'void')),
+  paid_date      DATE,
+  account_id     INTEGER REFERENCES accounts(id),
+  transaction_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+  linked_existing BOOLEAN NOT NULL DEFAULT false, -- paid by an entry already in the ledger (kept if unpaid)
+  segment                enterprise_segment,
+  is_segment_split       BOOLEAN NOT NULL DEFAULT false,
+  segment_grain_pct      NUMERIC(5,2),
+  segment_livestock_pct  NUMERIC(5,2),
+  segment_jake_pct       NUMERIC(5,2),
+  segment_ashley_pct     NUMERIC(5,2),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
