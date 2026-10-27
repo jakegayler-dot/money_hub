@@ -52,14 +52,14 @@ router.get('/', (req, res) => res.json({
     example: { thread: { id: '7f1c…', title: 'Money: Sentinel and the advisor', kind: 'group' }, author: 'sentinel', text: 'Jake asks whether to prepay fertilizer before Dec 31 or wait for the spring price.', depth: 'deep' },
   }, {
     name: 'goals', method: 'GET', path: '/api/sentinel/actions/goals',
-    description: 'Jake's goals (status exploring, active, bought, dropped) with Sentinel's latest study and the weekly re-checks (history).',
+    description: "Jake's goals (status exploring, active, bought, dropped) with Sentinel's latest study and the weekly re-checks (history).",
   }, {
     name: 'goal', method: 'POST', path: '/api/sentinel/actions/goals',
     description: 'Adds a goal (as "exploring" unless a status is given) or changes one (with id). details (acres, use, buy_month…) are merged; study replaces the saved study; history_add appends one weekly check.',
     body: { id: 'the goal to change (omit to add)', name: 'what it is', kind: 'land|cattle|tractor|combine|machinery|truck|building|other', price: 'price', down_pct: '%', rate: '%', years: 'term', status: 'exploring|active|bought|dropped', details: '{ acres, cultivated_acres, use, buy_month, … }', study: 'object', history_add: 'object' },
   }, {
     name: 'goal_study', method: 'POST', path: '/api/sentinel/actions/goals/:id/study',
-    description: 'The money side of a goal study (nothing saved): the 24-month cash forecast with the goal bought, in the bad, normal and good years Sentinel simulated, each judged like a lender; how far sales can fall (break_even_revenue, a share of the normal year's); the most it could cost (max_price); and the changes tried (more down, longer term, lower price, later, costs trimmed).',
+    description: 'The money side of a goal study (nothing saved): the 24-month cash forecast with the goal bought, in the bad, normal and good years Sentinel simulated, each judged like a lender; how far sales can fall (break_even_revenue, a share of the normal year’s); the most it could cost (max_price); and the changes tried (more down, longer term, lower price, later, costs trimmed).',
     body: { farm: '{ cases: { bad, base, good }: { flows: [{ label, amount, month: "YYYY-MM", revenue, part: "farm"|"goal", kind?: "rent" }] } }', buy_month: 'YYYY-MM', scope: 'everything (default) or farm' },
   }],
 }));
