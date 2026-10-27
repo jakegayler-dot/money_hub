@@ -7,12 +7,12 @@ import { toISODate } from '../lib/dates.js';
 // Long-term goals and when each can be bought (lib/goals.js).
 const router = Router();
 const NUM = ['price', 'trade_in', 'fees', 'down_pct', 'rate', 'years', 'per_year', 'gst_pct', 'pst_pct', 'cca_rate', 'priority'];
-const shape = (g) => ({
+export const shape = (g) => ({
   ...g, want_by: g.want_by ? toISODate(g.want_by) : null,
   ...Object.fromEntries(NUM.map((k) => [k, g[k] == null ? null : Number(g[k])])),
 });
 
-function clean(b, cur = {}) {
+export function clean(b, cur = {}) {
   const v = { ...cur, ...b };
   const bad = (m) => { const e = new Error(m); e.status = 400; throw e; };
   if (!String(v.name || '').trim()) bad('Give the goal a name.');
@@ -29,11 +29,11 @@ function clean(b, cur = {}) {
     name: String(v.name).trim().slice(0, 120), kind: v.kind || 'other', price: Number(v.price), trade_in: n('trade_in') || 0, fees: n('fees') || 0,
     funding: v.funding || 'financed', down_pct: n('down_pct') ?? 25, rate: n('rate') ?? 7, years: n('years') ?? 7, per_year: n('per_year') ?? 1,
     gst_pct: n('gst_pct'), pst_pct: n('pst_pct'), cca_rate: n('cca_rate'), owner: v.owner === 'personal' ? 'personal' : 'farm',
-    want_by: v.want_by || null, notes: String(v.notes || '').trim() || null, status: ['active', 'bought', 'dropped'].includes(v.status) ? v.status : 'active',
+    want_by: v.want_by || null, notes: String(v.notes || '').trim() || null, status: ['exploring', 'active', 'bought', 'dropped'].includes(v.status) ? v.status : 'active',
     priority: n('priority') ?? 0,
   };
 }
-const COLS = ['name', 'kind', 'price', 'trade_in', 'fees', 'funding', 'down_pct', 'rate', 'years', 'per_year', 'gst_pct', 'pst_pct', 'cca_rate', 'owner', 'want_by', 'notes', 'status', 'priority'];
+export const COLS = ['name', 'kind', 'price', 'trade_in', 'fees', 'funding', 'down_pct', 'rate', 'years', 'per_year', 'gst_pct', 'pst_pct', 'cca_rate', 'owner', 'want_by', 'notes', 'status', 'priority'];
 
 router.get('/', ah(async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM goals ORDER BY status, priority, id');

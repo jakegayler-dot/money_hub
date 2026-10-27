@@ -8,6 +8,10 @@
 //   POST /api/sentinel/actions/advisor    a turn with Jake's financial advisor
 //                                         (lib/advisor): Sentinel's question, or
 //                                         Jake's words in a Sentinel thread
+//   GET  /api/sentinel/actions/goals      the goals, with their studies
+//   POST /api/sentinel/actions/goals      add or change a goal (and save a study)
+//   POST /api/sentinel/actions/goals/:id/study  the money side of a goal study
+//                                         (lib/goalStudy.js); not saved
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
@@ -15,6 +19,8 @@ import { requireActionKey } from './sentinelRead.js';
 import { runAndJudge, purchaseFromInput, agentAnswer, PURCHASE_FIELDS } from '../lib/purchaseCheck.js';
 import { advise } from '../lib/advisor/advisor.js';
 import { AdvisorToolError } from '../lib/advisor/tools.js';
+import { clean as cleanGoal, COLS as GOAL_COLS, shape as goalShape } from './goals.js';
+import { studyGoal, flowsFromInput } from '../lib/goalStudy.js';
 
 const router = Router();
 router.use(requireActionKey);
@@ -44,6 +50,17 @@ router.get('/', (req, res) => res.json({
       depth: '"quick" (a fast check) or "deep" (default: a decision worth thinking through)',
     },
     example: { thread: { id: '7f1c…', title: 'Money: Sentinel and the advisor', kind: 'group' }, author: 'sentinel', text: 'Jake asks whether to prepay fertilizer before Dec 31 or wait for the spring price.', depth: 'deep' },
+  }, {
+    name: 'goals', method: 'GET', path: '/api/sentinel/actions/goals',
+    description: 'Jake's goals (status exploring, active, bought, dropped) with Sentinel's latest study and the weekly re-checks (history).',
+  }, {
+    name: 'goal', method: 'POST', path: '/api/sentinel/actions/goals',
+    description: 'Adds a goal (as "exploring" unless a status is given) or changes one (with id). details (acres, use, buy_month…) are merged; study replaces the saved study; history_add appends one weekly check.',
+    body: { id: 'the goal to change (omit to add)', name: 'what it is', kind: 'land|cattle|tractor|combine|machinery|truck|building|other', price: 'price', down_pct: '%', rate: '%', years: 'term', status: 'exploring|active|bought|dropped', details: '{ acres, cultivated_acres, use, buy_month, … }', study: 'object', history_add: 'object' },
+  }, {
+    name: 'goal_study', method: 'POST', path: '/api/sentinel/actions/goals/:id/study',
+    description: 'The money side of a goal study (nothing saved): the 24-month cash forecast with the goal bought, in the bad, normal and good years Sentinel simulated, each judged like a lender; how far sales can fall (break_even_revenue, a share of the normal year's); the most it could cost (max_price); and the changes tried (more down, longer term, lower price, later, costs trimmed).',
+    body: { farm: '{ cases: { bad, base, good }: { flows: [{ label, amount, month: "YYYY-MM", revenue, part: "farm"|"goal", kind?: "rent" }] } }', buy_month: 'YYYY-MM', scope: 'everything (default) or farm' },
   }],
 }));
 
@@ -67,6 +84,54 @@ router.post('/advisor', ah(async (req, res) => {
     console.error('advisor (Sentinel):', err.message);
     res.status(502).json({ error: `The advisor couldn't answer: ${err.message}` });
   }
+}));
+
+// ---- Goals and their studies (Oct 27) ----
+const goalOut = (g) => ({ ...goalShape(g), history: (g.history || []).slice(-26) });
+router.get('/goals', ah(async (req, res) => {
+  const { rows } = await pool.query("SELECT * FROM goals ORDER BY CASE status WHEN 'exploring' THEN 0 WHEN 'active' THEN 1 ELSE 2 END, priority, id");
+  res.json({ goals: rows.map(goalOut) });
+}));
+
+router.post('/goals', ah(async (req, res) => {
+  const b = req.body || {};
+  let cur = null;
+  if (b.id != null) {
+    ({ rows: [cur] } = await pool.query('SELECT * FROM goals WHERE id = $1', [Number(b.id)]));
+    if (!cur) return res.status(404).json({ error: `No goal ${b.id}.` });
+  }
+  let v;
+  try { v = cleanGoal({ status: 'exploring', ...b }, cur ? goalShape(cur) : {}); } catch (err) { return res.status(422).json({ error: err.message }); }
+  if (!cur && !b.status) v.status = 'exploring';
+  const details = b.details && typeof b.details === 'object' ? { ...(cur?.details || {}), ...b.details } : (cur?.details || {});
+  const vals = GOAL_COLS.map((k) => v[k]);
+  const { rows: [g] } = cur
+    ? await pool.query(`UPDATE goals SET ${GOAL_COLS.map((k, i) => `${k} = $${i + 1}`).join(', ')}, details = $${GOAL_COLS.length + 1} WHERE id = $${GOAL_COLS.length + 2} RETURNING *`, [...vals, details, cur.id])
+    : await pool.query(`INSERT INTO goals (${GOAL_COLS.join(', ')}, details) VALUES (${GOAL_COLS.map((_, i) => `$${i + 1}`).join(', ')}, $${GOAL_COLS.length + 1}) RETURNING *`, [...vals, details]);
+  let out = g;
+  if (b.study && typeof b.study === 'object') {
+    ({ rows: [out] } = await pool.query('UPDATE goals SET study = $1, studied_at = now() WHERE id = $2 RETURNING *', [b.study, g.id]));
+  }
+  if (b.history_add && typeof b.history_add === 'object') {
+    ({ rows: [out] } = await pool.query("UPDATE goals SET history = (COALESCE(history, '[]'::jsonb) || $1::jsonb) WHERE id = $2 RETURNING *", [JSON.stringify([b.history_add]), g.id]));
+  }
+  res.status(cur ? 200 : 201).json({ goal: goalOut(out), created: !cur });
+}));
+
+router.post('/goals/:id/study', ah(async (req, res) => {
+  const { rows: [g] } = await pool.query('SELECT * FROM goals WHERE id = $1', [Number(req.params.id)]);
+  if (!g) return res.status(404).json({ error: `No goal ${req.params.id}.` });
+  const b = req.body || {};
+  const cases = {};
+  for (const k of ['bad', 'base', 'good']) {
+    if (!b.farm?.cases?.[k]) continue;
+    const { flows, error } = flowsFromInput(b.farm.cases[k].flows || []);
+    if (error) return res.status(422).json({ error: `${k}: ${error}` });
+    cases[k] = { flows };
+  }
+  const goal = { ...goalShape(g), buy_month: b.buy_month || g.details?.buy_month || null };
+  const scope = ['everything', 'farm'].includes(b.scope) ? b.scope : 'everything';
+  res.json(await studyGoal(goal, { cases }, { scope }));
 }));
 
 router.post('/purchase', ah(async (req, res) => {

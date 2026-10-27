@@ -101,6 +101,43 @@ function PathChart({ months, reserve, marks }) {
   );
 }
 
+// Sentinel's study of a goal (Oct 27): its farm agent's numbers, this app's 2-year forecast in a bad,
+// normal and good year (lib/goalStudy.js), the advisor's view and the verdict; re-checked every Sunday.
+const VERDICT = { feasible: 'Feasible', feasible_if: 'Feasible if…', not_feasible: 'Not feasible' };
+const CASE = { viable: 'Viable', tight: 'Tight', not_viable: 'Not viable' };
+function StudyPanel({ g }) {
+  const s = g.study;
+  const v = s.verdict || {};
+  const last = (g.history || []).at(-1);
+  const ms = s.latest?.milestones || v.milestones || [];
+  return (
+    <div className="panel">
+      <div className="panel-header">{g.name}: Sentinel's study <span className="split-lines" style={{ marginLeft: 8 }}>{VERDICT[v.verdict] || ''}{s.studied_at ? ` · ${s.studied_at.slice(0, 10)}` : ''}</span></div>
+      <div style={{ padding: '4px 16px 14px' }}>
+        <p style={{ marginTop: 0 }}>{v.headline}</p>
+        <table className="gl-list">
+          <thead><tr><th>Next 2 years</th><th>Bad year</th><th>Normal year</th><th>Good year</th></tr></thead>
+          <tbody>
+            <tr><td>Verdict</td>{['bad', 'base', 'good'].map((k) => <td key={k}>{CASE[s.money?.cases?.[k]?.verdict] || '—'}</td>)}</tr>
+            <tr><td>Lowest cash</td>{['bad', 'base', 'good'].map((k) => { const c = s.money?.cases?.[k]; return <td key={k}>{c ? `${money(c.lowest.balance)} (${c.lowest.month})` : '—'}</td>; })}</tr>
+            <tr><td>What it earns a year</td>{['bad', 'base', 'good'].map((k) => <td key={k}>{s.farm?.goal_year?.[k] != null ? money(s.farm.goal_year[k]) : '—'}</td>)}</tr>
+          </tbody>
+        </table>
+        <p className="split-lines">
+          {s.farm?.annual_payment ? `Payments ${money(s.farm.annual_payment)} a year. ` : ''}
+          {s.money?.max_price?.base_workable != null ? `Most it could cost and still work in a normal year: ${money(s.money.max_price.base_workable)}. ` : ''}
+          {s.money?.chance_not_workable_pct != null ? `Chance a crop year breaks it: ${s.money.chance_not_workable_pct}%.` : ''}
+        </p>
+        {v.why && <p>{v.why}</p>}
+        {v.make_it_work?.length > 0 && <><b>How to make it work</b><ul>{v.make_it_work.map((m, i) => <li key={i}>{m.change}: {m.effect}</li>)}</ul></>}
+        {ms.length > 0 && <><b>Milestones</b><ul>{ms.map((m, i) => <li key={i}>{m.what} by {m.by}{m.met === true ? ' — met' : m.late ? ' — missed' : m.met === false ? ' — not yet' : ''}</li>)}</ul></>}
+        {s.advisor && <p className="split-lines">Advisor: {s.advisor}</p>}
+        {last && <p className="split-lines">Last checked {last.date}: normal year {CASE[last.base] || '—'}, bad year {CASE[last.bad] || '—'}.</p>}
+      </div>
+    </div>
+  );
+}
+
 export default function Goals() {
   const [data, setData] = useState(null);
   const [form, setForm] = useState(null);
@@ -190,6 +227,7 @@ export default function Goals() {
         {picked?.length > 1 && <p className="field-hint" style={{ margin: '8px 16px 12px' }}>Planned in the order shown: each is bought no earlier than the one above it, with that one's down payment and payments counted.</p>}
       </div>
 
+      {goals.filter((g) => g.study && ['exploring', 'active'].includes(g.status)).map((g) => <StudyPanel key={`s${g.id}`} g={g} />)}
       {busy && !plan && <div className="empty-state">Working it out…</div>}
       {plan && plan.goals.length > 0 && (
         <>

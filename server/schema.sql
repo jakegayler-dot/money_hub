@@ -1741,3 +1741,13 @@ CREATE TABLE IF NOT EXISTS goals (
   status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'bought', 'dropped')),
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Goal studies (Oct 27): a goal Sentinel is exploring with Jake ("exploring":
+-- left out of the Goals plan until he takes it on), its details (acres, use,
+-- buy month…), Sentinel's latest study (the farm side, this app's money side
+-- from lib/goalStudy.js, the verdict) and the weekly re-checks that track it.
+ALTER TABLE goals DROP CONSTRAINT IF EXISTS goals_status_check;
+ALTER TABLE goals ADD CONSTRAINT goals_status_check CHECK (status IN ('exploring', 'active', 'bought', 'dropped'));
+ALTER TABLE goals ADD COLUMN IF NOT EXISTS details JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE goals ADD COLUMN IF NOT EXISTS study JSONB;
+ALTER TABLE goals ADD COLUMN IF NOT EXISTS studied_at TIMESTAMPTZ;
+ALTER TABLE goals ADD COLUMN IF NOT EXISTS history JSONB NOT NULL DEFAULT '[]'::jsonb;
