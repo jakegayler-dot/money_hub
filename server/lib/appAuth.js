@@ -51,6 +51,15 @@ function validKey(req) {
   return !!key && !!sent && sameText(sent, key);
 }
 
+// Money Hub inside Sentinel (Oct 27): Sentinel shows this app's own screens in its own look, signed in
+// with Jake's Sentinel passkey, and passes each /api call through to here with its action key. Nothing
+// about this site changes; the header pair only ever comes from Sentinel's server.
+function validProxy(req) {
+  const key = process.env.SENTINEL_ACTION_KEY;
+  const m = /^Bearer\s+(\S+)$/i.exec(req.get('authorization') || '');
+  return !!key && req.get('x-sentinel-proxy') === '1' && !!m && sameText(m[1], key);
+}
+
 function setCookie(req, res, value, maxAge) {
   const secure = req.secure || req.get('x-forwarded-proto') === 'https';
   res.setHeader('Set-Cookie',
@@ -65,7 +74,7 @@ export const isAuthorized = (req) => !authEnabled() || validSession(req) || vali
 /** Guards every /api route except sign-in and the health check. */
 export function requireSignIn(req, res, next) {
   // isInternal: Sentinel's bridge calling Money Hub's own routes from inside the server (lib/sentinelBridge.js).
-  if (!authEnabled() || validSession(req) || validKey(req) || isInternal(req)) return next();
+  if (!authEnabled() || validSession(req) || validKey(req) || isInternal(req) || validProxy(req)) return next();
   res.status(401).json({ error: 'Sign in required.', signIn: true });
 }
 
@@ -77,7 +86,7 @@ const MAX_TRIES = 10;
 export const authRouter = Router();
 
 authRouter.get('/status', (req, res) => {
-  res.json({ required: authEnabled(), signedIn: !authEnabled() || validSession(req) });
+  res.json({ required: authEnabled(), signedIn: !authEnabled() || validSession(req) || validProxy(req) });
 });
 
 authRouter.post('/login', (req, res) => {
