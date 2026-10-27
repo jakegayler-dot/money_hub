@@ -39,9 +39,10 @@ import { reclassifyCardPayments } from './lib/postings.js';
 import { pairAllCardPayments, splitAllLoanPayments, syncLoanPieceOwners, settleAllVendorAccounts, reorderLoanPayments } from './lib/postings.js';
 import { withTransaction, pool } from './db.js';
 import { authRouter, requireSignIn, authEnabled } from './lib/appAuth.js';
-import sentinelReadRoute from './routes/sentinelRead.js';
+import sentinelReadRoute, { requireActionKey } from './routes/sentinelRead.js';
 import { applyContractRules } from './lib/contracts.js';
 import sentinelActionsRoute from './routes/sentinelActions.js';
+import { registerBridge } from './lib/sentinelBridge.js';
 import sentinelRoute from './routes/sentinel.js';
 import advisorRoute from './routes/advisor.js';
 import paystubsRoute, { ingestRouter as paystubIngest } from './routes/paystubs.js';
@@ -74,6 +75,8 @@ app.get('/api/health', (req, res) => res.json({ ok: true }));
 // it's mounted before the sign-in guard below; with the actions it's the only path exempt.
 app.use('/api/sentinel/read', sentinelReadRoute);
 // Sentinel's actions (same key): what-if purchase checks, optionally saved.
+// The general bridge: Sentinel can do anything the screens can (lib/sentinelBridge.js); same key as the actions.
+registerBridge(app, { port: () => port, auth: requireActionKey });
 app.use('/api/sentinel/actions', sentinelActionsRoute);
 // The sync preview (GET /api/sentinel/preview) has its own key too (X-Api-Key = INGEST_API_KEY).
 app.use('/api/sentinel', sentinelRoute);

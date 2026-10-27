@@ -10,6 +10,7 @@
 // locks anyone out before the variable exists.
 import crypto from 'node:crypto';
 import { Router } from 'express';
+import { isInternal } from './sentinelBridge.js';
 
 const COOKIE = 'mh_session';
 const MAX_AGE_S = 30 * 24 * 60 * 60;
@@ -63,7 +64,8 @@ export const isAuthorized = (req) => !authEnabled() || validSession(req) || vali
 
 /** Guards every /api route except sign-in and the health check. */
 export function requireSignIn(req, res, next) {
-  if (!authEnabled() || validSession(req) || validKey(req)) return next();
+  // isInternal: Sentinel's bridge calling Money Hub's own routes from inside the server (lib/sentinelBridge.js).
+  if (!authEnabled() || validSession(req) || validKey(req) || isInternal(req)) return next();
   res.status(401).json({ error: 'Sign in required.', signIn: true });
 }
 
