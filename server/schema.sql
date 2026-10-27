@@ -1715,3 +1715,29 @@ CREATE TABLE IF NOT EXISTS farm_documents (
   segment_ashley_pct     NUMERIC(5,2),
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Long-term goals (Jake, Oct 26): a tractor, a truck, a piece of land. The
+-- Goals page works out when each can be bought with the cash floor, the
+-- reserve, debt coverage and the down payment all met (lib/goals.js).
+CREATE TABLE IF NOT EXISTS goals (
+  id          SERIAL PRIMARY KEY,
+  name        TEXT NOT NULL,
+  kind        TEXT NOT NULL DEFAULT 'other',  -- tractor | combine | machinery | truck | land | building | cattle | other
+  price       NUMERIC(14,2) NOT NULL,
+  trade_in    NUMERIC(14,2) NOT NULL DEFAULT 0,
+  fees        NUMERIC(14,2) NOT NULL DEFAULT 0,
+  funding     TEXT NOT NULL DEFAULT 'financed' CHECK (funding IN ('cash', 'financed')),
+  down_pct    NUMERIC(5,2) NOT NULL DEFAULT 25,
+  rate        NUMERIC(6,3) NOT NULL DEFAULT 7,
+  years       NUMERIC(5,2) NOT NULL DEFAULT 7,
+  per_year    INTEGER NOT NULL DEFAULT 1,
+  gst_pct     NUMERIC(5,2),                   -- null: the kind's usual
+  pst_pct     NUMERIC(5,2),
+  cca_rate    NUMERIC(5,2),
+  owner       TEXT NOT NULL DEFAULT 'farm' CHECK (owner IN ('farm', 'personal')),
+  want_by     DATE,
+  priority    INTEGER NOT NULL DEFAULT 0,
+  notes       TEXT,
+  status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'bought', 'dropped')),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);

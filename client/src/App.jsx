@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard.jsx';
 import Accounts from './pages/Accounts.jsx';
 import Bills from './pages/Bills.jsx';
 import Invoices from './pages/Invoices.jsx';
+import Goals from './pages/Goals.jsx';
 import Contracts from './pages/Contracts.jsx';
 import CashFlow from './pages/CashFlow.jsx';
 import Assets from './pages/Assets.jsx';
@@ -62,6 +63,7 @@ export default function App() {
           <Route path="/accounts" element={<Accounts />} />
           <Route path="/bills" element={<Bills />} />
           <Route path="/invoices" element={<Invoices />} />
+          <Route path="/goals" element={<Goals />} />
           <Route path="/contracts" element={<Contracts />} />
           <Route path="/ledgers" element={<Ledgers />} />
           <Route path="/loans" element={<Loans />} />
