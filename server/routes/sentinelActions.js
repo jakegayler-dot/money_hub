@@ -86,6 +86,17 @@ router.post('/advisor', ah(async (req, res) => {
   }
 }));
 
+// The advisor's spend by day and model (Oct 29: Sentinel's AI usage window tracks every driver over time).
+router.get('/advisor/usage', ah(async (req, res) => {
+  const days = Math.min(400, Math.max(1, Number(req.query.days) || 30));
+  const { rows } = await pool.query(
+    `SELECT to_char((created_at AT TIME ZONE 'America/Regina')::date, 'YYYY-MM-DD') AS day, model,
+            COUNT(*)::int AS calls, ROUND(SUM(cost_usd)::numeric, 4)::float AS usd
+       FROM advisor_usage WHERE created_at > now() - make_interval(days => $1)
+      GROUP BY 1, 2 ORDER BY 1, 2`, [days]);
+  res.json({ days, rows });
+}));
+
 // ---- Goals and their studies (Oct 27) ----
 const goalOut = (g) => ({ ...goalShape(g), history: (g.history || []).slice(-26) });
 router.get('/goals', ah(async (req, res) => {
