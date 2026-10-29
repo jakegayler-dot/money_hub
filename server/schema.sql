@@ -1503,6 +1503,21 @@ CREATE TABLE IF NOT EXISTS advisor_usage (
 );
 CREATE INDEX IF NOT EXISTS idx_advisor_usage_created ON advisor_usage (created_at);
 
+-- Every other Claude call this app makes (receipts, paystubs, groceries…), recorded by lib/aiUsage.js (Oct 29).
+CREATE TABLE IF NOT EXISTS ai_usage (
+  id             SERIAL PRIMARY KEY,
+  feature        TEXT NOT NULL,
+  model          TEXT,
+  input_tokens   INTEGER NOT NULL DEFAULT 0,
+  output_tokens  INTEGER NOT NULL DEFAULT 0,
+  cache_read     INTEGER NOT NULL DEFAULT 0,
+  cache_write    INTEGER NOT NULL DEFAULT 0,
+  web_searches   INTEGER NOT NULL DEFAULT 0,
+  cost_usd       NUMERIC(10,4) NOT NULL DEFAULT 0,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_created ON ai_usage (created_at);
+
 -- A credit from a vendor with no money moving (a canola contra: grain sold
 -- to the input supplier, set against its bill). It is income in its own
 -- category on the day it's given, held with the vendor until it pays bills,

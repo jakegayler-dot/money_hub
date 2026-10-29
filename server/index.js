@@ -42,6 +42,7 @@ import { authRouter, requireSignIn, authEnabled } from './lib/appAuth.js';
 import sentinelReadRoute, { requireActionKey } from './routes/sentinelRead.js';
 import { applyContractRules } from './lib/contracts.js';
 import sentinelActionsRoute from './routes/sentinelActions.js';
+import { trackClaude } from './lib/aiUsage.js';
 import { registerBridge } from './lib/sentinelBridge.js';
 import sentinelRoute from './routes/sentinel.js';
 import advisorRoute from './routes/advisor.js';
@@ -50,6 +51,7 @@ import { matchAllStubs } from './lib/paystubs.js';
 import { sentinelWriteTrigger, startSentinelSync } from './lib/sentinel.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+trackClaude(); // every Claude call recorded with its cost (lib/aiUsage.js)
 const app = express();
 // Railway's proxy sits in front: trust exactly that one hop, so req.ip is
 // the real visitor (the sign-in limit counts per address).

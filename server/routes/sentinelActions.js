@@ -97,6 +97,20 @@ router.get('/advisor/usage', ah(async (req, res) => {
   res.json({ days, rows });
 }));
 
+// Every Claude call this app makes, by day, feature and model: the advisor (advisor_usage) and the rest (ai_usage).
+router.get('/ai-usage', ah(async (req, res) => {
+  const days = Math.min(400, Math.max(1, Number(req.query.days) || 30));
+  const { rows } = await pool.query(
+    `SELECT day, feature, model, SUM(calls)::int AS calls, ROUND(SUM(usd)::numeric, 4)::float AS usd FROM (
+       SELECT to_char((created_at AT TIME ZONE 'America/Regina')::date, 'YYYY-MM-DD') AS day, 'advisor' AS feature, model, 1 AS calls, cost_usd AS usd
+         FROM advisor_usage WHERE created_at > now() - make_interval(days => $1)
+       UNION ALL
+       SELECT to_char((created_at AT TIME ZONE 'America/Regina')::date, 'YYYY-MM-DD'), feature, model, 1, cost_usd
+         FROM ai_usage WHERE created_at > now() - make_interval(days => $1)) x
+     GROUP BY 1, 2, 3 ORDER BY 1, 2, 3`, [days]);
+  res.json({ app: 'money_hub', days, rows });
+}));
+
 // ---- Goals and their studies (Oct 27) ----
 const goalOut = (g) => ({ ...goalShape(g), history: (g.history || []).slice(-26) });
 router.get('/goals', ah(async (req, res) => {
