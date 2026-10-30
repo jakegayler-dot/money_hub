@@ -50,6 +50,7 @@ export default function DueThisWeek({ compact = false, onChanged }) {
   const [d, setD] = useState(null);
   const [asking, setAsking] = useState(null);
   const [err, setErr] = useState(null);
+  const [all, setAll] = useState(false);
   const load = () => fetch('/api/calendar/week').then((r) => r.json()).then((x) => (x.error ? setErr(x.error) : setD(x))).catch((e) => setErr(e.message));
   useEffect(() => { load(); }, []);
   const changed = () => { setAsking(null); load(); onChanged?.(); };
@@ -61,6 +62,8 @@ export default function DueThisWeek({ compact = false, onChanged }) {
     changed();
   };
   if (!d) return err ? <div className="panel"><p className="review-error" style={{ margin: 16 }}>{err}</p></div> : null;
+  // On the dashboard (compact): the first six, the rest one tap away (Oct 30: the full list swamped the page).
+  const shown = compact && !all ? d.items.slice(0, 6) : d.items;
   const label = (day) => (day < d.today ? `was due ${fmt(day)}` : day === d.today ? 'Today' : day === plus(d.today, 1) ? 'Tomorrow' : `${dow(day)} ${fmt(day)}`);
 
   return (
@@ -74,7 +77,7 @@ export default function DueThisWeek({ compact = false, onChanged }) {
         <p className="split-lines" style={{ margin: '10px 16px 14px' }}>No bills, loan payments, card statements or tax due today through {fmt(d.end)}.</p>
       ) : (
         <ol className="cal-list">
-          {d.items.map((i) => {
+          {shown.map((i) => {
             const day = i.due || i.date;
             return (
               <li key={i.id} className={`cal-item dw-item kind-${i.kind}${i.overdue ? ' overdue' : ''}`}>
@@ -96,6 +99,9 @@ export default function DueThisWeek({ compact = false, onChanged }) {
             );
           })}
         </ol>
+      )}
+      {shown.length < d.items.length && (
+        <button type="button" className="small-link dw-more" onClick={() => setAll(true)}>Show all {d.items.length}</button>
       )}
       {d.waiting.length > 0 && (
         <div className="dw-waiting">

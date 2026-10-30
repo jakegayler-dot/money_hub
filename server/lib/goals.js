@@ -33,6 +33,7 @@ import { toISODate, addMonths, addDays, todayISO } from './dates.js';
 
 export const HORIZON = 120; // ten years
 export const HOLD_MONTHS = 24; // the floor must hold this long after buying
+const REAL_MONTHS = 24; // the forecast's own months (Cash Flow's longest view); later years repeat the first
 export const EQUITY_MIN_PCT = 15;
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const pad = (n) => String(n).padStart(2, '0');
@@ -198,7 +199,9 @@ const stripTerms = (t) => { const { payments, ...rest } = t; void payments; retu
  * above the floor, to see what spending less would do.
  */
 export async function loadBase({ today = todayISO(), budgetShare = null } = {}) {
-  const ctx = await loadForecast({ months: 12, today });
+  // The real forecast for its first two years, the same as the Cash Flow page's (Oct 30: the plan repeated year one, so
+  // this November's dip came back every November, 2027 included, while Cash Flow showed November 2027 strong).
+  const ctx = await loadForecast({ months: REAL_MONTHS, today });
   const ev = evaluate(ctx.flows, ctx, { scope: 'everything' });
   const meta = Array.from({ length: HORIZON }, (_, i) => {
     const d = new Date(Date.UTC(ctx.win.y0, ctx.win.m0 + i, 1));
@@ -230,8 +233,10 @@ export async function loadBase({ today = todayISO(), budgetShare = null } = {}) 
     return pays.filter((p) => p.date >= s && p.date < e).reduce((a, p) => a + p.amt, 0);
   });
 
-  // Year one from the forecast, less its loan payments (put back from the schedules above) and its household budget (sized below).
+  // The forecast's months, less their loan payments (put back from the schedules above) and the household budget (sized
+  // below); past the forecast, the first year (a whole crop year) repeats.
   const y1 = ev.trajectory;
+  const at = (i) => (i < y1.length ? i : i % 12);
   const budgetOf = (m) => m.items.filter((x) => x.kind === 'personal' && x.ref?.bucket === 'budget').reduce((a, x) => a + x.amount, 0);
   const loanOf = (m) => m.items.filter((x) => x.kind === 'loan').reduce((a, x) => a + x.amount, 0);
   const core = y1.map((m) => m.inflow + m.outflow - loanOf(m) - budgetOf(m));
@@ -239,14 +244,14 @@ export async function loadBase({ today = todayISO(), budgetShare = null } = {}) 
   const share = budgetShare != null ? budgetShare : (p.share ?? 0.9);
   const perMonth = Number(p.per_month) || 0;
   // Everything due in each month-end's window (before the cap; testsAt applies it).
-  const floor = meta.map((_, i) => Math.max(0, (y1[i % 12].floorDue ?? y1[i % 12].floor) - loanDue[i % 12] + loanDue[i]));
+  const floor = meta.map((_, i) => Math.max(0, (y1[at(i)].floorDue ?? y1[at(i)].floor) - loanDue[at(i)] + loanDue[i]));
   // Household spending while saving for goals: the budget rule (its share of the room) applied to what a
   // year leaves after bills, loans and the farm — without the cash already on hand, which this year's Cash
   // Flow budget partly spends and which goes to the goals here. Held flat; a smaller share saves faster.
-  const yearSurplus = core.reduce((a, v) => a + v, 0) + loanNet.slice(0, 12).reduce((a, v) => a + v, 0);
+  const yearSurplus = core.slice(0, 12).reduce((a, v) => a + v, 0) + loanNet.slice(0, 12).reduce((a, v) => a + v, 0);
   const steady = Math.floor(Math.max(0, yearSurplus) * share / 12 / 10) * 10;
   const budget = meta.map((_, i) => (i === 0 ? -Math.max(0, steady - (p.spent_this_month || 0)) : -steady));
-  const net = meta.map((_, i) => core[i % 12] + loanNet[i] + budget[i]);
+  const net = meta.map((_, i) => core[at(i)] + loanNet[i] + budget[i]);
 
   // Coverage: the lender's figure today, its debt service following the schedules as loans pay down.
   const [coverage, reserve] = await Promise.all([termDebtCoverage().catch(() => null), reserveStatus(ctx.win.y0).catch(() => ({ target: 0 }))]);

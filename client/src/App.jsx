@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import SignIn from './components/SignIn.jsx';
 import Sidebar from './components/Sidebar.jsx';
-import EntityBar from './components/EntityBar.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Accounts from './pages/Accounts.jsx';
 import Bills from './pages/Bills.jsx';
@@ -51,7 +50,7 @@ export default function App() {
     <div className="app-shell">
       <Sidebar canSignOut={required} />
       <main>
-        {pathname === '/' && <EntityBar />}
+        {/* The owner views and earnings now sit inside the dashboard (Oct 30) */}
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/advisor" element={<Advisor />} />
