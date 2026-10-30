@@ -6,6 +6,10 @@
 //   sales   new-crop sale contracts (delivered or paid from August 1 of the crop year, not cancelled), by commodity:
 //           a crop's planned sales shrink by what's already contracted.
 import { pool } from '../db.js';
+import { toISODate } from './dates.js';
+
+// The database hands back DATE columns as Date objects: compare them as YYYY-MM-DD.
+const ymd = (d) => (d ? String(d instanceof Date ? toISODate(d) : d).slice(0, 10) : '');
 
 export const PLAN_SOURCE = 'quarter-section-plan';
 const yearOf = (e) => Number(/^plan:(\d{4}):/.exec(e.external_id || '')?.[1]) || null;
@@ -29,13 +33,13 @@ export function netting(estimates, { bills = [], contracts = [] } = {}) {
   const years = [...new Set(plan.map(yearOf))];
   for (const y of years) {
     for (const b of bills) {
-      const due = String(b.due_date).slice(0, 10);
+      const due = ymd(b.due_date);
       if (due < `${y}-01-01` || due > `${y + 1}-01-31`) continue;
       const t = costType(b.category, b.name);
       if (t) billed[`${y}|${t}`] = (billed[`${y}|${t}`] || 0) + Number(b.amount || 0);
     }
     for (const c of contracts) {
-      const when = String(c.delivery_date || c.expected_payment_date || '').slice(0, 10);
+      const when = ymd(c.delivery_date || c.expected_payment_date);
       if (!when || when < `${y}-08-01` || c.status === 'cancelled') continue;
       const k = Object.keys(planned).find((p) => p.startsWith(`${y}|`) && String(c.commodity || '').toLowerCase().includes(p.split('|')[1]));
       if (k) contracted[k] = (contracted[k] || 0) + Number(c.total_value || 0);

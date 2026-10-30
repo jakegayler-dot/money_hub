@@ -38,3 +38,11 @@ test('a crop plan less what is already billed (by type, its crop year) and contr
   assert.equal(costType('Chemicals › Herbicide'), 'chemical');
   assert.equal(costType('Land Rent › Greenfeed', 'Land Rent ( 120 ac)'), 'rent');
 });
+
+test('dates straight from the database (Date objects) net the same as text dates', () => {
+  const asDates = bills.map((b) => ({ ...b, due_date: new Date(`${b.due_date}T00:00:00Z`) }));
+  const cs = contracts.map((c) => ({ ...c, delivery_date: new Date(`${c.delivery_date}T00:00:00Z`) }));
+  const n = netting(plan, { bills: asDates, contracts: cs });
+  assert.equal(Math.round(n.amountOf(plan.find((e) => e.external_id === 'plan:2027:cost:rent'))), Math.round(90855 - 45832.5 - 4908.75));
+  assert.equal(n.amountOf(plan.find((e) => e.external_id === 'plan:2027:sale:canola:9')), 120000);
+});
