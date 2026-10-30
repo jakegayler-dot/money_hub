@@ -280,10 +280,8 @@ export default function Goals() {
             <div className="panel-header">Cash above the floor, next ten years{plan.goals.length > 1 ? ', with these bought' : ', with it bought'}</div>
             <PathChart months={plan.months} reserve={plan.reserve} marks={marks} />
             <p style={{ padding: '0 16px 14px', margin: 0 }} className="split-lines">
-              The next 12 months are Cash Flow's forecast; after that each year repeats it — same income, costs and bills — while loan payments follow their
-              schedules as loans pay down. A one-off this year (a big sale, a lump payment) repeats too, so check the first year looks typical.
-              Household spending is held at {money(plan.budget.per_month)} a month: {Math.round(plan.budget.share * 100)}% of what a normal year leaves after bills,
-              loans and the farm{plan.budget.cash_flow_budget > plan.budget.per_month + 5 ? ` (Cash Flow's budget is ${money(plan.budget.cash_flow_budget)} this year because it also spends the cash on hand — here that cash goes to the goals)` : ''}.
+              The next 24 months are Cash Flow's forecast; after that the first year repeats — same income, costs and bills — while loan payments follow their
+              schedules as loans pay down. A one-off this year (a big sale, a lump payment) repeats too, so check the first year looks typical. Household spending is Cash Flow's budget, {money(plan.budget.per_month)} a month.
             </p>
           </div>
         </>

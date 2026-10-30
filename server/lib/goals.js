@@ -245,12 +245,15 @@ export async function loadBase({ today = todayISO(), budgetShare = null } = {}) 
   const perMonth = Number(p.per_month) || 0;
   // Everything due in each month-end's window (before the cap; testsAt applies it).
   const floor = meta.map((_, i) => Math.max(0, (y1[at(i)].floorDue ?? y1[at(i)].floor) - loanDue[at(i)] + loanDue[i]));
-  // Household spending while saving for goals: the budget rule (its share of the room) applied to what a
-  // year leaves after bills, loans and the farm — without the cash already on hand, which this year's Cash
-  // Flow budget partly spends and which goes to the goals here. Held flat; a smaller share saves faster.
+  // Household spending: the Cash Flow page's own budget, month by month (Oct 30: the plan sized its own, 90% of a
+  // year's surplus, $6,050 a month against Cash Flow's $740, so it showed cash $35k under in Aug 2027 where Cash Flow
+  // has $20k, and "$73,828 short of the floor if bought today"). A smaller share scales it down to see what spending
+  // less would do.
   const yearSurplus = core.slice(0, 12).reduce((a, v) => a + v, 0) + loanNet.slice(0, 12).reduce((a, v) => a + v, 0);
-  const steady = Math.floor(Math.max(0, yearSurplus) * share / 12 / 10) * 10;
-  const budget = meta.map((_, i) => (i === 0 ? -Math.max(0, steady - (p.spent_this_month || 0)) : -steady));
+  const scale = budgetShare != null && p.share > 0 ? budgetShare / p.share : 1;
+  const fcBudget = y1.map(budgetOf);
+  const budget = meta.map((_, i) => fcBudget[at(i)] * scale);
+  const steady = Math.floor((perMonth * scale) / 10) * 10;
   const net = meta.map((_, i) => core[at(i)] + loanNet[i] + budget[i]);
 
   // Coverage: the lender's figure today, its debt service following the schedules as loans pay down.
