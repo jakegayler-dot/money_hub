@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { calendarItems, recurringSuggestions, describeRule } from '../lib/calendar.js';
+import { payBill, recordLoanPayment, payCard } from '../lib/postings.js';
+import { toISODate } from '../lib/dates.js';
 import { todayISO, addMonths, addDays } from '../lib/dates.js';
 import { SEGMENT_COLUMNS, segmentValues, validateSegment } from '../lib/segments.js';
 
@@ -20,6 +22,81 @@ router.get('/', ah(async (req, res) => {
     pool.query('SELECT * FROM calendar_deadlines ORDER BY month, COALESCE(day, nth * 7), id'),
   ]);
   res.json({ today, from, to, items, suggestions, deadlines: deadlines.map((d) => ({ ...d, rule: describeRule(d) })) });
+}));
+
+// ---- Due this week (Jake, Oct 30) ---------------------------------------------
+// Every bill, loan payment, card statement, and tax or GST payment due today through six days out (and
+// anything overdue), each ready to tick off as paid: ticking it books the payment from an account now —
+// in the balances and Cash Flow straight away — as unconfirmed until the bank statement the agent sends
+// in shows it (statement ingest matches it then). Also what's been ticked off and is still waiting.
+const PAYABLE = { bill: 'bill', loan: 'loan', card: 'card' };
+const refOf = (i) => {
+  const [kind, id] = String(i.id).split(':');
+  return PAYABLE[kind] ? { type: kind, id: Number(id) } : null;
+};
+
+router.get('/week', ah(async (req, res) => {
+  const today = todayISO();
+  const end = addDays(today, 6);
+  const items = (await calendarItems({ from: today, to: end, today }))
+    .filter((i) => ['bill', 'loan', 'card', 'tax', 'gst'].includes(i.kind) && !i.done && i.amount != null && i.amount < 0 && (i.due || i.date) <= end)
+    .map((i) => ({ ...i, pay: refOf(i) }))
+    .sort((a, b) => ((a.due || a.date) < (b.due || b.date) ? -1 : (a.due || a.date) > (b.due || b.date) ? 1 : a.amount - b.amount));
+  // The account each one was last paid from, to start the tick-off with.
+  const lastFrom = async (sql, id) => (id ? (await pool.query(sql, [id])).rows[0]?.account_id || null : null);
+  for (const i of items) {
+    if (!i.pay) continue;
+    if (i.pay.type === 'bill') {
+      i.pay.account_id = await lastFrom(`SELECT t.account_id FROM bills b JOIN bills x ON x.status = 'paid' AND (x.id = b.id OR (x.payee_id IS NOT NULL AND x.payee_id = b.payee_id) OR x.name = b.name)
+        JOIN transactions t ON t.id = x.linked_transaction_id WHERE b.id = $1 AND t.account_id IS NOT NULL ORDER BY x.paid_date DESC NULLS LAST LIMIT 1`, i.pay.id);
+    } else if (i.pay.type === 'loan') {
+      i.pay.account_id = await lastFrom(`SELECT t.account_id FROM loan_payments p JOIN loan_payments x ON x.loan_id = p.loan_id AND x.paid
+        JOIN transactions t ON t.id = x.linked_transaction_id WHERE p.id = $1 AND t.account_id IS NOT NULL ORDER BY x.paid_date DESC NULLS LAST LIMIT 1`, i.pay.id);
+    } else if (i.pay.type === 'card') {
+      i.pay.account_id = await lastFrom(`SELECT t.account_id FROM credit_card_statements s JOIN transactions t ON t.credit_card_id = s.credit_card_id
+        AND t.account_id IS NOT NULL WHERE s.id = $1 ORDER BY t.date DESC LIMIT 1`, i.pay.id);
+    }
+  }
+  // Ticked off (or paid from these screens) in the last 60 days and not yet on a statement.
+  const { rows: waiting } = await pool.query(
+    `SELECT t.id, t.date, t.amount, t.description, a.name AS account,
+            (SELECT b.id FROM bills b WHERE b.linked_transaction_id = t.id LIMIT 1) AS bill_id,
+            (SELECT p.id FROM loan_payments p WHERE p.linked_transaction_id = t.id LIMIT 1) AS loan_payment_id,
+            CASE WHEN t.credit_card_id IS NOT NULL THEN t.credit_card_id END AS card_id
+     FROM transactions t JOIN accounts a ON a.id = t.account_id
+     WHERE t.awaiting_statement AND t.amount < 0 AND t.date >= CURRENT_DATE - 60
+       AND (EXISTS (SELECT 1 FROM bills b WHERE b.linked_transaction_id = t.id)
+            OR EXISTS (SELECT 1 FROM loan_payments p WHERE p.linked_transaction_id = t.id)
+            OR t.credit_card_id IS NOT NULL)
+     ORDER BY t.date DESC, t.id DESC`);
+  const { rows: accounts } = await pool.query(`SELECT id, name FROM accounts ORDER BY account_type = 'operating' DESC, name`);
+  res.json({
+    today, end, items, accounts,
+    waiting: waiting.map((t) => ({ ...t, date: toISODate(t.date), amount: Number(t.amount) })),
+    total: Math.round(items.reduce((a, i) => a + i.amount, 0) * 100) / 100,
+  });
+}));
+
+// Tick one off: { type: bill|loan|card, id, account_id, date?, amount? } — booked from that account now,
+// unconfirmed until the statement shows it.
+router.post('/week/pay', ah(async (req, res) => {
+  const { type, id, account_id, date = todayISO(), amount = null } = req.body || {};
+  if (!account_id) return res.status(400).json({ error: 'Which account was it paid from?' });
+  const amt = amount === '' || amount == null ? null : Math.abs(Number(amount));
+  if (amt != null && !(amt > 0)) return res.status(400).json({ error: 'The amount must be more than zero.' });
+  const out = await withTransaction(async (client) => {
+    if (type === 'bill') return payBill(client, Number(id), { account_id: Number(account_id), date, amount: amt });
+    if (type === 'loan') return recordLoanPayment(client, Number(id), { account_id: Number(account_id), date, amount: amt });
+    if (type === 'card') {
+      const { rows: [st] } = await client.query('SELECT * FROM credit_card_statements WHERE id = $1', [id]);
+      if (!st) return null;
+      const left = Number(st.statement_balance) - Number(st.paid_amount || 0);
+      return payCard(client, st.credit_card_id, { account_id: Number(account_id), date, amount: amt ?? left, statement_id: st.id });
+    }
+    const e = new Error('type is bill, loan or card'); e.status = 400; throw e;
+  });
+  if (!out) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
 }));
 
 // Confirm a suggested recurring payment: it becomes a recurring bill on that vendor.

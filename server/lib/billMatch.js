@@ -246,3 +246,5 @@ export function autoLinkBillsSoon() {
     .finally(() => { running = null; });
   return running;
 }
+/** The matching run in progress, if any (resolves to what it linked). */
+export const autoLinkRunning = () => running;

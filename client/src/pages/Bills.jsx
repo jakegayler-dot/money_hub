@@ -133,7 +133,7 @@ export default function Bills() {
   const photoRef = useRef(null);
 
   const [recurringKey, setRecurringKey] = useState(0); // bumps when the list changes, so the recurring viewer reloads
-  const load = () => {
+  const load = (again = true) => {
     const q = filter === 'all' ? '' : `?status=${filter}`;
     fetch(`/api/bills${q}`)
       .then((r) => r.json())
@@ -142,8 +142,10 @@ export default function Bills() {
         else setError(data?.error || 'Failed to load bills.');
       })
       .catch(() => setError('Failed to load bills.'));
+    // Payments are matched to bills in the background; when that links any, show them (once).
+    if (again) fetch('/api/bills/linking').then((r) => r.json()).then((d) => { if (d?.changed > 0) load(false); }).catch(() => {});
   };
-  useEffect(load, [filter]);
+  useEffect(() => { load(); }, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
   const [loans, setLoans] = useState([]);
   useEffect(() => {
     fetch('/api/loans').then((r) => r.json()).then((d) => setLoans(Array.isArray(d) ? d : [])).catch(() => {});

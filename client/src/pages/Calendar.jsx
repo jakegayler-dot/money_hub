@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { cents } from '../components/SplitEditor.jsx';
+import DueThisWeek from '../components/DueThisWeek.jsx';
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -67,6 +68,8 @@ export default function Calendar() {
         <span className="page-meta">Next 30 days: {cents(-out30)} out · {cents(in30)} in · {deadlines30} deadline{deadlines30 === 1 ? '' : 's'}</span>
       </div>
       {error && <p className="review-error" style={{ margin: '0 0 12px' }}>{error}</p>}
+
+      <DueThisWeek onChanged={load} />
 
       {data.suggestions.length > 0 && (
         <div className="panel cal-suggest">

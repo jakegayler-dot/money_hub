@@ -22,7 +22,7 @@ const settle = (payeeId) => (payeeId ? withTransaction((client) => settleVendorA
 
 // "JS & CL Gayler — Inv. 0588652" → "JS & CL Gayler" (same rule as the schema backfill).
 const vendorFromName = (name) => String(name || '').replace(/\s+(—|–|-|#|inv\.?\s|invoice\s).*$/i, '').trim() || String(name || '').trim();
-import { autoLinkBills, autoLinkBillsSoon, billCandidates } from '../lib/billMatch.js';
+import { autoLinkBillsSoon, autoLinkRunning, billCandidates } from '../lib/billMatch.js';
 import { todayISO, toISODate, addMonths } from '../lib/dates.js';
 import { matchPending } from '../lib/receipts.js';
 import { vendorStatement, billSummary, reconState } from '../lib/vendorAccount.js';
@@ -108,7 +108,11 @@ async function categoryName(id) {
 // bills — payments already in the ledger that look like they paid it.
 // Unambiguous payments are linked first, so the list is current.
 router.get('/', ah(async (req, res) => {
-  try { await autoLinkBills(); } catch (e) { console.error('Bill auto-link failed:', e.message); }
+  // Matching payments to bills runs in the background now (Jake, Oct 30: the tab took too long to load):
+  // the list comes back straight away, and the page asks once more when matching is done.
+  const linking = autoLinkBillsSoon();
+  res.set('X-Bills-Linking', '1');
+  void linking;
   const status = ['paid', 'unpaid'].includes(req.query.status) ? req.query.status : null;
   const where = status ? 'WHERE b.status = $1' : '';
   const params = status ? [status] : [];
@@ -136,8 +140,11 @@ router.get('/', ah(async (req, res) => {
      ORDER BY (b.status = 'unpaid') DESC, b.due_date ASC`,
     params
   );
+  // Payments that could be each unpaid bill's, all at once (?suggest=0 skips them).
+  const wantSuggest = req.query.suggest !== '0';
+  const sugg = await Promise.all(rows.map((b) => (wantSuggest && b.status === 'unpaid' ? billCandidates(pool, b, 4) : [])));
   const out = [];
-  for (const b of rows) {
+  for (const [i, b] of rows.entries()) {
     out.push({
       ...b,
       paid_tx_date: b.paid_tx_date ? toISODate(b.paid_tx_date) : null,
@@ -145,10 +152,17 @@ router.get('/', ah(async (req, res) => {
       owing_now: Number(b.owing_now), owing_at_due: Number(b.owing_at_due),
       interest_free_until: b.interest_free_until ? toISODate(b.interest_free_until) : null,
       balance_as_of: b.balance_as_of ? toISODate(b.balance_as_of) : null,
-      suggestions: b.status === 'unpaid' ? await billCandidates(pool, b, 4) : [],
+      suggestions: sugg[i],
     });
   }
   res.json(out);
+}));
+
+// Waits for the background matching to finish: { changed } — how many bills it linked to their payments.
+router.get('/linking', ah(async (req, res) => {
+  const p = autoLinkRunning();
+  const made = p ? await p : [];
+  res.json({ changed: Array.isArray(made) ? made.length : 0 });
 }));
 
 // "This payment paid this bill" — a ledger entry already there.
@@ -308,7 +322,7 @@ router.post('/:id/unpay', ah(async (req, res) => {
 // One line per vendor: what's owed across its unpaid bills, deposits it's
 // holding, and the net — plus the bills and deposits behind it.
 router.get('/vendors', ah(async (req, res) => {
-  try { await autoLinkBills(); } catch (e) { console.error('Bill auto-link failed:', e.message); }
+  autoLinkBillsSoon(); // in the background, like the bill list
   const { rows: bills } = await pool.query(
     `SELECT b.id, b.payee_id, b.name, b.due_date, b.received_date, b.created_at, b.amount, b.status, bill_owing(b, CURRENT_DATE) AS owing,
             COALESCE((SELECT SUM(amount) FROM credit_applications WHERE bill_id = b.id), 0) AS applied

@@ -1999,3 +1999,18 @@ button:active { transform: none !important; }
 .rw-step:last-child { border-right: 0; }
 .rw-step.on { background: var(--gold-soft); color: var(--text); }
 .badge + .badge, td > .badge { margin-left: 6px; }
+.cal-week .cal-item { grid-template-columns: 130px 1fr auto; }
+.cal-week-day { font-size: 13px; color: var(--text-muted); white-space: nowrap; }
+.cal-week-day.today { color: var(--gold); font-weight: 600; }
+.cal-week-day.late { color: var(--negative); }
+.dw .cal-item.dw-item { grid-template-columns: 22px 130px minmax(0, 1fr) auto; align-items: center; }
+.dw-check { width: 20px; height: 20px; border-radius: 5px; border: 1.5px solid var(--border-strong); background: none; color: transparent; display: grid; place-items: center; cursor: pointer; padding: 0; }
+.dw-check:hover, .dw-check.on { border-color: var(--gold); color: var(--gold); }
+.dw-check:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.dw-check-none { width: 20px; }
+.dw-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+.dw-form input[type="number"] { width: 110px; }
+.dw-waiting { border-top: 1px solid var(--border); padding: 10px 16px 12px; }
+.dw-waiting ul { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; }
+.dw-waiting li { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto; gap: 10px; align-items: center; font-size: 13px; color: var(--text-muted); }
+.dw-pending { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--gold); }

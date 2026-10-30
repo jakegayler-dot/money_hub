@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import MetricCard from '../components/MetricCard.jsx';
+import DueThisWeek from '../components/DueThisWeek.jsx';
 import { money, ratio, pct, localToday } from '../format.js';
 
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
@@ -18,7 +19,7 @@ export default function Dashboard() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
 
-  useEffect(() => {
+  const load = () => {
     fetch('/api/dashboard')
       .then(async (r) => {
         const body = await r.json().catch(() => null);
@@ -29,7 +30,8 @@ export default function Dashboard() {
       })
       .then(setData)
       .catch((e) => setError(e.message));
-  }, []);
+  };
+  useEffect(() => { load(); }, []);
 
   if (error) return <div className="empty-state">Could not load dashboard: {error}. Try refreshing — if it persists, check the server's deploy logs.</div>;
   if (!data) return <div className="empty-state">Loading…</div>;
@@ -42,6 +44,8 @@ export default function Dashboard() {
         <h1 className="page-title">Dashboard</h1>
         <span className="page-meta">FY {year}</span>
       </div>
+
+      <DueThisWeek compact onChanged={load} />
 
       <div className="grid">
         {netWorth && (

@@ -90,11 +90,21 @@ function Row({ b, today, onSaved, max }) {
 
 export default function RecurringBills({ refreshKey, onChanged }) {
   const [bills, setBills] = useState(null);
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false); // closed until asked for (Jake, Oct 30)
   const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-  const load = () => fetch('/api/bills?status=unpaid').then((r) => r.json()).then((d) => setBills(Array.isArray(d) ? d : [])).catch(() => setBills([]));
-  useEffect(() => { load(); }, [refreshKey]);
-  if (!bills) return null;
+  const load = () => fetch('/api/bills?status=unpaid&suggest=0').then((r) => r.json()).then((d) => setBills(Array.isArray(d) ? d : [])).catch(() => setBills([]));
+  useEffect(() => { if (open) load(); }, [refreshKey, open]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!open) {
+    return (
+      <div className="panel rb rb-closed">
+        <div className="panel-header spend-header">
+          <span>Recurring bills in the cash flow forecast</span>
+          <button type="button" className="small-link" onClick={() => setOpen(true)}>Show and edit</button>
+        </div>
+      </div>
+    );
+  }
+  if (!bills) return <div className="panel rb"><div className="empty-state">Loading…</div></div>;
   const list = bills.filter((b) => CYCLES[b.frequency])
     .sort((a, b) => Number(b.amount) / CYCLES[b.frequency][1] - Number(a.amount) / CYCLES[a.frequency][1]);
   const monthly = list.reduce((a, b) => a + Number(b.amount) / CYCLES[b.frequency][1], 0);
@@ -106,7 +116,7 @@ export default function RecurringBills({ refreshKey, onChanged }) {
     <div className="panel rb">
       <div className="panel-header spend-header">
         <span>Recurring bills in the cash flow forecast</span>
-        <button type="button" className="small-link" onClick={() => setOpen(!open)}>{open ? 'Hide' : `Show ${list.length}`}</button>
+        <button type="button" className="small-link" onClick={() => setOpen(!open)}>Hide</button>
       </div>
       {open && (list.length === 0 ? (
         <div className="empty-state">No recurring bills. Add one below with a cycle, or add one the Calendar found in your ledger.</div>
