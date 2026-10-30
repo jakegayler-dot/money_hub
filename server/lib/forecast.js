@@ -466,17 +466,18 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
   const floorDays = Math.min(MAX_FLOOR_DAYS, Math.max(14, Number(floorDaysSetting) || FLOOR_DAYS));
   const floorCap = Number.isFinite(Number(floorCapSetting)) && Number(floorCapSetting) >= 0 ? Number(floorCapSetting) : FLOOR_CAP;
 
-  // The household budget (Jake, Oct 24): everything the household spends that isn't a bill, a loan or a
-  // card statement, as one line a month. With every other item in, each month-end has some room above the
-  // floor; a budget of B a month spends B in each month up to it, so the most it can be is the smallest
-  // room ÷ months-to-it. The budget is a share of that (90% — a tenth kept spare in the tightest month),
-  // rounded down to $10. The budget isn't must-pay, so the floor doesn't move with it. This month it's
-  // what's left of it after what's already been spent this month.
+  // The household budget: everything the household spends that isn't a bill, a loan or a card statement, as
+  // one line a month. Jake, Oct 30: "take my balance at end of August 2027 and divide it by the number of months
+  // till August. That's how much discretionary spending I have." So: with every other item in and no household
+  // spending, the balance at the end of the next August (the low before harvest money comes in) ÷ the months
+  // from this one to it, times the share (setting household_budget_share, all of it unless set), rounded down
+  // to $10. (Before, Oct 24: the smallest room above the floor ÷ months-to-it, 90% of it.) The budget isn't
+  // must-pay, so the floor doesn't move with it. This month it's what's left after what's been spent.
   try {
-    const share = Math.min(1, Math.max(0, Number(await getSetting('household_budget_share', 0.9)) || 0.9));
+    const share = Math.min(1, Math.max(0, Number(await getSetting('household_budget_share', 1)) || 1));
     const base = { win, today, accounts: accountRows, splits, floorDays, floorCap, lookahead: flows.filter((f) => !inWindow(f.date)) };
     const ev0 = evaluate(flows.filter((f) => inWindow(f.date)), base, { scope: 'everything' });
-    const { room, bindingIdx, perMonth } = householdBudget(ev0.trajectory.map((t) => t.headroom), share);
+    const { room, bindingIdx, perMonth } = householdBudget(ev0.trajectory.map((t) => t.balance), share, win.meta);
     const spent = await householdSpentThisMonth(today);
     win.meta.forEach((m, i) => {
       const key = `${m.year}-${String(m.month).padStart(2, '0')}`;
@@ -511,15 +512,15 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
 }
 
 /**
- * The household budget from the room above the floor at each month-end with
- * no household spending (pure — exported for tests): spending B a month uses
- * B × (months to it) of month i's room, so the most a month is the smallest
- * room ÷ months-to-it; the budget is `share` of that, rounded down to $10.
+ * The household budget (pure — exported for tests): the month-end balance with no household spending at the
+ * next August (not this month's; the last month in the window if no August is in it) ÷ the months from this one
+ * to it, times `share`, rounded down to $10. `meta` is [{ year, month }] for each balance.
  */
-export function householdBudget(headroom, share = 0.9) {
-  let room = Infinity; let bindingIdx = -1;
-  headroom.forEach((h, i) => { const cap = h / (i + 1); if (cap < room) { room = cap; bindingIdx = i; } });
-  if (!headroom.length) room = 0;
+export function householdBudget(balances, share = 1, meta = []) {
+  if (!balances.length) return { room: 0, bindingIdx: -1, perMonth: 0 };
+  let bindingIdx = meta.findIndex((m, i) => i >= 1 && m.month === 8);
+  if (bindingIdx < 0 || bindingIdx >= balances.length) bindingIdx = balances.length - 1;
+  const room = balances[bindingIdx] / (bindingIdx + 1);
   const perMonth = room > 0 ? Math.floor((room * share) / 10) * 10 : 0;
   return { room, bindingIdx, perMonth };
 }

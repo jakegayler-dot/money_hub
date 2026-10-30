@@ -1,31 +1,27 @@
-// The household budget (Jake, Oct 24): a share of the room above the cash
-// floor, the most a month that keeps every month-end above it.
+// The household budget (Jake, Oct 30): "take my balance at end of August 2027 and divide it by the number of
+// months till August. That's how much discretionary spending I have."
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { householdBudget } from '../lib/forecast.js';
 
-test('the tightest month by room ÷ months-to-it sets it; 90%, rounded down to $10', () => {
-  // Month 3 has 9,000 of room but three months of spending to cover: 3,000 a month.
-  const b = householdBudget([10000, 8000, 9000, 20000], 0.9);
-  assert.equal(b.bindingIdx, 2);
+const months = (y, m, n) => Array.from({ length: n }, (_, i) => ({ year: y + Math.floor((m - 1 + i) / 12), month: ((m - 1 + i) % 12) + 1 }));
+
+test('the balance at the end of next August ÷ the months to it, rounded down to $10', () => {
+  // Oct 2026 → Aug 2027 is 11 months; a dip before it doesn't set it.
+  const bal = [28000, 5000, 120000, 90000, 80000, 70000, 60000, 50000, 45000, 40000, 33000, 120000, 200000];
+  const b = householdBudget(bal, 1, months(2026, 10, 13));
+  assert.equal(b.bindingIdx, 10);
   assert.equal(b.room, 3000);
-  assert.equal(b.perMonth, 2700);
+  assert.equal(b.perMonth, 3000);
 });
 
-test('a budget of that size keeps every month-end above the floor, with the spare left', () => {
-  const head = [4100, 6050, 5333, 12000, 7777];
-  const { perMonth, room } = householdBudget(head, 0.9);
-  head.forEach((h, i) => assert.ok(h - perMonth * (i + 1) >= 0));
-  assert.ok(perMonth <= room * 0.9 && perMonth > room * 0.9 - 10);
+test('in August it is next August, not this one', () => {
+  const b = householdBudget(Array(14).fill(26000), 1, months(2026, 8, 14));
+  assert.equal(b.bindingIdx, 12);
+  assert.equal(b.perMonth, 2000);
 });
 
-test('no room: a month already below the floor means no budget', () => {
-  const b = householdBudget([5000, -1200, 3000], 0.9);
-  assert.equal(b.perMonth, 0);
-  assert.ok(b.room < 0);
-});
-
-test('the share is applied as given', () => {
-  assert.equal(householdBudget([12000], 1).perMonth, 12000);
-  assert.equal(householdBudget([12000], 0.8).perMonth, 9600);
+test('below zero at the end of August means no budget; the share applies as given', () => {
+  assert.equal(householdBudget([5000, -1200], 1, months(2027, 7, 2)).perMonth, 0);
+  assert.equal(householdBudget([12000], 0.8, months(2027, 8, 1)).perMonth, 9600, 'no August after this month: the last month');
 });

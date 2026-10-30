@@ -352,7 +352,7 @@ export default function CashFlow() {
           </p>
         ) : (
           <p className="cf-budget-note">
-            Household spending is one budget: {money(data.personal.per_month)} a month, {Math.round(data.personal.share * 100)}% of the room above the cash floor, on top of the bills. <a href="/personal">See the budget</a>
+            Household spending is one budget: {money(data.personal.per_month)} a month, the balance at the end of {data.personal.binding ? new Date(Date.UTC(data.personal.binding.year, data.personal.binding.month - 1, 15)).toLocaleDateString("en-CA", { month: "long", year: "numeric", timeZone: "UTC" }) : "next August"} spread over the months to it{data.personal.share < 1 ? ` (${Math.round(data.personal.share * 100)}% of it)` : ""}, on top of the bills. <a href="/personal">See the budget</a>
           </p>
         )
       )}

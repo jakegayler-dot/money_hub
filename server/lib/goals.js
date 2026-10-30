@@ -241,7 +241,7 @@ export async function loadBase({ today = todayISO(), budgetShare = null } = {}) 
   const loanOf = (m) => m.items.filter((x) => x.kind === 'loan').reduce((a, x) => a + x.amount, 0);
   const core = y1.map((m) => m.inflow + m.outflow - loanOf(m) - budgetOf(m));
   const p = ctx.personal || {};
-  const share = budgetShare != null ? budgetShare : (p.share ?? 0.9);
+  const share = budgetShare != null ? budgetShare : (p.share ?? 1);
   const perMonth = Number(p.per_month) || 0;
   // Everything due in each month-end's window (before the cap; testsAt applies it).
   const floor = meta.map((_, i) => Math.max(0, (y1[at(i)].floorDue ?? y1[at(i)].floor) - loanDue[at(i)] + loanDue[i]));

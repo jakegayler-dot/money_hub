@@ -53,7 +53,7 @@ export function shareOut(items, total, weight) {
 export async function generateBudget({ today = todayISO(), months = 12 } = {}) {
   const ctx = await loadForecast({ months, today });
   const meta = ctx.win.meta;
-  const p = ctx.personal || { per_month: 0, share: 0.9, room: 0, spent_this_month: 0, binding: null, shortfall: null };
+  const p = ctx.personal || { per_month: 0, share: 1, room: 0, spent_this_month: 0, binding: null, shortfall: null };
   const monthly = p.per_month;
   const lbl = (x) => (x ? label(x) : null);
 

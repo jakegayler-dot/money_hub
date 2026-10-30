@@ -3,13 +3,11 @@ import { money } from '../format.js';
 import { Pie } from './Pie.jsx';
 import { SERIES, OTHER, foldSlices } from '../chartColors.js';
 
-// The household budget (Jake, 2026-10-24: "use a simple budget based on the
-// amount above the floor in cash floor"). Cash Flow works it out with every
-// bill, loan, card statement, fee, tax payment and the farm already in: the
-// room above the floor each month, the most a month that keeps every
-// month-end above it, and 90% of that (a tenth kept spare). It covers
-// everything the household spends that isn't a bill, and the forecast spends
-// it every month (server/lib/budgetPlan.js, forecast.js).
+// The household budget (Jake, 2026-10-30: "take my balance at end of August 2027 and divide it by the
+// number of months till August"). Cash Flow works it out with every bill, loan, card statement, fee, tax
+// payment and the farm already in: the balance at the end of next August ÷ the months to it (times the share
+// picked here). It covers everything the household spends that isn't a bill, and the forecast spends it
+// every month (server/lib/budgetPlan.js, forecast.js).
 const PEOPLE = [['jake', 'Jake', SERIES[0]], ['ashley', 'Ashley', SERIES[4]], ['untagged', 'Not tagged', OTHER]];
 const SHARES = [0.8, 0.9, 1];
 
@@ -96,8 +94,8 @@ export default function BudgetFit({ onLoaded }) {
           <div className="bf-big">{money(d.monthly)}<span> a month</span></div>
           <p>
             For everything the household spends that isn't a bill, a loan payment or a card balance already owed — groceries, fuel, eating out, kids, the lot.
-            With those and the farm already in Cash Flow, the most a month that keeps every month-end above the floor through {end} is {money(d.room)}
-            {d.binding ? `, set by ${d.binding.month}` : ''}; this is {Math.round(d.share * 100)}% of it{d.share < 1 ? `, so ${money(Math.max(0, d.room - d.monthly))} a month stays spare` : ''}.
+            With those and the farm already in Cash Flow, it's the balance at the end of {d.binding ? d.binding.month : end} ÷ the {d.binding ? d.binding.months_to_it : ''} months to it: {money(d.room)} a month
+            {d.share < 1 ? `; this is ${Math.round(d.share * 100)}% of it, so ${money(Math.max(0, d.room - d.monthly))} a month stays spare` : ''}.
             Cash Flow spends it every month.
           </p>
         </div>
