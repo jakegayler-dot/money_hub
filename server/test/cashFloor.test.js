@@ -73,3 +73,15 @@ test('a new loan in a what-if raises the scenario’s floor', () => {
   assert.ok(scn[2].floor > 20000, 'end of Dec sees the Feb payment'); // the first annual payment
   assert.equal(r.floor, 0);
 });
+
+test('the floor is capped (Oct 27: 20k max) — the payments still come off their months', () => {
+  const ev = evaluate(flows, ctxWith(flows, { floorCap: 20000 }), { scope: 'everything' });
+  const t = ev.trajectory;
+  assert.equal(t[0].floor, 20000);
+  assert.equal(t[0].floorDue, 48000);
+  assert.equal(t[1].floor, 5000);                       // under the cap: as it was
+  assert.equal(t[4].floor, 20000);
+  assert.equal(ev.floorNow, 20000);
+  assert.equal(ev.floorCap, 20000);
+  assert.equal(t[0].headroom, t[0].balance - 20000);
+});

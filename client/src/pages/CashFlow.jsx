@@ -189,6 +189,30 @@ const SCOPE_META = {
 const readPref = (k, d) => { try { const v = window.localStorage.getItem(`moneyhub.cf.${k}`); return v == null ? d : JSON.parse(v); } catch { return d; } };
 const writePref = (k, v) => { try { window.localStorage.setItem(`moneyhub.cf.${k}`, JSON.stringify(v)); } catch { /* private mode */ } };
 
+/** The most the cash floor can be (Jake, Oct 27): payments are already taken off month by month, so the floor is a cushion. */
+function FloorCap({ value, onSaved }) {
+  const [edit, setEdit] = useState(null);
+  const [err, setErr] = useState(null);
+  if (value == null) return null;
+  const save = async () => {
+    const r = await fetch('/api/forecast/floor-cap', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cap: Number(edit) }) });
+    if (!r.ok) { const d = await r.json().catch(() => ({})); setErr(d.error || 'Not saved'); return; }
+    setEdit(null); setErr(null); onSaved();
+  };
+  return edit == null ? (
+    <button type="button" className="cf-floorcap" title="The cash floor is what falls due in the next 60 days, never more than this" onClick={() => setEdit(String(value))}>
+      Floor up to {money(value)}
+    </button>
+  ) : (
+    <span className="cf-floorcap-edit">
+      <label>Floor up to $<input type="number" min="0" step="1000" value={edit} aria-label="Most the cash floor can be" onChange={(e) => setEdit(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') save(); }} /></label>
+      <button type="button" className="small" onClick={save}>Save</button>
+      <button type="button" className="small-link" onClick={() => setEdit(null)}>Cancel</button>
+      {err && <span className="review-error">{err}</span>}
+    </span>
+  );
+}
+
 /** Which accounts count toward the starting cash. */
 function AccountPicker({ accounts, chosen, setChosen }) {
   const [open, setOpen] = useState(false);
@@ -317,6 +341,7 @@ export default function CashFlow() {
           <span>Income tax</span>
         </label>
         <AccountPicker accounts={accounts} chosen={chosen} setChosen={setChosen} />
+        <FloorCap value={data.floorCap} onSaved={() => setRefresh((k) => k + 1)} />
         <button type="button" className="cf-whatif-btn" onClick={() => setEditing(true)}>What-if analysis</button>
       </div>
 
@@ -346,7 +371,7 @@ export default function CashFlow() {
             <thead>
               <tr>
                 <th>Month</th><th>Contracts</th><th>Est. in</th><th>Bills</th><th>Debt service</th><th>Cards</th><th>Fees</th><th>GST</th><th>Tax</th><th>Personal</th><th>Est. out</th>
-                <th>Committed bal.</th><th>With estimates</th><th title={`What must be paid in the ${data.floorDays || 60} days after the month-end`}>Floor</th>
+                <th>Committed bal.</th><th>With estimates</th><th title={`What must be paid in the ${data.floorDays || 60} days after the month-end${data.floorCap != null ? `, up to ${money(data.floorCap)}` : ''}`}>Floor</th>
               </tr>
             </thead>
             <tbody>

@@ -115,8 +115,9 @@ export function testsAt(base, g, eff, t, addedAnnual = 0) {
   for (let i = 0; i < H; i++) {
     bal += base.net[i] + eff.net[i];
     without += base.net[i];
-    head.push(bal - base.floor[i] - eff.due[i]);
-    headWithout.push(without - base.floor[i]);
+    const cap = base.floorCap ?? Infinity; // the floor never goes over its cap (setting floor_cap)
+    head.push(bal - Math.min(cap, base.floor[i] + eff.due[i]));
+    headWithout.push(without - Math.min(cap, base.floor[i]));
   }
   // Two years after buying, every month-end must cover its floor; after that, the purchase mustn't
   // cause a shortfall (a month already short without it is flagged on its own, not held against it).
@@ -237,7 +238,8 @@ export async function loadBase({ today = todayISO(), budgetShare = null } = {}) 
   const p = ctx.personal || {};
   const share = budgetShare != null ? budgetShare : (p.share ?? 0.9);
   const perMonth = Number(p.per_month) || 0;
-  const floor = meta.map((_, i) => y1[i % 12].floor - loanDue[i % 12] + loanDue[i]);
+  // Everything due in each month-end's window (before the cap; testsAt applies it).
+  const floor = meta.map((_, i) => Math.max(0, (y1[i % 12].floorDue ?? y1[i % 12].floor) - loanDue[i % 12] + loanDue[i]));
   // Household spending while saving for goals: the budget rule (its share of the room) applied to what a
   // year leaves after bills, loans and the farm — without the cash already on hand, which this year's Cash
   // Flow budget partly spends and which goes to the goals here. Held flat; a smaller share saves faster.
@@ -255,7 +257,7 @@ export async function loadBase({ today = todayISO(), budgetShare = null } = {}) 
     return svc0 > 0 ? lenderSvc * (mine / svc0) : mine;
   });
   return {
-    today, meta, opening: ev.opening, net, floor, floorDays: days, reserve: r2(reserve?.target || 0),
+    today, meta, opening: ev.opening, net, floor, floorDays: days, floorCap: ctx.floorCap ?? null, reserve: r2(reserve?.target || 0),
     budget: { per_month: steady, cash_flow_budget: perMonth, share, year_surplus: r2(yearSurplus) },
     dscr: {
       capacity: coverage?.projected?.capacity ?? null, threshold: Number(coverage?.threshold) || 1.25,

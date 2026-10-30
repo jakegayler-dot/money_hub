@@ -27,6 +27,7 @@ export const GROUPS = [
     { to: '/goals', label: 'Goals' },
     { to: '/bills', label: 'Bills' },
     { to: '/invoices', label: 'Invoices & receipts' },
+    { to: '/rewards', label: 'Gift cards, points & rebates' },
     { to: '/calendar', label: 'Calendar' },
     { to: '/paystubs', label: 'Paystubs' },
     { to: '/groceries', label: 'Groceries' },

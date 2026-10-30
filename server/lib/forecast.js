@@ -49,7 +49,11 @@ const dayNum = (d) => { const [y, m, dd] = toISODate(d).split('-').map(Number); 
 // due in the FLOOR_DAYS after it — cash on hand should cover it if nothing
 // arrives in that time. Capital purchases, estimates and discretionary
 // spending can be put off, so they are left out.
+// It's capped (Jake, Oct 27: "20k max of cash and cash equivalents"): the
+// payments themselves are already taken off month by month in the forecast,
+// so the floor is a cushion, never more than FLOOR_CAP (setting floor_cap).
 export const FLOOR_DAYS = 60;
+export const FLOOR_CAP = 20000;
 const MAX_FLOOR_DAYS = 90;
 const LOOKAHEAD_MONTHS = 3;
 const MUST_PAY = new Set(['loan', 'lease', 'bill', 'card', 'fee', 'tax', 'gst']);
@@ -241,13 +245,14 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     farmIncomeTax(y0).catch((e) => { console.error('Tax projection unavailable for the forecast:', e.message); return null; }),
     Promise.all([
       getSetting('floor_window_days', FLOOR_DAYS),
+      getSetting('floor_cap', FLOOR_CAP),
       getSetting(`tax_instalment_paid_${y0}`, null),
       getSetting(`tax_prior_year_owing_${y0}`, null),
       getSetting(`tax_instalment_paid_${y0 - 1}`, null),
       getSetting('gst_filing_frequency', 'quarterly'),
     ]),
   ]);
-  const [floorDaysSetting, paidY0, priorOwingY0, paidPrev, gstFreq] = settings;
+  const [floorDaysSetting, floorCapSetting, paidY0, priorOwingY0, paidPrev, gstFreq] = settings;
   const [splits, payers] = await Promise.all([ownerSplits(today), cardPayers()]);
   const own = (row) => ownersOf(row, splits);
 
@@ -305,6 +310,21 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
       key: `invoice:${d.id}`, kind: 'receivable', label: `${d.number} — ${d.party_name}`, date: due < today ? today : due,
       amount: Number(d.total), farm, owners: own(d), taxable: Number(d.subtotal) * farm, overdue: due < today,
       ref: { invoice_id: d.id },
+    });
+  }
+
+  // Rebates still to come (Jake, Oct 29): claimed or approved on their expected date; earning ones too, as
+  // estimates. An overdue one counts now.
+  const { rows: rebateRows } = await pool.query(
+    `SELECT * FROM rebates WHERE status IN ('earning', 'claimed', 'approved') AND expected_date IS NOT NULL`).catch(() => ({ rows: [] }));
+  for (const r of rebateRows) {
+    const amt = r.amount != null ? Number(r.amount) : r.qualifying_spend != null && r.rate_pct != null ? Number(r.qualifying_spend) * Number(r.rate_pct) / 100 : 0;
+    const due = toISODate(r.expected_date);
+    if (!(amt > 0) || due >= endStr) continue;
+    const farm = businessShare(r);
+    add({
+      key: `rebate:${r.id}`, kind: 'receivable', label: `Rebate — ${r.program}`, date: due < today ? today : due, amount: amt, farm, owners: own(r),
+      taxable: amt * farm, overdue: due < today, estimate: r.status === 'earning', ref: { rebate_id: r.id },
     });
   }
 
@@ -426,6 +446,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
   const netY0 = taxY0 ? taxY0.projected.net_income : null;
   const inWindow = (d) => toISODate(d) < win.endStr;
   const floorDays = Math.min(MAX_FLOOR_DAYS, Math.max(14, Number(floorDaysSetting) || FLOOR_DAYS));
+  const floorCap = Number.isFinite(Number(floorCapSetting)) && Number(floorCapSetting) >= 0 ? Number(floorCapSetting) : FLOOR_CAP;
 
   // The household budget (Jake, Oct 24): everything the household spends that isn't a bill, a loan or a
   // card statement, as one line a month. With every other item in, each month-end has some room above the
@@ -435,7 +456,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
   // what's left of it after what's already been spent this month.
   try {
     const share = Math.min(1, Math.max(0, Number(await getSetting('household_budget_share', 0.9)) || 0.9));
-    const base = { win, today, accounts: accountRows, splits, floorDays, lookahead: flows.filter((f) => !inWindow(f.date)) };
+    const base = { win, today, accounts: accountRows, splits, floorDays, floorCap, lookahead: flows.filter((f) => !inWindow(f.date)) };
     const ev0 = evaluate(flows.filter((f) => inWindow(f.date)), base, { scope: 'everything' });
     const { room, bindingIdx, perMonth } = householdBudget(ev0.trajectory.map((t) => t.headroom), share);
     const spent = await householdSpentThisMonth(today);
@@ -462,7 +483,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
   return {
     win, today, flows: flows.filter((f) => inWindow(f.date)), lookahead: flows.filter((f) => !inWindow(f.date)), accounts: accountRows, groups, known, personal, splits,
     bills: billRows.rows.filter((b) => inWindow(b.due_date)), loans: loanRows.rows.filter((l) => inWindow(l.due_date)), contracts: contractRows.rows, estimates,
-    inventory: inv, floorDays, gstFreq: String(gstFreq || 'quarterly'),
+    inventory: inv, floorDays, floorCap, gstFreq: String(gstFreq || 'quarterly'),
     tax: {
       available: !!taxY0, netY0, taxY0: taxY0 ? taxY0.projected.tax.total : null,
       paidY0: paidY0 || null, priorOwingY0: priorOwingY0 != null ? Number(priorOwingY0) : null, paidPrev: paidPrev || null,
@@ -658,13 +679,15 @@ export function evaluate(flows, ctx, { scope = 'everything', accountIds = null }
   });
   // The floor at each month-end: what must be paid in the days after it.
   const days = ctx.floorDays || FLOOR_DAYS;
+  const cap = ctx.floorCap ?? Infinity;
   const all = [...flows, ...(ctx.lookahead || [])];
   trajectory.forEach((t, i) => {
     const next = i + 1 < n ? `${meta[i + 1].year}-${pad(meta[i + 1].month)}-01` : endStr;
     const f = mustPayBetween(all, next, addDays(next, days), scope, ctx.splits);
-    t.floor = f.total;
+    t.floorDue = f.total; // everything due in the window, before the cap
+    t.floor = r2(Math.min(f.total, cap));
     t.floorParts = f.parts;
-    t.headroom = r2(t.balance - f.total);
+    t.headroom = r2(t.balance - t.floor);
   });
   // Today's floor: everything overdue plus what falls due in the next `days`.
   const now = mustPayBetween(all, '0000-01-01', addDays(ctx.today || todayISO(), days), scope, ctx.splits);
@@ -672,7 +695,7 @@ export function evaluate(flows, ctx, { scope = 'everything', accountIds = null }
   const tightIdx = trajectory.reduce((k, t, i) => (t.headroom < trajectory[k].headroom ? i : k), 0);
   return {
     opening, trajectory, lowIdx, low: trajectory[lowIdx].balance, end: trajectory[n - 1].balance,
-    tightIdx, floorDays: days, floorNow: now.total, floorNowParts: now.parts,
+    tightIdx, floorDays: days, floorCap: Number.isFinite(cap) ? cap : null, floorNow: r2(Math.min(now.total, cap)), floorNowParts: now.parts,
   };
 }
 

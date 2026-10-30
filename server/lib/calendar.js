@@ -187,6 +187,28 @@ export async function calendarItems({ from, to, today = todayISO() }) {
     if (d < from || d > to || left < 0.5) continue;
     items.push({ id: `contract:${c.id}`, date: d, kind: 'contract', title: `${c.commodity}${c.counterparty ? ` — ${c.counterparty}` : ''} payment expected`, amount: r2(left), link: '/contracts' });
   }
+  // Rebates (Jake, Oct 29): the claim deadline while it's still being earned, and the cheque's expected date.
+  const { rows: rbs } = await pool.query(`SELECT id, program, status, claim_by, expected_date, amount, qualifying_spend, rate_pct FROM rebates WHERE status IN ('earning', 'claimed', 'approved')`).catch(() => ({ rows: [] }));
+  for (const r of rbs) {
+    const amt = r.amount != null ? Number(r.amount) : r.qualifying_spend != null && r.rate_pct != null ? Number(r.qualifying_spend) * Number(r.rate_pct) / 100 : 0;
+    if (r.status === 'earning' && r.claim_by) {
+      const d = toISODate(r.claim_by);
+      if (d >= from && d <= to) items.push({ id: `rebate-claim:${r.id}`, date: d, kind: 'program', title: `Claim deadline — ${r.program}`, amount: null, link: '/rewards' });
+    }
+    if (r.expected_date && amt > 0) {
+      const d = toISODate(r.expected_date);
+      const date = d < today ? today : d;
+      if (date >= from && date <= to) items.push({ id: `rebate:${r.id}`, date, kind: 'contract', title: `Rebate expected — ${r.program}`, amount: Math.round(amt * 100) / 100, overdue: d < today, due: d, link: '/rewards' });
+    }
+  }
+  // Gift cards about to expire with money still on them.
+  const { rows: gcs } = await pool.query(
+    `SELECT g.id, g.merchant, g.expires, g.value - COALESCE((SELECT SUM(amount) FROM gift_card_uses u WHERE u.card_id = g.id), 0) AS left
+     FROM gift_cards g WHERE g.direction = 'received' AND g.status = 'active' AND g.expires IS NOT NULL`).catch(() => ({ rows: [] }));
+  for (const g of gcs) {
+    const d = toISODate(g.expires);
+    if (Number(g.left) > 0.005 && d >= from && d <= to) items.push({ id: `giftcard:${g.id}`, date: d, kind: 'program', title: `${g.merchant} gift card expires (${Number(g.left).toFixed(2)} left)`, amount: null, link: '/rewards' });
+  }
   // Invoices the farm sent, on their due date (Jake, Oct 26).
   const { rows: invoices } = await pool.query(`SELECT id, number, party_name, total, due_date FROM farm_documents WHERE kind = 'invoice' AND status = 'open' AND due_date IS NOT NULL`).catch(() => ({ rows: [] }));
   for (const v of invoices) {

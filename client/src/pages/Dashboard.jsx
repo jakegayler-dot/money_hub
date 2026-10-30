@@ -57,7 +57,7 @@ export default function Dashboard() {
           label="Liquidity floor"
           to="/cash-flow"
           value={money(liquidity.floorMonth.balance)}
-          sub={`Tightest month ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][liquidity.floorMonth.month - 1]} ${liquidity.floorMonth.year || ''} · ${money(liquidity.requiredFloor)} falls due in the ${liquidity.floorDays || 60} days after`}
+          sub={`Tightest month ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][liquidity.floorMonth.month - 1]} ${liquidity.floorMonth.year || ''} · floor ${money(liquidity.requiredFloor)}${liquidity.floorCap != null ? ` (up to ${money(liquidity.floorCap)})` : ''}`}
           tone={liquidity.passes ? 'positive' : 'negative'}
         />
         <MetricCard

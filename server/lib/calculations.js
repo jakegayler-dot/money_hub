@@ -273,6 +273,7 @@ export async function liquidityFloor({ months = 12, scope = 'everything', accoun
     lowestMonth,
     committedFloorMonth: { year: committedFloor.year, month: committedFloor.month, balance: committedFloor.committedBalance },
     floorDays: ev.floorDays,
+    floorCap: ev.floorCap,
     requiredFloor,
     floorNow: ev.floorNow,
     floorNowParts: ev.floorNowParts,

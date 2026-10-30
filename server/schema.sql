@@ -1766,3 +1766,55 @@ ALTER TABLE goals ADD COLUMN IF NOT EXISTS details JSONB NOT NULL DEFAULT '{}'::
 ALTER TABLE goals ADD COLUMN IF NOT EXISTS study JSONB;
 ALTER TABLE goals ADD COLUMN IF NOT EXISTS studied_at TIMESTAMPTZ;
 ALTER TABLE goals ADD COLUMN IF NOT EXISTS history JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+-- Gift cards and rebates (Jake, Oct 29), on the Rewards page with the card points.
+-- A gift card received is money to spend: its balance is what it was worth
+-- less each use logged against it. One given away is a record of the gift.
+CREATE TABLE IF NOT EXISTS gift_cards (
+  id          SERIAL PRIMARY KEY,
+  direction   TEXT NOT NULL DEFAULT 'received' CHECK (direction IN ('received', 'given')),
+  merchant    TEXT NOT NULL,              -- where it's spent: "Co-op", "Amazon", "Visa prepaid"
+  person      TEXT,                       -- who gave it, or who it went to
+  value       NUMERIC(12,2) NOT NULL CHECK (value >= 0),
+  date        DATE NOT NULL,
+  expires     DATE,
+  owner       TEXT NOT NULL DEFAULT 'jake' CHECK (owner IN ('jake', 'ashley', 'farm', 'family')),
+  occasion    TEXT,
+  notes       TEXT,
+  status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'used', 'lost')),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS gift_card_uses (
+  id             SERIAL PRIMARY KEY,
+  card_id        INTEGER NOT NULL REFERENCES gift_cards(id) ON DELETE CASCADE,
+  date           DATE NOT NULL,
+  amount         NUMERIC(12,2) NOT NULL CHECK (amount > 0),
+  description    TEXT,
+  transaction_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL
+);
+
+-- Rebate programs (farm input programs: BASF, Bayer, Corteva, Nutrien, seed
+-- and chem volume rebates): earned on purchases, paid out later. Earning or
+-- claimed with an expected date, it's money coming in on Cash Flow (earning:
+-- as an estimate); received, the deposit is booked or an entry linked.
+CREATE TABLE IF NOT EXISTS rebates (
+  id              SERIAL PRIMARY KEY,
+  program         TEXT NOT NULL,           -- "BASF Ag Solutions Rewards 2026"
+  sponsor         TEXT,                    -- who pays it out
+  season          INTEGER,
+  qualifying_spend NUMERIC(14,2),          -- what was bought under it
+  rate_pct        NUMERIC(6,3),            -- % back, when it's a flat rate
+  amount          NUMERIC(14,2),           -- what you expect (blank: spend × rate)
+  status          TEXT NOT NULL DEFAULT 'earning' CHECK (status IN ('earning', 'claimed', 'approved', 'received', 'lost')),
+  claim_by        DATE,                    -- deadline to submit the claim
+  expected_date   DATE,
+  received_date   DATE,
+  received_amount NUMERIC(14,2),
+  account_id      INTEGER REFERENCES accounts(id),
+  transaction_id  INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+  linked_existing BOOLEAN NOT NULL DEFAULT false,
+  category_id     INTEGER REFERENCES expense_categories(id),
+  segment         enterprise_segment DEFAULT 'grain',
+  notes           TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);

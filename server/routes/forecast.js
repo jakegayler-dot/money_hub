@@ -34,6 +34,14 @@ router.get('/', ah(async (req, res) => {
   res.json(await liquidityFloor(optionsFrom(req.query)));
 }));
 
+// The most the cash floor can be (Jake, Oct 27: 20k max): { cap } in dollars.
+router.put('/floor-cap', ah(async (req, res) => {
+  const cap = Number(req.body?.cap);
+  if (!Number.isFinite(cap) || cap < 0) return res.status(400).json({ error: 'The floor cap is a dollar amount, zero or more.' });
+  await pool.query('INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value', ['floor_cap', JSON.stringify(Math.round(cap))]);
+  res.json({ cap: Math.round(cap) });
+}));
+
 // What can be re-priced, contracted, moved or deferred in a what-if.
 router.get('/context', ah(async (req, res) => {
   const ctx = await loadForecast({ months: optionsFrom(req.query).months });

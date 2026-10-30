@@ -33,6 +33,7 @@ import receiptsRoute, { receiptUpload } from './routes/receipts.js';
 import groceriesRoute from './routes/groceries.js';
 import farmDocsRoute from './routes/farmDocs.js';
 import goalsRoute from './routes/goals.js';
+import rewardsRoute from './routes/rewards.js';
 import { readPending, matchPending } from './lib/receipts.js';
 import { pairTransfers } from './lib/transferPairs.js';
 import { reclassifyCardPayments } from './lib/postings.js';
@@ -118,6 +119,7 @@ app.use('/api/receipts', receiptsRoute);
 app.use('/api/groceries', groceriesRoute);
 app.use('/api/farm-docs', farmDocsRoute);
 app.use('/api/goals', goalsRoute);
+app.use('/api/rewards', rewardsRoute);
 
 // In production, this is the only Railway service — it serves the built
 // client alongside the API so there's nothing extra to deploy or wire up.

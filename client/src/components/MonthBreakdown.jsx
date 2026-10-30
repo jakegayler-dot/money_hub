@@ -12,7 +12,7 @@ import { cents } from './SplitEditor.jsx';
 // Groups, each with a colour and where its figures come from.
 export const GROUPS = {
   contracts: { label: 'Grain & cattle contracts', color: '#c9a227', link: '/contracts', from: 'Open sale contracts, on their expected payment date.' },
-  invoices: { label: 'Invoices owed to the farm', color: '#4fb3a0', link: '/invoices', from: 'Invoices the farm sent that aren\'t paid yet, on their due date (an overdue one counts now).' },
+  invoices: { label: 'Invoices & rebates owed', color: '#4fb3a0', link: '/invoices', from: 'Invoices the farm sent that aren\'t paid yet, on their due date, and rebates still to come on their expected date (Rewards page; one still being earned is an estimate). An overdue one counts now.' },
   wages: { label: 'Wages', color: '#6fbf73', link: '/paystubs', from: 'The paystubs: recent take-home pay on the usual pay schedule, with CPP and EI stopping once they reach the year\'s maximum, and the summer holdback in July and August.' },
   est_in: { label: 'Estimated income', color: '#2bb0a1', link: '/cash-flow', from: 'Your cash estimates on this page (Estimates, below).' },
   inventory: { label: 'Inventory sales', color: '#5b8def', link: '/assets', from: 'Unsold grain and cattle at today\'s prices, in the month you expect to sell them.' },
@@ -154,7 +154,8 @@ export default function MonthBreakdown({ m, floor, floorDays = 60, compare = nul
       {floor != null && (
         <div className="mb-floor">
           <b>Floor after this month: {money(Math.round(floor))}</b> — what must be paid in the {floorDays} days after the month-end
-          {parts.length ? `: ${parts.map(([k, l]) => `${l} ${money(Math.round(m.floorParts[k]))}`).join(', ')}` : ''}.
+          {parts.length ? `: ${parts.map(([k, l]) => `${l} ${money(Math.round(m.floorParts[k]))}`).join(', ')}` : ''}
+          {m.floorDue != null && m.floorDue > floor + 0.5 ? `, ${money(Math.round(m.floorDue))} in all — capped at ${money(Math.round(floor))}, since those payments already come off the months they fall in` : ''}.
           {m.balance < floor ? ' The month closes below it.' : ` The month closes ${money(Math.round(m.balance - floor))} above it.`}
         </div>
       )}

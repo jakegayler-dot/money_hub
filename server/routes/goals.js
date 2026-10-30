@@ -94,9 +94,10 @@ router.get('/plan', ah(async (req, res) => {
   }
   // Months short of the floor even with no goal bought (the plan itself).
   let b0 = base.opening; let short = null;
-  base.meta.forEach((m, i) => { b0 += base.net[i]; const h = b0 - base.floor[i]; if (h < 0 && (!short || h < short.amount)) short = { month: monthLabel(m), amount: Math.round(h) }; });
+  base.meta.forEach((m, i) => { b0 += base.net[i]; const h = b0 - Math.min(base.floorCap ?? Infinity, base.floor[i]); if (h < 0 && (!short || h < short.amount)) short = { month: monthLabel(m), amount: Math.round(h) }; });
   let bal = base.opening;
-  const months = base.meta.map((m, i) => { bal += net[i]; return { month: monthLabel(m), balance: Math.round(bal), floor: Math.round(floor[i]), headroom: Math.round(bal - floor[i]) }; });
+  const capped = floor.map((v) => Math.min(base.floorCap ?? Infinity, v));
+  const months = base.meta.map((m, i) => { bal += net[i]; const floor = capped; return { month: monthLabel(m), balance: Math.round(bal), floor: Math.round(floor[i]), headroom: Math.round(bal - floor[i]) }; });
   // Spending less at home: the same goals with the household budget at smaller shares of the room.
   const shares = [0.75, 0.5, 0.25].filter((s) => s < base.budget.share - 0.01);
   const alt = [];
