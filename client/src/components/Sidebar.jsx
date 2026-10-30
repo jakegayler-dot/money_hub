@@ -26,6 +26,7 @@ export const GROUPS = [
     { to: '/cash-flow', label: 'Cash flow' },
     { to: '/goals', label: 'Goals' },
     { to: '/bills', label: 'Bills' },
+    { to: '/land-rent', label: 'Land rent' },
     { to: '/invoices', label: 'Invoices & receipts' },
     { to: '/rewards', label: 'Gift cards, points & rebates' },
     { to: '/calendar', label: 'Calendar' },
