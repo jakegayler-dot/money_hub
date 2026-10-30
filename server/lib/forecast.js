@@ -25,6 +25,7 @@
 
 import { pool, getSetting } from '../db.js';
 import { loadNetting } from './cropPlanNetting.js';
+import { RENT_SQL, projectRent } from './rentProjection.js';
 import { occurrences, signedAmount, activeEstimates } from './estimates.js';
 import { inventorySales } from './inventoryForecast.js';
 import { loadBalanceSheet } from './balanceSheet.js';
@@ -374,6 +375,18 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
         taxable: -(amt - gst) * farm, overdue: d < today,
         ref: { bill_id: b.id, first: i === 0, financed: !!b.is_financed, gst, category_id: b.category_id || null },
       });
+    });
+  }
+
+  // Rent comes round every year: each landlord's next payments that no bill covers yet (rentProjection.js, Oct 30).
+  const { rows: rentBills } = await pool.query(RENT_SQL).catch(() => ({ rows: [] }));
+  for (const { bill: b, date: d } of projectRent(rentBills, today, endStr)) {
+    const farm = businessShare(b);
+    const amt = Number(b.amount) || 0;
+    if (!(amt > 0)) continue;
+    add({
+      key: `rent:${b.id}:${d}`, kind: 'bill', label: `${b.name} (yearly rent)`, date: d, amount: -amt, farm, owners: own(b),
+      taxable: -amt * farm, overdue: false, ref: { rent_from_bill: b.id, category_id: b.category_id || null },
     });
   }
 
