@@ -26,6 +26,7 @@
 import { pool, getSetting } from '../db.js';
 import { loadNetting } from './cropPlanNetting.js';
 import { RENT_SQL, projectRent } from './rentProjection.js';
+import { ACTUAL_SQL, PURCHASE_IDS_SQL, agriInvestFlows } from './agriInvest.js';
 import { occurrences, signedAmount, activeEstimates } from './estimates.js';
 import { inventorySales } from './inventoryForecast.js';
 import { loadBalanceSheet } from './balanceSheet.js';
@@ -389,6 +390,16 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
       taxable: -amt * farm, overdue: false, ref: { rent_from_bill: b.id, category_id: b.category_id || null },
     });
   }
+
+  // AgriInvest: each program year's government match, worked out from its sales less its purchases (agriInvest.js, Oct 30).
+  try {
+    const [{ rows: act }, { rows: pids }] = await Promise.all([
+      pool.query(ACTUAL_SQL, [`${Number(today.slice(0, 4)) - 1}-01-01`, today]),
+      pool.query(PURCHASE_IDS_SQL),
+    ]);
+    const actual = Object.fromEntries(act.map((r) => [r.year, r]));
+    for (const f of agriInvestFlows({ flows, actual, purchaseIds: new Set(pids.map((r) => Number(r.id))), today, endStr })) add(f);
+  } catch (e) { console.error('AgriInvest unavailable for the forecast:', e.message); }
 
   // Loan payments: principal + interest; only the interest is deductible.
   for (const p of loanRows.rows) {
