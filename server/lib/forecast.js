@@ -24,6 +24,7 @@
 // per year, so a scenario can re-work them.
 
 import { pool, getSetting } from '../db.js';
+import { loadNetting } from './cropPlanNetting.js';
 import { occurrences, signedAmount, activeEstimates } from './estimates.js';
 import { inventorySales } from './inventoryForecast.js';
 import { loadBalanceSheet } from './balanceSheet.js';
@@ -328,12 +329,16 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     });
   }
 
-  // Estimates (each occurrence from today) and uncontracted inventory sales.
+  // Estimates (each occurrence from today) and uncontracted inventory sales. Quarter Section's crop plan less what's
+  // already billed or contracted for its crop year (cropPlanNetting.js, Oct 30).
+  const net = await loadNetting(estimates).catch(() => null);
   for (const e of estimates) {
     const farm = businessShare(e);
     const commodity = estimateCommodity(e, known);
+    const planAmt = net ? net.amountOf(e) : null;
+    if (planAmt != null && !(planAmt > 0)) continue;
     for (const d of occurrences(e, today, endStr)) {
-      const amt = signedAmount(e);
+      const amt = planAmt != null ? (e.direction === 'outflow' ? -planAmt : planAmt) : signedAmount(e);
       add({
         key: `est:${e.id}:${d}`, kind: amt >= 0 ? 'estimate_in' : 'estimate_out', label: e.name || e.commodity || 'Estimate', date: toISODate(d),
         amount: amt, farm, owners: own(e), taxable: amt * farm, estimate: true,
