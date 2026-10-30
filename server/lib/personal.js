@@ -497,6 +497,14 @@ export async function categoryEntries({ category_id, from, to }) {
 
 
 /** What the household has spent so far this month, apart from bills and loan payments (forecast on their own). */
+/** Household spending (not bills) in each month from `fromYm` through today's: { 'YYYY-MM': amount }. */
+export async function householdSpentByMonth(fromYm, today = todayISO()) {
+  const { spending } = await householdLines(`${fromYm}-01`, addDay(today), await categoryBuckets());
+  const out = {};
+  for (const l of spending) if (!l.scheduled && l.month >= fromYm) out[l.month] = r2((out[l.month] || 0) + l.amount);
+  return out;
+}
+
 export async function householdSpentThisMonth(today = todayISO()) {
   const cur = ym(today);
   const { spending } = await householdLines(`${cur}-01`, addDay(today), await categoryBuckets());

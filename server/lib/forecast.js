@@ -490,6 +490,12 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     const ev0 = evaluate(flows.filter((f) => inWindow(f.date)), base, { scope: 'everything' });
     const { room, bindingIdx, perMonth } = householdBudget(ev0.trajectory.map((t) => t.balance), share, win.meta);
     const spent = await householdSpentThisMonth(today);
+    // Each month's budget as it stands, kept for the tracker on the Personal page (Jake, Oct 30: "a discretionary
+    // budget for each month and a tracker to determine if I surpassed it"). The last figure in a month stands.
+    if (today === todayISO()) {
+      await pool.query(`INSERT INTO settings (key, value) VALUES ('household_budget_by_month', jsonb_build_object($1::text, $2::numeric))
+        ON CONFLICT (key) DO UPDATE SET value = settings.value || EXCLUDED.value`, [today.slice(0, 7), perMonth]).catch(() => {});
+    }
     win.meta.forEach((m, i) => {
       const key = `${m.year}-${String(m.month).padStart(2, '0')}`;
       const amt = i === 0 ? Math.max(0, perMonth - spent) : perMonth;

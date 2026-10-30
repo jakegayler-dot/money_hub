@@ -11,7 +11,8 @@
 // the tightest month, and how the budget splits over the categories and
 // people the household actually spends on (a guide, not separate limits).
 import { loadForecast, evaluate } from './forecast.js';
-import { spendingMix } from './personal.js';
+import { spendingMix, householdSpentByMonth } from './personal.js';
+import { getSetting } from '../db.js';
 import { todayISO } from './dates.js';
 
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -88,8 +89,19 @@ export async function generateBudget({ today = todayISO(), months = 12 } = {}) {
   }
   const scheduledItems = [...items].map(([name, v]) => ({ name, monthly: r2(v / n) })).filter((x) => x.monthly >= 1).sort((a, b) => b.monthly - a.monthly);
 
+  // The tracker: the last 12 months, each one's budget (kept since Oct 2026) against what was spent.
+  const first = new Date(Date.UTC(Number(today.slice(0, 4)), Number(today.slice(5, 7)) - 12, 1)).toISOString().slice(0, 7);
+  const [spentBy, budgets] = await Promise.all([householdSpentByMonth(first, today), getSetting('household_budget_by_month', {})]);
+  const tracker = Array.from({ length: 12 }, (_, i) => {
+    const d = new Date(Date.UTC(Number(today.slice(0, 4)), Number(today.slice(5, 7)) - 12 + i, 1));
+    const key = d.toISOString().slice(0, 7);
+    const budget = budgets?.[key] != null ? Number(budgets[key]) : null;
+    const spent = r2(spentBy[key] || 0);
+    return { month: key, label: label({ year: d.getUTCFullYear(), month: d.getUTCMonth() + 1 }), budget, spent, over: budget != null ? r2(spent - budget) : null, current: key === today.slice(0, 7) };
+  });
+
   return {
-    today, months: n,
+    today, months: n, tracker,
     monthly, share: p.share, room: p.room, typical,
     spent_this_month: p.spent_this_month,
     left_this_month: r2(Math.max(0, monthly - p.spent_this_month)),

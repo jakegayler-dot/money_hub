@@ -114,6 +114,33 @@ export default function BudgetFit({ onLoaded }) {
         </div>
       )}
 
+      {d.tracker?.length > 0 && (
+        <div className="bf-month">
+          <div className="bf-month-row"><span><b>Month by month</b></span>
+            <span className="split-lines">{(() => { const done = d.tracker.filter((t) => t.budget != null && !t.current); const o = done.filter((t) => t.over > 0).length; return done.length ? `Over in ${o} of ${done.length} month${done.length === 1 ? '' : 's'}` : 'Budgets kept from Oct 2026'; })()}</span>
+          </div>
+          <table>
+            <thead><tr><th>Month</th><th style={{ textAlign: 'right' }}>Budget</th><th style={{ textAlign: 'right' }}>Spent</th><th style={{ textAlign: 'right' }}>Over / under</th><th style={{ width: '35%' }} /></tr></thead>
+            <tbody>
+              {[...d.tracker].reverse().map((t) => {
+                const pct = t.budget ? Math.min(100, (t.spent / t.budget) * 100) : 0;
+                const isOver = t.over != null && t.over > 0;
+                return (
+                  <tr key={t.month}>
+                    <td className="nowrap">{t.label}{t.current ? ' (so far)' : ''}</td>
+                    <td style={{ textAlign: 'right' }}>{t.budget != null ? money(t.budget) : '—'}</td>
+                    <td style={{ textAlign: 'right' }}>{money(t.spent)}</td>
+                    <td style={{ textAlign: 'right' }} className={isOver ? 'neg' : ''}>{t.over == null ? '—' : isOver ? `${money(t.over)} over` : `${money(-t.over)} under`}</td>
+                    <td>{t.budget ? <span className="bf-progress" role="img" aria-label={`${money(t.spent)} of ${money(t.budget)}`}><span style={{ width: `${pct}%`, background: isOver ? 'var(--negative)' : SERIES[0] }} /></span> : null}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <p className="split-lines">Each month's budget is the one that stood at its end (it moves as Cash Flow changes); earlier months have no budget kept.</p>
+        </div>
+      )}
+
       <HeadroomBars path={d.path} tightest={d.tightest.month} />
       <p className="split-lines bf-caption">Cash above the floor at each month-end with the budget spent. The tightest, {d.tightest.month}, is marked{d.tightest.headroom < 0 ? ' — below the floor' : ''}.</p>
 
