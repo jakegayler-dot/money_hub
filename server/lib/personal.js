@@ -71,7 +71,7 @@ async function householdLines(from, to, buckets) {
   const { rows: cats } = await pool.query('SELECT id, kind FROM expense_categories');
   const kindOf = new Map(cats.map((c) => [c.id, c.kind]));
   const { rows } = await pool.query(
-    `SELECT ${EARNING_COLUMNS}, l.date, l.category_id, l.transaction_id
+    `SELECT ${EARNING_COLUMNS}, l.date, l.category_id, l.transaction_id, l.description AS line_description
      FROM transaction_lines l JOIN transactions t ON t.id = l.transaction_id
      LEFT JOIN loan_payments lp ON lp.linked_transaction_id = l.transaction_id
      WHERE l.is_transfer = false AND (l.is_debt_service = false OR l.split_id IS NOT NULL)
@@ -92,7 +92,7 @@ async function householdLines(from, to, buckets) {
     const w = ownerWeights(l);
     const wsum = (w.jake + w.ashley + w.unassigned) || 1;
     spending.push({ date: toISODate(l.date), month: ym(l.date), bucket: b ? b.bucket : 'essential', category: b ? b.full : 'Uncategorized',
-      category_id: l.category_id || null, amount: -v, scheduled: scheduled.has(l.transaction_id),
+      category_id: l.category_id || null, amount: -v, scheduled: scheduled.has(l.transaction_id), transaction_id: l.transaction_id, description: l.line_description || null,
       jake: -v * w.jake / wsum, ashley: -v * w.ashley / wsum });
   }
   return { spending, income: r2(income) };
@@ -510,6 +510,15 @@ export async function householdSpentByMonth(fromYm, today = todayISO()) {
   const out = {};
   for (const l of spending) if (discretionary(l) && l.month >= fromYm) out[l.month] = r2((out[l.month] || 0) + l.amount);
   return out;
+}
+
+/** This month's discretionary entries, newest first (the sidebar behind the budget's categories, Oct 31). */
+export async function discretionaryEntriesThisMonth(today = todayISO()) {
+  const cur = ym(today);
+  const { spending } = await householdLines(`${cur}-01`, addDay(today), await categoryBuckets());
+  return spending.filter((l) => discretionary(l) && l.month === cur && l.amount > 0.005)
+    .map((l) => ({ id: l.transaction_id, date: l.date, category: l.category, amount: r2(l.amount), description: l.description }))
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.id - a.id));
 }
 
 export async function householdSpentThisMonth(today = todayISO()) {

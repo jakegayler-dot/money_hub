@@ -8,6 +8,29 @@ import BudgetFit from '../components/BudgetFit.jsx';
 import { Pie } from '../components/Pie.jsx';
 import { SERIES, SERIES_WIDE, OTHER, foldSlices } from '../chartColors.js';
 import { Pie3D } from '../components/Pie3D.jsx';
+import '../components/personalDrawer.css';
+
+/** The transactions behind a category, in a sidebar (Jake, Oct 31: "a side bar to open on desktop mode that lists the actual transactions behind the categories spending"). */
+function Drawer({ title, sub, entries, onClose }) {
+  useEffect(() => {
+    const k = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [onClose]);
+  const total = entries.reduce((a, e) => a + e.amount, 0);
+  return (
+    <>
+      <div className="pd-scrim" onClick={onClose} />
+      <aside className="pd" role="dialog" aria-label={title}>
+        <div className="pd-head">
+          <div><div className="pd-title">{title}</div><div className="pd-sub">{entries.length} entr{entries.length === 1 ? 'y' : 'ies'} · {cents(total)}{sub ? ` · ${sub}` : ''}</div></div>
+          <button type="button" className="pd-close" aria-label="Close" onClick={onClose}>×</button>
+        </div>
+        <div className="pd-body">{entries.length ? <Entries entries={entries} showCategory={new Set(entries.map((e) => e.category)).size > 1} /> : <div className="empty-state">No entries.</div>}</div>
+      </aside>
+    </>
+  );
+}
 
 // Personal spending (Jake, 2026-10-24: rebuilt around where the money
 // actually goes). Household spending — Jake, Ashley and unassigned —
@@ -121,6 +144,8 @@ export default function Personal() {
   const [showCats, setShowCats] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [openSub, setOpenSub] = useState(null); // which subcategory's entries are showing
+  const [drawer, setDrawer] = useState(null); // { title, sub, entries } or { pie: true }: the sidebar
+  const wide = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(min-width: 900px)').matches : true;
   const [catOpen, setCatOpen] = useState(null); // { id, entries } — a "Which spending is which" row opened
   const openCat = async (c) => {
     if (catOpen?.id === c.id) { setCatOpen(null); return; }
@@ -193,7 +218,7 @@ export default function Personal() {
       {error && <p className="review-error" style={{ margin: '0 0 12px' }}>{error}</p>}
 
       {/* The month against the discretionary budget first (Jake, Oct 31: "shown better") */}
-      <BudgetFit onLoaded={setHb} />
+      <BudgetFit onLoaded={setHb} onPickCategory={(c, list) => setDrawer({ title: `${c}, this month`, sub: 'discretionary', entries: list })} />
 
       <div className="grid personal-cards">
         <MetricCard label={`Spent, ${periodLabel}`} value={money(b.total)} sub={`about ${money(b.total / nMonths)} a month · Jake, Ashley and untagged`} />
@@ -209,7 +234,7 @@ export default function Personal() {
         <div className="panel-header spend-header"><span>Where it goes — {periodLabel}</span><span className="split-lines">Click a slice or a row</span></div>
         {!cats.length ? <div className="empty-state">No household spending in this period.</div> : (
           <div className="ps-pie-wrap">
-            <Pie3D slices={slices} selected={sel} onSelect={setSel} size={340} label="Household spending by category" centerTitle={periodLabel === 'this year' ? 'Spent this year' : 'Spent'} highlight={hl} />
+            <Pie3D slices={slices} selected={sel} onSelect={(k) => { setSel(k); if (k && wide) setDrawer({ pie: true }); }} size={340} label="Household spending by category" centerTitle={periodLabel === 'this year' ? 'Spent this year' : 'Spent'} highlight={hl} />
             <div className="ps-pie-side">
               {cur ? (
                 <div className="ps-detail">
@@ -232,7 +257,7 @@ export default function Personal() {
                           const on = openSub === key;
                           return (
                             <li key={ch.name} className={`pp-sub-pick${on ? ' on' : ''}`} tabIndex={0} aria-pressed={on}
-                              onClick={() => setOpenSub(on ? null : key)} onKeyDown={(e) => { if (e.key === 'Enter') setOpenSub(on ? null : key); }}>
+                              onClick={() => { setOpenSub(on ? null : key); if (!on && wide) setDrawer({ pie: true }); }} onKeyDown={(e) => { if (e.key === 'Enter') setOpenSub(on ? null : key); }}>
                               <div className="pp-sub-head"><span>{ch.name === cur.label ? 'Directly under it' : ch.name} <span className="split-lines">· {ch.count}</span></span><b>{cents(ch.amount)}</b></div>
                               <div className="pp-sub-bar"><span style={{ width: `${Math.max(2, (ch.amount / cur.amount) * 100)}%`, background: cur.color }} /></div>
                               <div className="split-lines">{ch.payees.map((p) => `${p.name} ${money(p.amount)}`).join(' · ')}</div>
@@ -248,11 +273,15 @@ export default function Personal() {
                   )}
                   <button type="button" className="small-link" onClick={() => setSel(null)}>Back to all</button>
                 </div>
-              ) : <Legend items={slices} total={b.total} selected={sel} onSelect={(k) => { setSel(k); setHl(null); }} onHover={setHl} />}
+              ) : <Legend items={slices} total={b.total} selected={sel} onSelect={(k) => { setSel(k); setHl(null); if (k && wide) setDrawer({ pie: true }); }} onHover={setHl} />}
             </div>
           </div>
         )}
       </div>
+
+      {drawer && (drawer.pie
+        ? (cur && !cur.rest ? <Drawer title={`${openSub ? openSub.split('|').filter((x, n, a) => n === 0 || x !== a[0]).join(' › ') : cur.label}, ${periodLabel}`} entries={entriesShown} onClose={() => setDrawer(null)} /> : null)
+        : <Drawer title={drawer.title} sub={drawer.sub} entries={drawer.entries} onClose={() => setDrawer(null)} />)}
 
       <div className="panel" id="ps-entries">
         <div className="panel-header spend-header">

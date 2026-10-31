@@ -42,7 +42,7 @@ function HeadroomBars({ path, tightest }) {
   );
 }
 
-export default function BudgetFit({ onLoaded }) {
+export default function BudgetFit({ onLoaded, onPickCategory }) {
   const [d, setD] = useState(null);
   const [err, setErr] = useState(null);
   const [sel, setSel] = useState(null);
@@ -106,7 +106,9 @@ export default function BudgetFit({ onLoaded }) {
             {cats.length > 0 && (
               <div className="bf-now-cats">
                 {cats.map(([c, v]) => (
-                  <div key={c} className="bf-now-cat">
+                  <div key={c} className={`bf-now-cat${onPickCategory ? ' pick' : ''}`} role={onPickCategory ? 'button' : undefined} tabIndex={onPickCategory ? 0 : undefined}
+                    onClick={() => onPickCategory?.(c, (d.entries_this_month || []).filter((e) => e.category === c))}
+                    onKeyDown={(e) => { if (e.key === 'Enter') onPickCategory?.(c, (d.entries_this_month || []).filter((x) => x.category === c)); }}>
                     <span>{c}</span>
                     <span className="bf-now-catbar"><span style={{ width: `${(v / top) * 100}%` }} /></span>
                     <b>{money(v)}</b>
