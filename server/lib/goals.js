@@ -27,7 +27,7 @@
 import { pool } from '../db.js';
 import { loadForecast, evaluate } from './forecast.js';
 import { purchaseTerms, loanSchedule } from './scenario.js';
-import { termDebtCoverage, reserveStatus } from './calculations.js';
+import { termDebtCoverage } from './calculations.js';
 import { businessShare } from './segments.js';
 import { toISODate, addMonths, addDays, todayISO } from './dates.js';
 
@@ -129,7 +129,9 @@ export function testsAt(base, g, eff, t, addedAnnual = 0) {
   }
   const out = [];
   out.push({ id: 'cash', ok: worst >= 0, value: r2(worst), month: worstIdx });
-  out.push({ id: 'reserve', ok: head[t] >= base.reserve, value: r2(head[t]), need: r2(base.reserve) });
+  // No reserve on top of the floor (Jake, Oct 31: "why are the goals still using a cash floor to reject goals?" — the
+  // household budget comes first and a goal waits for cash to stay above the floor after it; the $61k reserve is gone).
+  if (base.reserve > 0) out.push({ id: 'reserve', ok: head[t] >= base.reserve, value: r2(head[t]), need: r2(base.reserve) });
   if (eff.annual > 0 && base.dscr.capacity != null) {
     const svc = base.dscr.service[t] + addedAnnual + eff.annual;
     const ratio = svc > 0 ? base.dscr.capacity / svc : null;
@@ -257,7 +259,7 @@ export async function loadBase({ today = todayISO(), budgetShare = null } = {}) 
   const net = meta.map((_, i) => core[at(i)] + loanNet[i] + budget[i]);
 
   // Coverage: the lender's figure today, its debt service following the schedules as loans pay down.
-  const [coverage, reserve] = await Promise.all([termDebtCoverage().catch(() => null), reserveStatus(ctx.win.y0).catch(() => ({ target: 0 }))]);
+  const coverage = await termDebtCoverage().catch(() => null);
   const svc0 = farmService.slice(0, 12).reduce((a, v) => a + v, 0);
   const lenderSvc = coverage?.projected?.termDebtService ?? svc0;
   const service = meta.map((_, i) => {
@@ -265,7 +267,7 @@ export async function loadBase({ today = todayISO(), budgetShare = null } = {}) 
     return svc0 > 0 ? lenderSvc * (mine / svc0) : mine;
   });
   return {
-    today, meta, opening: ev.opening, net, floor, floorDays: days, floorCap: ctx.floorCap ?? null, reserve: r2(reserve?.target || 0),
+    today, meta, opening: ev.opening, net, floor, floorDays: days, floorCap: ctx.floorCap ?? null, reserve: 0,
     budget: { per_month: steady, cash_flow_budget: perMonth, share, year_surplus: r2(yearSurplus) },
     dscr: {
       capacity: coverage?.projected?.capacity ?? null, threshold: Number(coverage?.threshold) || 1.25,
@@ -294,7 +296,7 @@ export function explain(base, r) {
     detail: c.ok ? `After the ${$(t.cash_up_front)} up front${t.financed ? ` and ${$(t.annual_payment)} a year of payments` : ''}, the tightest month-end from then on is ${L(c.month)}, ${$(c.value)} above the floor.`
       : `Cash falls ${$(-c.value)} below the floor in ${L(c.month)}.` });
   const rv = tst('reserve');
-  conditions.push({ id: 'reserve', label: 'Reserve kept', ok: rv.ok,
+  if (rv) conditions.push({ id: 'reserve', label: 'Reserve kept', ok: rv.ok,
     detail: rv.ok ? `${$(rv.value)} above the floor the month it's bought — at least the ${$(rv.need)} reserve.` : `Only ${$(rv.value)} above the floor the month it's bought, under the ${$(rv.need)} reserve.` });
   const cv = tst('coverage');
   conditions.push({ id: 'coverage', label: `Debt coverage ${base.dscr.threshold.toFixed(2)}× or more`, ok: cv.ok, na: !!cv.na,
