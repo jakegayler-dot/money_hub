@@ -1,4 +1,5 @@
 import express from 'express';
+import { dataVersionTrigger } from './lib/dataVersion.js';
 import cors from 'cors';
 import 'dotenv/config';
 import { fileURLToPath } from 'node:url';
@@ -59,6 +60,7 @@ const app = express();
 // the real visitor (the sign-in limit counts per address).
 app.set('trust proxy', 1);
 app.use(cors());
+app.use('/api', dataVersionTrigger); // writes invalidate kept results (lib/dataVersion.js)
 // The receipt upload takes a raw image body, so it's mounted before the JSON parser.
 app.use('/api/receipts/upload', receiptUpload);
 // A Quicken export sent as JSON can be bigger than the usual limit.

@@ -254,19 +254,6 @@ function AccountPicker({ accounts, chosen, setChosen }) {
 // that's this crop's end; before September it's the crop still to be harvested.
 const CROP_END = new Date().getFullYear() + 1;
 
-// Where AgriInvest stands in the forecast (Oct 31: "why isn't agriinvest included in the cash flow forecast"): each
-// match counted, one past the end of this view, and a year left out with the reason.
-const fmtDay = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
-function AgriInvestNote({ a }) {
-  const parts = [
-    ...a.counted.map((x) => `the ${x.program_year} match, ${money(x.amount)}, is counted on ${fmtDay(x.date)} — 1% of ${money(x.ans)} allowable net sales: ${money(x.sold_so_far)} sold so far this year${x.to_sell ? ` + ${money(x.to_sell)} forecast to Dec 31` : ''}${x.purchases ? `, less ${money(x.purchases)} of livestock, feed grain and hay bought` : ''}`),
-    ...a.later.map((x) => `the ${x.program_year} match, about ${money(x.amount)}, lands ${fmtDay(x.date)} — past the end of this view`),
-    ...a.skipped.map((x) => `the ${x.program_year} match isn't counted: ${x.reason}`),
-  ];
-  if (!parts.length) return null;
-  const t = parts.join('; ');
-  return <p className="cf-budget-note">AgriInvest: {t[0].toLowerCase() + t.slice(1)}.</p>;
-}
 
 export default function CashFlow() {
   const [data, setData] = useState(null);
@@ -359,18 +346,6 @@ export default function CashFlow() {
         <button type="button" className="cf-whatif-btn" onClick={() => setEditing(true)}>What-if analysis</button>
       </div>
 
-      {data.personal && scope !== 'farm' && (
-        data.personal.shortfall ? (
-          <p className="pace-warn" role="status">
-            No room for household spending: even with none, cash falls {money(Math.round(data.personal.shortfall.amount))} below the floor. <a href="/personal">See Personal</a>
-          </p>
-        ) : (
-          <p className="cf-budget-note">
-            Household spending is one budget: {money(data.personal.per_month)} a month, the balance at the end of {data.personal.binding ? new Date(Date.UTC(data.personal.binding.year, data.personal.binding.month - 1, 15)).toLocaleDateString("en-CA", { month: "long", year: "numeric", timeZone: "UTC" }) : "next August"} spread over the months to it{data.personal.share < 1 ? ` (${Math.round(data.personal.share * 100)}% of it)` : ""}, on top of the bills. <a href="/personal">See the budget</a>
-          </p>
-        )
-      )}
-      {data.agriinvest && scope !== 'personal' && <AgriInvestNote a={data.agriinvest} />}
       <CashFlowTerminal liquidity={data} scenario={whatIfResult} scenarioName={whatIf?.name}
         onOpenWhatIf={() => setEditing(true)} onClearScenario={() => setWhatIf(null)} />
 

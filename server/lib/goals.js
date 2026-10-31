@@ -88,17 +88,25 @@ export function goalEffect(g, t, meta, floorDays = 60) {
   const pays = terms.financed > 0
     ? loanSchedule({ amount: terms.financed, rate: terms.rate, years: terms.years, per_year: terms.per_year, first_month: addMonths(`${p.month}-01`, 12 / terms.per_year).slice(0, 7) }).payments
     : [];
+  const win = windows(meta, floorDays);
   for (const x of pays) {
     const i = idx.get(x.date.slice(0, 7));
     if (i != null) net[i] -= x.payment;
     // In the floor of each month-end whose window it falls in.
     for (let k = 0; k < H; k++) {
-      const start = monthStart(meta, k + 1);
-      if (x.date >= start && x.date < addDays(start, floorDays)) due[k] += x.payment;
+      if (x.date >= win[k][0] && x.date < win[k][1]) due[k] += x.payment;
     }
   }
   const payIdx = pays.map((x) => idx.get(x.date.slice(0, 7)) ?? (x.date.slice(0, 7) < ym(0) ? 0 : null));
   return { terms, net, due, annual: terms.owner === 'farm' ? terms.annual_payment : 0, pays, payIdx };
+}
+// Each month-end's floor window [start, end), worked out once per horizon (the planner asks thousands of times).
+const winCache = new WeakMap();
+function windows(meta, floorDays) {
+  let byDays = winCache.get(meta);
+  if (!byDays) { byDays = new Map(); winCache.set(meta, byDays); }
+  if (!byDays.has(floorDays)) byDays.set(floorDays, meta.map((_, k) => { const st = monthStart(meta, k + 1); return [st, addDays(st, floorDays)]; }));
+  return byDays.get(floorDays);
 }
 const monthStart = (meta, i) => {
   const last = meta[meta.length - 1];
@@ -410,12 +418,24 @@ export async function loadBase({ today = todayISO(), budgetShare = null } = {}) 
     return svc0 > 0 ? lenderSvc * (mine / svc0) : mine;
   });
   return {
+    parts: { core, loanNet, fcBudget, y1len: y1.length, perMonth, share: p.share },
     today, meta, opening: ev.opening, net, principal, floor, floorDays: days, floorCap: 0, reserve: 0, sheet,
     budget: { per_month: steady, cash_flow_budget: perMonth, share, year_surplus: r2(yearSurplus) },
     dscr: {
       capacity: coverage?.projected?.capacity ?? null, threshold: Number(coverage?.threshold) || 1.25,
       service, now: coverage?.projected?.ratio ?? null,
     },
+  };
+}
+
+/** The same base with the household budget at another share (no forecast reload). */
+export function withShare(base, budgetShare) {
+  const { core, loanNet, fcBudget, y1len, perMonth, share } = base.parts;
+  const at = (i) => (i < y1len ? i : i % 12);
+  const scale = share > 0 ? budgetShare / share : 1;
+  return {
+    ...base, net: base.meta.map((_, i) => core[at(i)] + loanNet[i] + fcBudget[at(i)] * scale),
+    budget: { ...base.budget, per_month: Math.floor((perMonth * scale) / 10) * 10, share: budgetShare },
   };
 }
 

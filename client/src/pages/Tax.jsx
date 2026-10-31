@@ -116,11 +116,6 @@ function IncomeTax({ inc, year, whatIf, setWhatIf, reload, send }) {
             {' '}Capital purchases this year ({money(inc.actual.capex)}) aren't expenses — they come off through CCA.
           </p>
         )}
-        {inc.agriinvest?.skipped?.length > 0 && (
-          <p className="split-lines" style={{ margin: '0 16px 12px' }}>
-            AgriInvest: {inc.agriinvest.skipped.map((x) => `the ${x.program_year} match isn't counted — ${x.reason}`).join('; ')}.
-          </p>
-        )}
         {inc.gst_gap && (
           <p className="split-lines" style={{ margin: '0 16px 12px' }}>
             {inc.gst_gap.purchases} farm purchase{inc.gst_gap.purchases === 1 ? '' : 's'} ({money(inc.gst_gap.amount)}) {inc.gst_gap.purchases === 1 ? 'has' : 'have'} no GST recorded,

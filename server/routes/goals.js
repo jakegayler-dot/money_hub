@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
-import { loadBase, planGoals, explain, monthLabel, KIND_DEFAULTS } from '../lib/goals.js';
+import { loadBase, planGoals, explain, monthLabel, KIND_DEFAULTS, withShare } from '../lib/goals.js';
+import { dataVersion } from '../lib/dataVersion.js';
 import { toISODate } from '../lib/dates.js';
 
 // Long-term goals and when each can be bought (lib/goals.js).
@@ -75,7 +76,16 @@ router.delete('/:id', ah(async (req, res) => {
  * Each goal's month, the conditions, what's holding it; the cash path with
  * them bought; and the same plan with the household budget smaller.
  */
+// The plan is worked out once and kept until something changes (Jake, Oct 31: "why are goals getting worked out every
+// time I load the page?"): any write to Money Hub, a new day, or half an hour, whichever comes first.
+const planCache = new Map();
+const PLAN_TTL = 30 * 60 * 1000;
 router.get('/plan', ah(async (req, res) => {
+  const key = `${dataVersion()}|${new Date().toISOString().slice(0, 10)}|${req.query.ids || ''}`;
+  const hit = planCache.get(key);
+  if (hit && Date.now() - hit.at < PLAN_TTL) return res.json(hit.body);
+  const send = res.json.bind(res);
+  res.json = (body) => { if (res.statusCode < 400) { planCache.clear(); planCache.set(key, { at: Date.now(), body }); } return send(body); };
   const { rows } = await pool.query(`SELECT * FROM goals WHERE status = 'active' ORDER BY priority, id`);
   const all = rows.map(shape);
   const ids = String(req.query.ids || '').split(',').map(Number).filter(Boolean);
@@ -102,7 +112,7 @@ router.get('/plan', ah(async (req, res) => {
   const shares = [0.75, 0.5, 0.25].filter((s) => s < base.budget.share - 0.01);
   const alt = [];
   for (const s of shares) {
-    const b2 = await loadBase({ budgetShare: s });
+    const b2 = withShare(base, s);
     alt.push({ share: s, per_month: b2.budget.per_month, goals: planGoals(b2, goals).map((r) => ({ id: r.goal.id, when: r.month_index == null ? null : monthLabel(b2.meta[r.month_index]), months: r.month_index })) });
   }
   res.json({
