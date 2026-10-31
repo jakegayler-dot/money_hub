@@ -53,3 +53,17 @@ test('goals together: the second is no earlier than the first, and counts its co
   assert.ok(b.month_index >= a.month_index);
   assert.ok(b.month_index > alone.month_index, 'buying the truck first pushes the tractor back');
 });
+
+// Oct 31: "rejecting goals based on an absurd floor" — no floor (cash never below $0), and a smaller goal behind a big
+// one isn't made to wait for it (the $67k truck waited for the $800k house, to 2030).
+test('no floor: cash at $0 is the line; a goal that can never be reached no longer blocks the ones after it', () => {
+  const b = base({ floorCap: 0, reserve: 0, opening: 20000, net: new Array(H).fill(5000) });
+  const [castle, truck] = planGoals(b, [
+    { id: 1, name: 'Castle', kind: 'building', price: 50000000, funding: 'cash', owner: 'personal' },
+    { id: 2, name: 'Truck', kind: 'truck', price: 20000, funding: 'cash', owner: 'farm' },
+  ]);
+  assert.equal(castle.month_index, null);
+  assert.ok(truck.month_index != null && truck.month_index < 12, 'the truck is planned on its own merits');
+  const e = explain(b, truck);
+  assert.equal(e.conditions.find((c) => c.id === 'cash').label, 'Cash never goes below $0');
+});

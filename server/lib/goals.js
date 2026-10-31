@@ -116,7 +116,10 @@ export function testsAt(base, g, eff, t, addedAnnual = 0) {
   for (let i = 0; i < H; i++) {
     bal += base.net[i] + eff.net[i];
     without += base.net[i];
-    const cap = base.floorCap ?? Infinity; // the floor never goes over its cap (setting floor_cap)
+    // No floor under a goal (Jake, Oct 31, the fifth time: "why is moneyhub goals still rejecting goals based on an absurd
+    // floor?"): the household budget already spends cash down to about $0 by the end of August, so a cushion on top
+    // failed every summer. A goal fits when cash never goes below $0 after it. (base.floorCap 0 = no floor.)
+    const cap = base.floorCap ?? Infinity;
     head.push(bal - Math.min(cap, base.floor[i] + eff.due[i]));
     headWithout.push(without - Math.min(cap, base.floor[i]));
   }
@@ -157,7 +160,9 @@ export function planGoals(base, goals) {
   const out = [];
   for (const g of goals) {
     let found = null; let firstOk = {}; let lastTests = null;
-    for (let t = from; t < H; t++) {
+    // From today, not from the goal before it (Oct 31: the $67k truck waited for the $800k house, to 2030): the goals
+    // before it are already in the cash, so it fits wherever they leave room.
+    for (let t = 0; t < H; t++) {
       const eff = goalEffect(g, t, base.meta, base.floorDays);
       const tests = testsAt(cur, g, eff, t, addedAnnual[t]);
       if (t === from) lastTests = tests;
@@ -166,10 +171,10 @@ export function planGoals(base, goals) {
       lastTests = tests;
     }
     // Today's position on each test, for "what's holding it".
-    const at = Math.min(from, H - 1);
+    const at = 0;
     const effNow = goalEffect(g, at, base.meta, base.floorDays);
     const now = testsAt(cur, g, effNow, at, addedAnnual[at]);
-    const res = { goal: g, now, first_ok: firstOk, after_unreached: from >= H, from: at };
+    const res = { goal: g, now, first_ok: firstOk, after_unreached: false, from: at };
     if (found) {
       const { t, eff, tests } = found;
       Object.assign(res, { month_index: t, tests, terms: stripTerms(eff.terms) });
@@ -187,7 +192,7 @@ export function planGoals(base, goals) {
       const effEnd = goalEffect(g, H - 1, base.meta, base.floorDays);
       Object.assign(res, { month_index: null, tests: testsAt(cur, g, effEnd, H - 1, addedAnnual[H - 1]), terms: stripTerms(effEnd.terms) });
       void lastTests;
-      from = H; // the ones after it can't come before it
+      from = H;
     }
     out.push(res);
   }
@@ -267,7 +272,7 @@ export async function loadBase({ today = todayISO(), budgetShare = null } = {}) 
     return svc0 > 0 ? lenderSvc * (mine / svc0) : mine;
   });
   return {
-    today, meta, opening: ev.opening, net, floor, floorDays: days, floorCap: ctx.floorCap ?? null, reserve: 0,
+    today, meta, opening: ev.opening, net, floor, floorDays: days, floorCap: 0, reserve: 0,
     budget: { per_month: steady, cash_flow_budget: perMonth, share, year_surplus: r2(yearSurplus) },
     dscr: {
       capacity: coverage?.projected?.capacity ?? null, threshold: Number(coverage?.threshold) || 1.25,
@@ -292,9 +297,9 @@ export function explain(base, r) {
   const t = r.terms;
   const conditions = [];
   const c = tst('cash');
-  conditions.push({ id: 'cash', label: 'Cash floor holds', ok: c.ok,
-    detail: c.ok ? `After the ${$(t.cash_up_front)} up front${t.financed ? ` and ${$(t.annual_payment)} a year of payments` : ''}, the tightest month-end from then on is ${L(c.month)}, ${$(c.value)} above the floor.`
-      : `Cash falls ${$(-c.value)} below the floor in ${L(c.month)}.` });
+  conditions.push({ id: 'cash', label: 'Cash never goes below $0', ok: c.ok,
+    detail: c.ok ? `After the ${$(t.cash_up_front)} up front${t.financed ? ` and ${$(t.annual_payment)} a year of payments` : ''}, the lowest month-end from then on is ${L(c.month)}, with ${$(c.value)} in the bank.`
+      : `Cash would be ${$(-c.value)} overdrawn in ${L(c.month)}.` });
   const rv = tst('reserve');
   if (rv) conditions.push({ id: 'reserve', label: 'Reserve kept', ok: rv.ok,
     detail: rv.ok ? `${$(rv.value)} above the floor the month it's bought — at least the ${$(rv.need)} reserve.` : `Only ${$(rv.value)} above the floor the month it's bought, under the ${$(rv.need)} reserve.` });
@@ -309,10 +314,10 @@ export function explain(base, r) {
   // What's holding it: the tests that fail today, and when each would pass on its own.
   const holding = r.now.filter((x) => !x.ok).map((x) => {
     const when = r.first_ok[x.id];
-    const name = { cash: 'the cash floor', reserve: 'the reserve', coverage: 'debt coverage', equity: 'the down payment' }[x.id];
-    const today = x.id === 'cash' ? `${$(-x.value)} short of the floor` : x.id === 'reserve' ? (x.value < 0 ? `below the floor, with a ${$(x.need)} reserve to keep on top` : `${$(x.value)} above the floor of the ${$(x.need)} reserve`)
+    const name = { cash: 'cash', reserve: 'the reserve', coverage: 'debt coverage', equity: 'the down payment' }[x.id];
+    const today = x.id === 'cash' ? `${$(-x.value)} overdrawn by ${L(x.month)}` : x.id === 'reserve' ? (x.value < 0 ? `below the floor, with a ${$(x.need)} reserve to keep on top` : `${$(x.value)} above the floor of the ${$(x.need)} reserve`)
       : x.id === 'coverage' ? `${x.value?.toFixed(2)}× of ${Number(x.need).toFixed(2)}×` : `${Math.round(x.value)}% down of ${x.need}%`;
-    const at = r.from ? `if bought in ${L(r.from)}, after the goal above it` : 'if bought today';
+    const at = 'if bought today';
     return { id: x.id, text: `${name}: ${today} ${at}${when != null ? `; met from ${L(when)}` : '; not met within ten years'}` };
   });
   const i = r.month_index;
@@ -322,6 +327,6 @@ export function explain(base, r) {
     ? `Not within ten years as things stand. ${holding.map((h) => h.text).join('. ')}.`
     : i === 0
       ? `Can be bought now: every condition is met.`
-      : `Can be bought in ${L(i)} — ${span(i)} from now — once ${holding.length ? holding.map((h) => ({ cash: 'cash covers the floor after it', reserve: 'the reserve is there on top', coverage: 'debt coverage reaches the lender’s 1.25×', equity: 'the down payment is 15%' }[h.id])).join(' and ') : 'the money is there'}.`;
+      : `Can be bought in ${L(i)} — ${span(i)} from now — once ${holding.length ? holding.map((h) => ({ cash: 'cash stays above $0 after it', reserve: 'the reserve is there on top', coverage: 'debt coverage reaches the lender’s 1.25×', equity: 'the down payment is 15%' }[h.id])).join(' and ') : 'the money is there'}.`;
   return { when: i == null ? null : L(i), months: i, wait: i == null ? null : span(i), headline, conditions, holding, terms: t };
 }

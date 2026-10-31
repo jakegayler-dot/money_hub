@@ -63,7 +63,7 @@ function GoalForm({ initial, kinds, onSaved, onCancel }) {
   );
 }
 
-/** Cash above the floor at each month-end for ten years, with the goals bought where planned; the reserve as a line. */
+/** Cash at each month-end for ten years, with the goals bought where planned; the reserve as a line. */
 function PathChart({ months, reserve, marks }) {
   const [hover, setHover] = useState(null);
   const W = 900; const H = 230; const P = { l: 64, r: 12, t: 14, b: 26 };
@@ -76,7 +76,7 @@ function PathChart({ months, reserve, marks }) {
   const h = hover != null ? months[hover] : null;
   return (
     <div className="gl-chart">
-      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Cash above the floor at each month-end over ten years, with the goals bought"
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Cash at each month-end over ten years, with the goals bought"
         onMouseLeave={() => setHover(null)}
         onMouseMove={(e) => { const r = e.currentTarget.getBoundingClientRect(); const px = ((e.clientX - r.left) / r.width) * W; setHover(Math.max(0, Math.min(months.length - 1, Math.round(((px - P.l) / (W - P.l - P.r)) * (months.length - 1))))); }}>
         {[min, 0, max].filter((v, i, a) => a.indexOf(v) === i).map((v) => (
@@ -96,7 +96,7 @@ function PathChart({ months, reserve, marks }) {
         {h && <><line x1={x(hover)} x2={x(hover)} y1={P.t} y2={H - P.b} stroke="var(--text-faint)" />
           <circle cx={x(hover)} cy={y(h.headroom)} r="4" fill={SERIES[0]} stroke="var(--panel)" strokeWidth="2" /></>}
       </svg>
-      <div className="gl-tip">{h ? `${h.month}: cash ${money(h.balance)}, floor ${money(h.floor)} — ${money(h.headroom)} above it` : 'Point at the line for any month.'}</div>
+      <div className="gl-tip">{h ? `${h.month}: cash ${money(h.balance)}` : 'Point at the line for any month.'}</div>
     </div>
   );
 }
@@ -232,7 +232,7 @@ export default function Goals() {
       {plan && plan.goals.length > 0 && (
         <>
           {plan.short_without_goals && (
-            <p className="pace-warn">Even with no goals bought, cash falls {money(-plan.short_without_goals.amount)} below the floor around {plan.short_without_goals.month} — a loan payment or bill that the years ahead can't cover as they stand. Goals are judged on not making that worse; sort that one out on Cash Flow or Loans.</p>
+            <p className="pace-warn">Even with no goals bought, cash is {money(-plan.short_without_goals.amount)} overdrawn around {plan.short_without_goals.month}: the household budget spends the cash down to the end of August, so nothing can be bought before harvest money comes in unless the budget gives way.</p>
           )}
           {plan.goals.map((g) => {
             const goal = byId.get(g.id);
@@ -277,7 +277,7 @@ export default function Goals() {
             );
           })}
           <div className="panel">
-            <div className="panel-header">Cash above the floor, next ten years{plan.goals.length > 1 ? ', with these bought' : ', with it bought'}</div>
+            <div className="panel-header">Cash in the bank, next ten years{plan.goals.length > 1 ? ', with these bought' : ', with it bought'}</div>
             <PathChart months={plan.months} reserve={plan.reserve} marks={marks} />
             <p style={{ padding: '0 16px 14px', margin: 0 }} className="split-lines">
               The next 24 months are Cash Flow's forecast; after that the first year repeats — same income, costs and bills — while loan payments follow their
