@@ -28,6 +28,7 @@ import { pool } from '../db.js';
 import { loadForecast, evaluate } from './forecast.js';
 import { purchaseTerms, loanSchedule } from './scenario.js';
 import { termDebtCoverage } from './calculations.js';
+import { balanceSheetStatement } from './statement.js';
 import { businessShare } from './segments.js';
 import { toISODate, addMonths, addDays, todayISO } from './dates.js';
 
@@ -142,8 +143,7 @@ export function testsAt(base, g, eff, t, addedAnnual = 0) {
   } else {
     out.push({ id: 'coverage', ok: true, na: true });
   }
-  const eq = eff.terms.financed > 0 ? eff.terms.equity_pct : 100;
-  out.push({ id: 'equity', ok: eq >= EQUITY_MIN_PCT, value: r2(eq), need: EQUITY_MIN_PCT, na: !(eff.terms.financed > 0) });
+  // No down-payment test (Jake, Oct 31: "my leasing company allows 0% down"): the goal's own down payment is the deal.
   return out;
 }
 
@@ -152,7 +152,7 @@ export function testsAt(base, g, eff, t, addedAnnual = 0) {
  * earlier than the goal before it) where every test passes; its cash and
  * payments then go into the base for the next. Pure — exported for tests.
  */
-export function planGoals(base, goals) {
+export function planGoals(base, goals, { strategies: withStrategies = false } = {}) {
   const H = base.meta.length;
   const cur = { ...base, net: [...base.net], floor: [...base.floor] };
   let addedAnnual = new Array(H).fill(0);
@@ -175,6 +175,8 @@ export function planGoals(base, goals) {
     const effNow = goalEffect(g, at, base.meta, base.floorDays);
     const now = testsAt(cur, g, effNow, at, addedAnnual[at]);
     const res = { goal: g, now, first_ok: firstOk, after_unreached: false, from: at };
+    if (withStrategies) Object.assign(res, strategiesFor(cur, g, addedAnnual));
+    if (found) res.health = healthOf(cur, g, found, addedAnnual[found.t]);
     if (found) {
       const { t, eff, tests } = found;
       Object.assign(res, { month_index: t, tests, terms: stripTerms(eff.terms) });
@@ -198,6 +200,87 @@ export function planGoals(base, goals) {
   }
   return out;
 }
+// The ways to pay for a goal (Jake, Oct 31: "not ... recommending the best strategy"): cash, or financed at 0, 10 or
+// 20% down over 3, 5 or 7 years at the goal's rate (a 0%-down lease is the 0% row). Each is placed at its first month
+// that works with the goals before it counted. Best: the cheapest (least interest) that's bought by the want-by date;
+// if none is, the soonest.
+const VARIANTS = [{ funding: 'cash' }, ...[0, 10, 20].flatMap((d) => [3, 5, 7].map((y) => ({ funding: 'financed', down_pct: d, years: y })))];
+const money0 = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-CA');
+const ymLabel = (ym) => monthLabel({ year: Number(ym.slice(0, 4)), month: Number(ym.slice(5, 7)) });
+export function strategiesFor(cur, g, addedAnnual) {
+  const H = cur.meta.length;
+  const key = (i) => `${cur.meta[i].year}-${pad(cur.meta[i].month)}`;
+  const want = g.want_by ? String(g.want_by).slice(0, 7) : null;
+  const rate = Number(g.rate) || 7;
+  const own = g.funding === 'cash' ? 'cash' : `${Number(g.down_pct) || 0}|${Number(g.years) || 5}`;
+  const list = VARIANTS.map((v) => {
+    const gv = { ...g, ...v, rate: v.funding === 'cash' ? 0 : rate, per_year: Number(g.per_year) || 12 };
+    let at = null; let eff = null;
+    for (let t = 0; t < H; t++) {
+      const e = goalEffect(gv, t, cur.meta, cur.floorDays);
+      if (testsAt(cur, gv, e, t, addedAnnual[t]).every((x) => x.ok)) { at = t; eff = e; break; }
+    }
+    if (!eff) eff = goalEffect(gv, 0, cur.meta, cur.floorDays);
+    const tm = eff.terms;
+    return {
+      label: v.funding === 'cash' ? 'Cash' : `${v.down_pct}% down, ${v.years} years at ${rate}%`,
+      funding: v.funding, down_pct: v.down_pct ?? null, years: v.years ?? null, rate: v.funding === 'cash' ? null : rate,
+      month_index: at, when: at == null ? null : monthLabel(cur.meta[at]), in_time: want ? at != null && key(at) <= want : null,
+      up_front: r2(tm.cash_up_front), payment: tm.financed > 0 ? r2(tm.payment) : null, per_year: tm.per_year,
+      total_interest: r2(tm.total_interest || 0), yours: (v.funding === 'cash' ? 'cash' : `${v.down_pct}|${v.years}`) === own,
+    };
+  });
+  const ok = list.filter((x) => x.month_index != null);
+  const inTime = ok.filter((x) => x.in_time);
+  const pick = inTime.length
+    ? [...inTime].sort((a, b) => a.total_interest - b.total_interest || a.month_index - b.month_index)[0]
+    : [...ok].sort((a, b) => a.month_index - b.month_index || a.total_interest - b.total_interest)[0];
+  let why = null;
+  if (pick) {
+    const mine = list.find((x) => x.yours);
+    why = inTime.length
+      ? `${pick.label} gets it by ${ymLabel(want)} for the least interest (${money0(pick.total_interest)})`
+      : `Nothing gets it by ${want ? ymLabel(want) : 'the date you want'}; ${pick.label} is the soonest, ${pick.when}`;
+    if (mine && mine !== pick) why += mine.month_index == null ? '. Your terms never fit within ten years.' : `; your terms (${mine.label}) land ${mine.when}${mine.total_interest > pick.total_interest ? ` and cost ${money0(mine.total_interest - pick.total_interest)} more interest` : ''}.`;
+    else if (mine === pick) why += ". That's what you have set.";
+    else why += '.';
+  }
+  return { strategies: list, recommended: pick ? { ...pick, why } : null };
+}
+
+// What a goal does to the farm's and household's financial health, bought where the plan puts it (Jake, Oct 31: "not
+// calculating changes to financial health metrics"): the lowest month-end cash in the two years from buying, debt
+// coverage that year, debt to assets, and net worth on the day (the asset at its price, less the cash and the loan).
+export function healthOf(cur, g, { t, eff }, addedT = 0) {
+  const H = cur.meta.length;
+  let b = cur.opening; let a = cur.opening;
+  const low = { before: Infinity, after: Infinity, month: null };
+  for (let i = 0; i < H; i++) {
+    b += cur.net[i]; a += cur.net[i] + eff.net[i];
+    if (i >= t && i < t + 24) {
+      if (b < low.before) low.before = b;
+      if (a < low.after) { low.after = a; low.month = monthLabel(cur.meta[i]); }
+    }
+  }
+  const tm = eff.terms;
+  const svc = cur.dscr.capacity != null ? cur.dscr.service[t] + addedT : null;
+  const dscr = svc == null ? null : {
+    before: svc > 0 ? r2(cur.dscr.capacity / svc) : null,
+    after: svc + eff.annual > 0 ? r2(cur.dscr.capacity / (svc + eff.annual)) : null,
+    threshold: cur.dscr.threshold, farm: eff.annual > 0,
+  };
+  const sh = cur.sheet;
+  const price = Number(g.price) || 0;
+  const nwChange = r2(price - tm.cash_up_front + (tm.gst_refund || 0) - tm.financed);
+  return {
+    lowest_cash: { before: Math.round(low.before), after: Math.round(low.after), month: low.month },
+    dscr,
+    debt_to_assets: sh && sh.assets > 0 ? { before: r2(sh.liabilities / sh.assets), after: r2((sh.liabilities + tm.financed) / (sh.assets + price)) } : null,
+    net_worth: sh ? { before: Math.round(sh.equity), after: Math.round(sh.equity + nwChange) } : null,
+    new_debt: r2(tm.financed), payment: tm.financed > 0 ? r2(tm.payment) : null, per_year: tm.per_year, total_interest: r2(tm.total_interest || 0),
+  };
+}
+
 const stripTerms = (t) => { const { payments, ...rest } = t; void payments; return rest; };
 
 /**
@@ -264,7 +347,8 @@ export async function loadBase({ today = todayISO(), budgetShare = null } = {}) 
   const net = meta.map((_, i) => core[at(i)] + loanNet[i] + budget[i]);
 
   // Coverage: the lender's figure today, its debt service following the schedules as loans pay down.
-  const coverage = await termDebtCoverage().catch(() => null);
+  const [coverage, st] = await Promise.all([termDebtCoverage().catch(() => null), balanceSheetStatement('all').catch(() => null)]);
+  const sheet = st?.totals ? { assets: Number(st.totals.total_assets) || 0, liabilities: Number(st.totals.total_liabilities) || 0, equity: Number(st.totals.equity) || 0 } : null;
   const svc0 = farmService.slice(0, 12).reduce((a, v) => a + v, 0);
   const lenderSvc = coverage?.projected?.termDebtService ?? svc0;
   const service = meta.map((_, i) => {
@@ -272,7 +356,7 @@ export async function loadBase({ today = todayISO(), budgetShare = null } = {}) 
     return svc0 > 0 ? lenderSvc * (mine / svc0) : mine;
   });
   return {
-    today, meta, opening: ev.opening, net, floor, floorDays: days, floorCap: 0, reserve: 0,
+    today, meta, opening: ev.opening, net, floor, floorDays: days, floorCap: 0, reserve: 0, sheet,
     budget: { per_month: steady, cash_flow_budget: perMonth, share, year_surplus: r2(yearSurplus) },
     dscr: {
       capacity: coverage?.projected?.capacity ?? null, threshold: Number(coverage?.threshold) || 1.25,
@@ -307,9 +391,6 @@ export function explain(base, r) {
   conditions.push({ id: 'coverage', label: `Debt coverage ${base.dscr.threshold.toFixed(2)}× or more`, ok: cv.ok, na: !!cv.na,
     detail: cv.na ? (t.owner === 'personal' ? 'A personal purchase: the farm lender’s coverage test doesn’t apply.' : base.dscr.capacity == null ? 'Coverage could not be worked out (not enough farm history).' : 'No new farm debt.')
       : `${cv.value?.toFixed(2)}× with its ${$(t.annual_payment)} a year of payments${base.dscr.now != null ? ` (${Number(base.dscr.now).toFixed(2)}× today)` : ''}.` });
-  const eq = tst('equity');
-  conditions.push({ id: 'equity', label: `${EQUITY_MIN_PCT}% or more down`, ok: eq.ok, na: !!eq.na,
-    detail: eq.na ? 'Paid in cash.' : `${Math.round(eq.value)}% of the deal is your own money${eq.ok ? '' : ` — lenders want ${EQUITY_MIN_PCT}–25%. Raise the down payment.`}` });
 
   // What's holding it: the tests that fail today, and when each would pass on its own.
   const holding = r.now.filter((x) => !x.ok).map((x) => {
@@ -328,5 +409,6 @@ export function explain(base, r) {
     : i === 0
       ? `Can be bought now: every condition is met.`
       : `Can be bought in ${L(i)} — ${span(i)} from now — once ${holding.length ? holding.map((h) => ({ cash: 'cash stays above $0 after it', reserve: 'the reserve is there on top', coverage: 'debt coverage reaches the lender’s 1.25×', equity: 'the down payment is 15%' }[h.id])).join(' and ') : 'the money is there'}.`;
-  return { when: i == null ? null : L(i), months: i, wait: i == null ? null : span(i), headline, conditions, holding, terms: t };
+  return { when: i == null ? null : L(i), months: i, wait: i == null ? null : span(i), headline, conditions, holding, terms: t,
+    health: r.health || null, strategies: r.strategies || null, recommended: r.recommended || null };
 }

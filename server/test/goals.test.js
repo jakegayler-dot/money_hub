@@ -24,13 +24,20 @@ test('a cash purchase waits until the money is there with the reserve kept', () 
   assert.ok(e.conditions.find((c) => c.id === 'reserve').ok);
 });
 
-test('financed: thin money down is never a go; 25% down is', () => {
-  const g = { id: 2, name: 'Tractor', kind: 'tractor', price: 400000, funding: 'financed', down_pct: 10, rate: 7, years: 7, per_year: 1, owner: 'farm' };
-  const [thin] = planGoals(base(), [g]);
-  assert.equal(thin.month_index, null);
-  assert.equal(thin.tests.find((x) => x.id === 'equity').ok, false);
-  const [ok] = planGoals(base(), [{ ...g, down_pct: 25 }]);
-  assert.ok(ok.month_index != null);
+test('no down-payment rule (Oct 31: the leasing company takes 0% down); the strategies and the health it changes', () => {
+  const g = { id: 2, name: 'Tractor', kind: 'tractor', price: 400000, funding: 'financed', down_pct: 0, rate: 7, years: 7, per_year: 12, owner: 'farm', want_by: '2027-06-30' };
+  const b = base({ sheet: { assets: 2000000, liabilities: 800000, equity: 1200000 } });
+  const [r] = planGoals(b, [g], { strategies: true });
+  assert.ok(r.month_index != null, '0% down can be bought');
+  assert.ok(!r.tests.some((x) => x.id === 'equity'));
+  assert.equal(r.strategies.length, 10, 'cash and 0/10/20% down over 3/5/7 years');
+  assert.ok(r.strategies.find((x) => x.yours).label.startsWith('0% down, 7 years'));
+  assert.ok(r.recommended && r.recommended.why, 'a recommendation with its reason');
+  const h = r.health;
+  assert.ok(h.lowest_cash.after <= h.lowest_cash.before, 'the payments never raise the lowest cash');
+  assert.ok(h.dscr.after < h.dscr.before, 'and debt coverage');
+  assert.ok(h.debt_to_assets.after > h.debt_to_assets.before);
+  assert.ok(h.total_interest > 0 && h.payment > 0);
   const p = goalPurchase({ ...g, down_pct: 25 }, '2027-01');
   assert.equal(p.deposit, 105000); // 25% of $420,000 with GST
 });

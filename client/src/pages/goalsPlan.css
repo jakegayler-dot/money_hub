@@ -1,0 +1,8 @@
+/* A goal's health and the ways to pay for it (Oct 31). */
+.gl-health, .gl-strat { margin-top: 12px; }
+.gl-health table, .gl-strat table { width: 100%; border-collapse: collapse; margin-top: 4px; font-size: 13px; }
+.gl-health td, .gl-health th, .gl-strat td, .gl-strat th { padding: 5px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+.gl-health .num, .gl-strat .num { text-align: right; font-family: var(--font-mono); white-space: nowrap; }
+.gl-rec { margin: 0 0 4px; padding: 8px 10px; border-left: 3px solid var(--positive); background: color-mix(in srgb, var(--positive) 8%, transparent); border-radius: 4px; }
+.gl-rec-row td { background: color-mix(in srgb, var(--positive) 7%, transparent); }
+@media (max-width: 640px) { .gl-strat table { font-size: 12px; } .gl-strat td:nth-child(3), .gl-strat th:nth-child(3) { display: none; } }

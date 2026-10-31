@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { money } from '../format.js';
 import { SERIES } from '../chartColors.js';
+import './goalsPlan.css';
 
 // Long-term goals (Jake, 2026-10-26): a tractor, a diesel truck, a piece of
 // land — and when each can be bought, judged the way a farm lender would:
@@ -138,6 +139,57 @@ function StudyPanel({ g }) {
   );
 }
 
+// What buying it does to the money's health, where the plan puts it (Jake, Oct 31).
+function GoalHealth({ h, when }) {
+  const pct = (v) => (v == null ? '—' : `${Math.round(v * 100)}%`);
+  const x = (v) => (v == null ? '—' : `${Number(v).toFixed(2)}×`);
+  const rows = [
+    ['Lowest cash, next 2 years', money(h.lowest_cash.before), money(h.lowest_cash.after), h.lowest_cash.after < 0, h.lowest_cash.month ? `lowest ${h.lowest_cash.month}` : ''],
+    h.dscr && h.dscr.farm ? ['Debt coverage', x(h.dscr.before), x(h.dscr.after), h.dscr.after != null && h.dscr.after < h.dscr.threshold, `lenders want ${h.dscr.threshold}×`] : null,
+    h.debt_to_assets ? ['Debt to assets', pct(h.debt_to_assets.before), pct(h.debt_to_assets.after), h.debt_to_assets.after > 0.5, 'under 50% is comfortable'] : null,
+    h.net_worth ? ['Net worth on the day', money(h.net_worth.before), money(h.net_worth.after), false, 'the asset at its price, less cash and loan'] : null,
+  ].filter(Boolean);
+  return (
+    <div className="gl-health">
+      <div className="split-lines">What it does to your numbers, bought {when || 'when it fits'}</div>
+      <table>
+        <thead><tr><th /><th className="num">Before</th><th className="num">After</th><th /></tr></thead>
+        <tbody>{rows.map(([k, b, a, bad, note]) => (
+          <tr key={k}><td>{k}</td><td className="num">{b}</td><td className={`num${bad ? ' neg' : ''}`}><b>{a}</b></td><td className="split-lines">{note}</td></tr>
+        ))}</tbody>
+      </table>
+      {h.new_debt > 0 && <p className="split-lines">{money(h.new_debt)} borrowed · {money(h.payment)} {PER[h.per_year]} · {money(h.total_interest)} interest over the loan.</p>}
+    </div>
+  );
+}
+
+// Every way to pay for it, when each lands and what it costs, with the recommendation (Jake, Oct 31).
+function GoalStrategies({ g, onUse }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const rec = g.recommended;
+  const list = open ? g.strategies : g.strategies.filter((s) => s === rec || s.yours || (rec && s.label === rec.label));
+  return (
+    <div className="gl-strat">
+      {rec && <p className="gl-rec"><b>Best way to pay:</b> {rec.why}</p>}
+      <table>
+        <thead><tr><th>How</th><th>When</th><th className="num">Up front</th><th className="num">Payment</th><th className="num">Interest</th><th /></tr></thead>
+        <tbody>{list.map((s) => (
+          <tr key={s.label} className={rec && s.label === rec.label ? 'gl-rec-row' : ''}>
+            <td>{s.label}{s.yours ? <span className="split-lines"> · yours</span> : ''}{rec && s.label === rec.label ? <span className="split-lines"> · best</span> : ''}</td>
+            <td className={s.in_time === false ? 'neg' : ''}>{s.when || 'not in 10 yrs'}</td>
+            <td className="num">{money(s.up_front)}</td>
+            <td className="num">{s.payment ? `${money(s.payment)} ${PER[s.per_year] || ''}` : '—'}</td>
+            <td className="num">{money(s.total_interest)}</td>
+            <td>{!s.yours && s.month_index != null && <button type="button" className="small-link" disabled={busy} onClick={async () => { setBusy(true); try { await onUse(s); } finally { setBusy(false); } }}>Use this</button>}</td>
+          </tr>
+        ))}</tbody>
+      </table>
+      <button type="button" className="small-link" onClick={() => setOpen(!open)}>{open ? 'Show only yours and the best' : `Compare all ${g.strategies.length} ways to pay`}</button>
+    </div>
+  );
+}
+
 export default function Goals() {
   const [data, setData] = useState(null);
   const [form, setForm] = useState(null);
@@ -264,6 +316,11 @@ export default function Goals() {
                     <ul>{g.holding.map((h) => <li key={h.id}>{h.text[0].toUpperCase() + h.text.slice(1)}.</li>)}</ul>
                   </div>
                 )}
+                {g.health && <GoalHealth h={g.health} when={g.when} />}
+                {g.strategies && <GoalStrategies g={g} onUse={async (s) => {
+                  await send('PATCH', `/api/goals/${g.id}`, s.funding === 'cash' ? { funding: 'cash' } : { funding: 'financed', down_pct: s.down_pct, years: s.years });
+                  load();
+                }} />}
                 {plan.alternatives.length > 0 && (
                   <div className="gl-alt">
                     <span className="split-lines">If the household spent less than {money(plan.budget.per_month)} a month:</span>

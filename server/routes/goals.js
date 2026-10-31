@@ -82,7 +82,7 @@ router.get('/plan', ah(async (req, res) => {
   const goals = ids.length ? ids.map((id) => all.find((g) => g.id === id)).filter(Boolean) : all;
   if (!goals.length) return res.json({ goals: [], months: [], budget: null });
   const base = await loadBase();
-  const plan = planGoals(base, goals);
+  const plan = planGoals(base, goals, { strategies: true });
   // Cash above the floor each month-end with the goals bought where planned.
   const H = base.meta.length;
   const net = [...base.net]; const floor = [...base.floor];
