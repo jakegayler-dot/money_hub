@@ -69,7 +69,10 @@ export async function inventorySales() {
   const today = todayISO();
   const [sheet, { rows: estimates }, fallback] = await Promise.all([
     loadBalanceSheet(),
-    pool.query(`SELECT name, commodity, direction, start_date, status, updated_at FROM cash_estimates`),
+    // Only the estimates for crops already grown (Quarter Section's in-field grain): not next year's crop plan or the herd
+    // forecast, which are later crops (Jake, Oct 31: the canola in the bins was dated Dec 2027, the 2027 crop plan's sale).
+    pool.query(`SELECT name, commodity, direction, start_date, status, updated_at FROM cash_estimates
+      WHERE COALESCE(source, '') <> 'quarter-section-plan' AND COALESCE(category, '') <> 'Cattle forecast'`),
     getSetting(FALLBACK_KEY, null),
   ]);
   const fallbackDate = nextMonthDay(fallback, today);
