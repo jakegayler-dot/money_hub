@@ -26,6 +26,7 @@ import { autoLinkBillsSoon, autoLinkRunning, billCandidates } from '../lib/billM
 import { todayISO, toISODate, addMonths } from '../lib/dates.js';
 import { matchPending } from '../lib/receipts.js';
 import { vendorStatement, billSummary, reconState } from '../lib/vendorAccount.js';
+import { vendorRows } from '../lib/vendorList.js';
 
 // "$13,$14,..." placeholder run for the segment columns, starting at n.
 const segPlaceholders = (n) => SEGMENT_COLUMNS.map((_, i) => `$${n + i}`).join(',');
@@ -334,34 +335,14 @@ router.get('/vendors', ah(async (req, res) => {
                       FROM credit_applications ca JOIN bills b ON b.id = ca.bill_id WHERE ca.credit_id = vc.id), '[]'::json) AS applications
      FROM vendor_credits vc LEFT JOIN transactions t ON t.id = vc.transaction_id LEFT JOIN accounts a ON a.id = t.account_id
      ORDER BY vc.date, vc.id`);
-  const { rows: payees } = await pool.query('SELECT id, name, auto_apply_credits FROM payees');
-  const nameOf = new Map(payees.map((p) => [p.id, p.name]));
-  const autoOf = new Map(payees.map((p) => [p.id, p.auto_apply_credits !== false]));
-  const by = new Map();
-  const get = (id) => {
-    const k = id ?? 0;
-    if (!by.has(k)) by.set(k, { payee_id: id, name: id ? nameOf.get(id) : 'No vendor set', auto_apply: id ? autoOf.get(id) : true, owing: 0, held: 0, bills: [], credits: [] });
-    return by.get(k);
-  };
-  for (const b of bills) {
-    const v = get(b.payee_id);
-    v.owing += Number(b.owing);
-    v.bills.push({ ...b, due_date: toISODate(b.due_date), bill_date: toISODate(b.received_date) || toISODate(b.created_at), amount: Number(b.amount), owing: Number(b.owing), applied: Number(b.applied) });
-  }
-  for (const c of credits) {
-    const v = get(c.payee_id);
-    const open = c.status === 'open';
-    if (open) v.held += Number(c.remaining);
-    if (open || c.date >= new Date(Date.now() - 365 * 86400000)) {
-      v.credits.push({ ...c, date: toISODate(c.date), amount: Number(c.amount), remaining: Number(c.remaining) });
-    }
-  }
-  const out = [...by.values()]
-    .map((v) => ({ ...v, owing: Math.round(v.owing * 100) / 100, held: Math.round(v.held * 100) / 100,
-      net: Math.round((v.owing - v.held) * 100) / 100, oldest_due: v.bills[0]?.due_date || null }))
-    .filter((v) => v.bills.length || v.credits.length)
-    .sort((a, b) => (b.owing - a.owing));
-  res.json(out);
+  // Every vendor account, settled ones included (Jake, Oct 31): see lib/vendorList.js.
+  const { rows: payees } = await pool.query(
+    `SELECT p.id, p.name, p.auto_apply_credits,
+            (EXISTS (SELECT 1 FROM bills b WHERE b.payee_id = p.id) OR EXISTS (SELECT 1 FROM vendor_credits c WHERE c.payee_id = p.id)
+              OR p.opening_balance IS NOT NULL) AS has_account,
+            (SELECT max(b.paid_date) FROM bills b WHERE b.payee_id = p.id AND b.status = 'paid') AS last_paid
+     FROM payees p`);
+  res.json(vendorRows(bills, credits, payees));
 }));
 
 // Pay several bills (a vendor's whole balance, or the ones picked) in one payment.

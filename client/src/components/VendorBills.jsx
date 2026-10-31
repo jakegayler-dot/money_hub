@@ -19,12 +19,14 @@ const CREDIT_STATUS = { open: 'Held', used: 'All applied', refunded: 'Refunded',
  * own statement.
  */
 export default function VendorBills({ accounts, categories, onChanged }) {
-  const [vendors, setVendors] = useState(null); // vendors with open bills or deposits
+  const [vendors, setVendors] = useState(null); // every vendor account, settled ones too (owing first)
   const [all, setAll] = useState(null); // summary + every vendor on file
   const [picked, setPicked] = useState(null); // always opens on the vendor list
   const [query, setQuery] = useState('');
   const [error, setError] = useState(null);
   const [tick, setTick] = useState(0); // bumps the open account to reload
+  // Every account by default (Jake, Oct 31: "it should show all accounts regardless of current balance"); this narrows it.
+  const [owingOnly, setOwingOnly] = useState(false);
 
   const load = () => Promise.all([
     fetch('/api/bills/vendors').then((r) => r.json()).then((d) => setVendors(Array.isArray(d) ? d : [])),
@@ -53,7 +55,8 @@ export default function VendorBills({ accounts, categories, onChanged }) {
   const openById = new Map(vendors.map((v) => [v.payee_id ?? 0, v]));
   const rows = q
     ? known.filter((v) => v.name.toLowerCase().includes(q)).map((v) => openById.get(v.payee_id) || { ...v, bills: [], credits: [], owing: 0, held: 0, net: 0, oldest_due: null })
-    : vendors;
+    : owingOnly ? vendors.filter((v) => v.owing > 0 || v.held > 0) : vendors;
+  const settled = vendors.filter((v) => !(v.owing > 0 || v.held > 0)).length;
   const pick = (id) => {
     setPicked(id);
     setQuery('');
@@ -101,10 +104,16 @@ export default function VendorBills({ accounts, categories, onChanged }) {
         <>
           {all.summary && <BillSummaryCards s={all.summary} onPickVendor={pick} />}
           {all.no_vendor > 0 && <p className="split-lines" style={{ margin: '0 16px 8px' }}>{all.no_vendor} unpaid bill{all.no_vendor === 1 ? ' has' : 's have'} no vendor set — edit {all.no_vendor === 1 ? 'it' : 'them'} under By bill to put {all.no_vendor === 1 ? 'it' : 'them'} on an account.</p>}
-          {!rows.length ? <div className="empty-state">{q ? 'No vendor matches.' : 'No unpaid bills or deposits.'}</div> : (
+          {!q && (
+            <label className="split-lines" style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '0 16px 8px' }}>
+              <input type="checkbox" checked={owingOnly} onChange={(e) => setOwingOnly(e.target.checked)} />
+              Owing or holding a credit only{settled ? ` (hides ${settled} settled)` : ''}
+            </label>
+          )}
+          {!rows.length ? <div className="empty-state">{q ? 'No vendor matches.' : owingOnly ? 'No unpaid bills or deposits.' : 'No vendors on file yet.'}</div> : (
             <table>
               <thead>
-                <tr><th>Vendor</th><th>Open bills</th><th>Oldest due</th><th>Owing</th><th>Credit held</th><th>Balance</th></tr>
+                <tr><th>Vendor</th><th>Open bills</th><th>Oldest due</th><th>Last paid</th><th>Owing</th><th>Credit held</th><th>Balance</th></tr>
               </thead>
               <tbody>
                 {rows.map((v) => {
@@ -117,6 +126,7 @@ export default function VendorBills({ accounts, categories, onChanged }) {
                       <td>{v.payee_id ? <span aria-hidden="true">▸ </span> : null}{v.name}</td>
                       <td>{v.bills.length}</td>
                       <td>{v.oldest_due || '—'}{v.oldest_due && v.oldest_due < today() && <span className="badge fail" style={{ marginLeft: 6 }}>OVERDUE</span>}</td>
+                      <td>{v.last_paid || '—'}</td>
                       <td className="nowrap">{money(v.owing)}</td>
                       <td className="nowrap">{v.held ? money(v.held) : '—'}</td>
                       <td className="nowrap" style={{ fontWeight: 600 }}>{money(v.net)}</td>

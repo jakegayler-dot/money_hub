@@ -18,6 +18,7 @@ import { pool, getSetting } from '../db.js';
 import { toISODate, todayISO, addMonths, addDays } from './dates.js';
 import { billDates } from './billDates.js';
 import { LATEST_STATEMENTS_SQL } from './cardLedger.js';
+import { applyPaidDeadlines } from './deadlinePaid.js';
 
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const pad = (n) => String(n).padStart(2, '0');
@@ -65,7 +66,8 @@ export async function deadlineItems(from, to, db = pool) {
       });
     }
   }
-  return out;
+  // A payment deadline already paid this season is done, not something still to pay (lib/deadlinePaid.js).
+  return applyPaidDeadlines(out, db);
 }
 
 /** CRA income tax dates for the years around [from, to], with amounts from the Tax tab. */
