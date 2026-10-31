@@ -192,11 +192,14 @@ export default function Personal() {
       </div>
       {error && <p className="review-error" style={{ margin: '0 0 12px' }}>{error}</p>}
 
+      {/* The month against the discretionary budget first (Jake, Oct 31: "shown better") */}
+      <BudgetFit onLoaded={setHb} />
+
       <div className="grid personal-cards">
         <MetricCard label={`Spent, ${periodLabel}`} value={money(b.total)} sub={`about ${money(b.total / nMonths)} a month · Jake, Ashley and untagged`} />
         <MetricCard label="A typical month" value={money(typical)} sub={past.length ? `median of the last ${past.length} full months` : 'not enough history yet'} />
         <MetricCard label="Household budget" value={hb ? money(hb.monthly) : '—'}
-          sub={hb ? (hb.shortfall ? 'no room above the cash floor' : `a month · ${Math.round(hb.share * 100)}% of the room above the cash floor`) : ''} />
+          sub={hb ? (hb.shortfall ? 'no cash left for it' : `a month · discretionary, to ${hb.binding?.until ? new Date(`${hb.binding.until}T12:00:00`).toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' }) : 'August'}`) : ''} />
         <MetricCard label="Left this month" value={hb ? money(hb.left_this_month) : '—'}
           sub={hb ? `${money(hb.spent_this_month)} spent so far, not counting bills` : ''} />
       </div>
@@ -293,7 +296,6 @@ export default function Personal() {
         </div>
       </div>
 
-      <BudgetFit onLoaded={setHb} />
 
       <OwnerCheck onChanged={() => { loadPlan(); loadB(); }} />
 

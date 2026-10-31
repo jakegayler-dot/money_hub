@@ -107,7 +107,7 @@ export async function generateBudget({ today = todayISO(), months = 12 } = {}) {
     left_this_month: r2(Math.max(0, monthly - p.spent_this_month)),
     history_months: mix.months,
     shortfall: p.shortfall ? { month: lbl(p.shortfall), amount: p.shortfall.amount } : null,
-    binding: p.binding ? { month: lbl(p.binding), months_to_it: p.binding.months_to_it } : null,
+    binding: p.binding ? { month: lbl(p.binding), months_to_it: p.binding.months_to_it, until: p.binding.until || null } : null,
     tightest: { month: label(tight), headroom: tight.headroom, balance: tight.balance, floor: tight.floor },
     path: ev.trajectory.map((t) => ({ month: label(t), headroom: t.headroom })),
     categories, people,

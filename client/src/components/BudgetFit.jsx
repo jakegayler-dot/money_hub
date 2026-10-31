@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { money } from '../format.js';
 import { Pie } from './Pie.jsx';
 import { SERIES, OTHER, foldSlices } from '../chartColors.js';
+import './budgetNow.css';
 
 // The household budget (Jake, 2026-10-30: "take my balance at end of August 2027 and divide it by the
 // number of months till August"). Cash Flow works it out with every bill, loan, card statement, fee, tax
@@ -81,11 +82,47 @@ export default function BudgetFit({ onLoaded }) {
         </span>
       </div>
 
+      {!d.shortfall && d.monthly > 0 && (() => {
+        // This month first (Jake, Oct 31: "shown better"): what's left, a day's worth, the pace, and where it went.
+        const now = new Date(); const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+        const daysLeft = dim - now.getDate() + 1; const left = d.monthly - d.spent_this_month;
+        const pace = (d.spent_this_month / Math.max(1, now.getDate())) * dim;
+        const cats = Object.entries(d.spent_by_category || {}).filter(([, v]) => v > 0.5).sort((x, y) => y[1] - x[1]);
+        const top = cats.length ? cats[0][1] : 1;
+        return (
+          <div className="bf-now">
+            <div className="bf-now-head">
+              <div>
+                <div className="bf-now-k">This month</div>
+                <div className={`bf-now-v ${over ? 'neg' : ''}`}>{over ? `${money(-left)} over` : `${money(left)} left`}</div>
+                <div className="bf-now-s">{money(d.spent_this_month)} spent of {money(d.monthly)} · {daysLeft} day{daysLeft === 1 ? '' : 's'} to go</div>
+              </div>
+              {!over && daysLeft > 0 && <div className="bf-now-day"><b>{money(left / daysLeft)}</b><span>a day from here</span></div>}
+            </div>
+            <span className="bf-progress bf-progress-wide" role="img" aria-label={`${money(d.spent_this_month)} of ${money(d.monthly)} spent this month`}>
+              <span style={{ width: `${pctSpent}%`, background: over ? 'var(--negative)' : SERIES[0] }} />
+            </span>
+            <p className="split-lines">{pace > d.monthly && !over ? `At this pace the month ends near ${money(pace)}, ${money(pace - d.monthly)} over.` : over ? "Over for this month: next month's budget is worked out from the cash that's left." : `At this pace the month ends near ${money(pace)}.`}</p>
+            {cats.length > 0 && (
+              <div className="bf-now-cats">
+                {cats.map(([c, v]) => (
+                  <div key={c} className="bf-now-cat">
+                    <span>{c}</span>
+                    <span className="bf-now-catbar"><span style={{ width: `${(v / top) * 100}%` }} /></span>
+                    <b>{money(v)}</b>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {d.shortfall ? (
         <div className="bf-head">
           <div className="bf-big neg">{money(0)}<span> a month</span></div>
           <p>
-            There's no room above the floor: even with no household spending, Cash Flow's cash falls {money(d.shortfall.amount)} below the floor in {d.shortfall.month}.
+            There's no money for discretionary spending: even with none, Cash Flow's cash is {money(d.shortfall.amount)} short around {d.shortfall.month}.
             That gap has to close first — more income or a sale in the forecast, or a bill or purchase moved.
           </p>
         </div>
@@ -93,24 +130,10 @@ export default function BudgetFit({ onLoaded }) {
         <div className="bf-head">
           <div className="bf-big">{money(d.monthly)}<span> a month</span></div>
           <p>
-            For everything the household spends that isn't a bill, a loan payment or a card balance already owed — groceries, fuel, eating out, kids, the lot.
-            With those and the farm already in Cash Flow, it's the balance at the end of {d.binding ? d.binding.month : end} ÷ the {d.binding ? d.binding.months_to_it : ''} months to it: {money(d.room)} a month
-            {d.share < 1 ? `; this is ${Math.round(d.share * 100)}% of it, so ${money(Math.max(0, d.room - d.monthly))} a month stays spare` : ''}.
-            Cash Flow spends it every month.
+            Discretionary spending: everything the household spends that isn't a bill or a loan payment already planned — groceries, fuel, eating out, kids, subscriptions, the lot.
+            It's the cash Cash Flow expects at {d.binding?.until ? new Date(`${d.binding.until}T12:00:00`).toLocaleDateString('en-CA', { month: 'long', day: 'numeric', year: 'numeric' }) : `the end of ${end}`} (with every bill, loan and the farm in, before this spending) ÷ the {d.binding ? d.binding.months_to_it : ''} months left to it{d.share < 1 ? `; ${Math.round(d.share * 100)}% of that, so ${money(Math.max(0, d.room - d.monthly))} a month stays spare` : ''}.
+            It's worked out again as Cash Flow changes, so a big month now makes the months after it smaller.
           </p>
-        </div>
-      )}
-
-      {!d.shortfall && d.monthly > 0 && (
-        <div className="bf-month">
-          <div className="bf-month-row">
-            <span>This month: <b className={over ? 'neg' : ''}>{money(d.spent_this_month)}</b> spent of {money(d.monthly)}</span>
-            <span className={over ? 'neg' : 'split-lines'}>{over ? `${money(d.spent_this_month - d.monthly)} over` : `${money(d.left_this_month)} left`}</span>
-          </div>
-          <span className="bf-progress bf-progress-wide" role="img" aria-label={`${money(d.spent_this_month)} of ${money(d.monthly)} spent this month`}>
-            <span style={{ width: `${pctSpent}%`, background: over ? 'var(--negative)' : SERIES[0] }} />
-          </span>
-          <p className="split-lines">Cash Flow counts only what's left of it this month: {money(d.left_this_month)}.</p>
         </div>
       )}
 

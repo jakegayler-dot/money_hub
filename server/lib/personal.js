@@ -450,7 +450,7 @@ export async function spendingMix(today = todayISO(), n = 6) {
   const groups = { essential: new Map(), discretionary: new Map() };
   const thisMonth = new Map();
   for (const l of spending) {
-    if (l.scheduled) continue;
+    if (!discretionary(l)) continue;
     if (l.month === cur) { thisMonth.set(l.category, (thisMonth.get(l.category) || 0) + l.amount); continue; }
     if (!keys.includes(l.month)) continue;
     const g = groups[l.bucket];
@@ -497,16 +497,23 @@ export async function categoryEntries({ category_id, from, to }) {
 
 
 /** What the household has spent so far this month, apart from bills and loan payments (forecast on their own). */
+// What the discretionary budget covers (Jake, Oct 31: "its including personal loan payments like cra tax outstanding.
+// personal spending outside of recurring or already planned bills ... this is discretionary / variable spending"): not a
+// bill or loan payment Money Hub has on its schedule, and not debt by its category either (a loan paid off by hand, tax
+// owing, mortgage, interest).
+export const DEBT_CATEGORY = /loan|mortgage|tax owing|income tax|interest|debt|line of credit/i;
+export const discretionary = (l) => !l.scheduled && !DEBT_CATEGORY.test(l.category || '');
+
 /** Household spending (not bills) in each month from `fromYm` through today's: { 'YYYY-MM': amount }. */
 export async function householdSpentByMonth(fromYm, today = todayISO()) {
   const { spending } = await householdLines(`${fromYm}-01`, addDay(today), await categoryBuckets());
   const out = {};
-  for (const l of spending) if (!l.scheduled && l.month >= fromYm) out[l.month] = r2((out[l.month] || 0) + l.amount);
+  for (const l of spending) if (discretionary(l) && l.month >= fromYm) out[l.month] = r2((out[l.month] || 0) + l.amount);
   return out;
 }
 
 export async function householdSpentThisMonth(today = todayISO()) {
   const cur = ym(today);
   const { spending } = await householdLines(`${cur}-01`, addDay(today), await categoryBuckets());
-  return r2(spending.filter((l) => !l.scheduled && l.month === cur).reduce((a, l) => a + l.amount, 0));
+  return r2(spending.filter((l) => discretionary(l) && l.month === cur).reduce((a, l) => a + l.amount, 0));
 }

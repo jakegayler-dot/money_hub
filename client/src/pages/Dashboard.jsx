@@ -168,6 +168,28 @@ export default function Dashboard() {
         </Link>
       </section>
 
+      {/* Discretionary spending this month against the budget (Jake, Oct 31) */}
+      {liquidity.personal?.per_month > 0 && (() => {
+        const p = liquidity.personal;
+        const spent = p.spent_this_month || 0; const left = p.per_month - spent; const over = left < 0;
+        const now = new Date(); const dim = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate(); const daysLeft = dim - now.getDate() + 1;
+        const pace = (spent / Math.max(1, now.getDate())) * dim;
+        return (
+          <Link to="/personal" className={`dbx-spend ${over ? 'over' : ''}`}>
+            <div className="dbx-spend-figs">
+              <span className="dbx-k">Spending this month</span>
+              <span className={`dbx-v ${over ? 'neg' : ''}`}>{over ? `${money(-left)} over` : `${money(left)} left`}</span>
+              <span className="dbx-s">{money(spent)} of {money(p.per_month)} · {daysLeft} day{daysLeft === 1 ? '' : 's'} to go{!over && daysLeft > 1 ? ` · ${money(left / daysLeft)} a day` : ''}</span>
+            </div>
+            <span className="dbx-spend-bar" role="img" aria-label={`${money(spent)} of ${money(p.per_month)} spent`}>
+              <span style={{ width: `${Math.min(100, (spent / p.per_month) * 100)}%` }} />
+              {pace > spent && pace > 0 && <i style={{ left: `${Math.min(100, (pace / p.per_month) * 100)}%` }} title={`At this pace: ${money(pace)} by month-end`} />}
+            </span>
+            <span className="dbx-s">Discretionary: everything but bills and loan payments already planned. {p.binding?.until ? `Budget = cash at ${new Date(`${p.binding.until}T12:00:00`).toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' })} ÷ ${p.binding.months_to_it} months.` : ''}</span>
+          </Link>
+        );
+      })()}
+
       {/* Health at a glance */}
       <section className="dbx-healths">
         <Health label="Cash floor" to="/cash-flow" tone={liquidity.passes ? 'good' : 'bad'}

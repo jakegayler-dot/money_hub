@@ -25,3 +25,12 @@ test('below zero at the end of August means no budget; the share applies as give
   assert.equal(householdBudget([5000, -1200], 1, months(2027, 7, 2)).perMonth, 0);
   assert.equal(householdBudget([12000], 0.8, months(2027, 8, 1)).perMonth, 9600, 'no August after this month: the last month');
 });
+
+test('Oct 31 to Aug 30 is 9.95 months: the balance ÷ that (Jake, Oct 31)', () => {
+  const meta = months(2026, 10, 13);
+  const bal = Array(13).fill(0); bal[10] = 39800;
+  const b = householdBudget(bal, 1, meta, '2026-10-31');
+  assert.equal(b.until, '2027-08-30');
+  assert.equal(Math.round(b.months * 100) / 100, 9.95);
+  assert.equal(b.perMonth, 3990);
+});

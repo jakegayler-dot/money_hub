@@ -114,3 +114,12 @@
 .dbx-axis-row span.first { transform: none; }
 .dbx-chart { height: 170px; }
 @media (max-width: 760px) { .dbx-axis-row span:nth-child(even) { display: none; } .dbx-chart { height: 140px; } }
+
+/* Spending this month against the discretionary budget (Oct 31) */
+.dbx-spend { display: grid; gap: 8px; padding: 14px 16px; margin-bottom: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); color: inherit; text-decoration: none; }
+.dbx-spend.over { border-color: color-mix(in srgb, var(--negative) 45%, var(--border)); }
+.dbx-spend-figs { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+.dbx-spend-bar { position: relative; display: block; height: 10px; border-radius: 5px; background: color-mix(in srgb, var(--text-muted, #888) 18%, transparent); overflow: visible; }
+.dbx-spend-bar > span { display: block; height: 100%; border-radius: 5px; background: var(--positive); }
+.dbx-spend.over .dbx-spend-bar > span { background: var(--negative); }
+.dbx-spend-bar > i { position: absolute; top: -3px; width: 2px; height: 16px; background: var(--text-muted, #888); }

@@ -488,7 +488,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     const share = Math.min(1, Math.max(0, Number(await getSetting('household_budget_share', 1)) || 1));
     const base = { win, today, accounts: accountRows, splits, floorDays, floorCap, lookahead: flows.filter((f) => !inWindow(f.date)) };
     const ev0 = evaluate(flows.filter((f) => inWindow(f.date)), base, { scope: 'everything' });
-    const { room, bindingIdx, perMonth } = householdBudget(ev0.trajectory.map((t) => t.balance), share, win.meta);
+    const { room, bindingIdx, perMonth, months: monthsLeft, until } = householdBudget(ev0.trajectory.map((t) => t.balance), share, win.meta, today);
     const spent = await householdSpentThisMonth(today);
     // Each month's budget as it stands, kept for the tracker on the Personal page (Jake, Oct 30: "a discretionary
     // budget for each month and a tracker to determine if I surpassed it"). The last figure in a month stands.
@@ -498,7 +498,9 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     }
     win.meta.forEach((m, i) => {
       const key = `${m.year}-${String(m.month).padStart(2, '0')}`;
-      const amt = i === 0 ? Math.max(0, perMonth - spent) : perMonth;
+      // This month: what's left of it (the balance it's worked from already has this month's spending in it); the
+      // months after it in full, through August (the one after August's month-end isn't the budget's).
+      const amt = i === 0 ? perMonth * Math.max(0, Math.min(1, (daysIn(m) - Number(today.slice(8, 10)) + 1) / MONTH_DAYS)) : perMonth;
       if (amt < 0.5) return;
       flows.push({
         key: `personal:budget:${key}`, kind: 'personal', label: 'Household budget', date: i === 0 ? today : `${key}-15`,
@@ -508,7 +510,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     const worst = ev0.trajectory.reduce((k, t, i) => (t.headroom < ev0.trajectory[k].headroom ? i : k), 0);
     personal = {
       per_month: perMonth, share, room: r2(Math.max(0, room)), spent_this_month: r2(spent),
-      binding: bindingIdx >= 0 ? { year: win.meta[bindingIdx].year, month: win.meta[bindingIdx].month, months_to_it: bindingIdx + 1 } : null,
+      binding: bindingIdx >= 0 ? { year: win.meta[bindingIdx].year, month: win.meta[bindingIdx].month, months_to_it: Math.round(monthsLeft * 100) / 100, until } : null,
       // Even with no household spending, cash goes below the floor here.
       shortfall: room < 0 ? { year: win.meta[worst].year, month: win.meta[worst].month, amount: r2(-ev0.trajectory[worst].headroom) } : null,
     };
@@ -533,14 +535,21 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
  * next August (not this month's; the last month in the window if no August is in it) ÷ the months from this one
  * to it, times `share`, rounded down to $10. `meta` is [{ year, month }] for each balance.
  */
-export function householdBudget(balances, share = 1, meta = []) {
-  if (!balances.length) return { room: 0, bindingIdx: -1, perMonth: 0 };
+export function householdBudget(balances, share = 1, meta = [], today = null) {
+  if (!balances.length) return { room: 0, bindingIdx: -1, perMonth: 0, months: 0, until: null };
   let bindingIdx = meta.findIndex((m, i) => i >= 1 && m.month === 8);
   if (bindingIdx < 0 || bindingIdx >= balances.length) bindingIdx = balances.length - 1;
-  const room = balances[bindingIdx] / (bindingIdx + 1);
+  // Jake, Oct 31: "the balance as of august 30th 2027 divided by the remaining months till august 30th 2027" — the
+  // months left counted in days (Oct 31 to Aug 30 is 303 days, 9.95 months), not whole months.
+  const m = meta[bindingIdx];
+  const until = m ? `${m.year}-${String(m.month).padStart(2, '0')}-${m.month === 8 ? '30' : String(daysIn(m)).padStart(2, '0')}` : null;
+  const months = today && until ? Math.max(0.5, (Date.parse(`${until}T12:00:00Z`) - Date.parse(`${today}T12:00:00Z`)) / 86400e3 / MONTH_DAYS) : bindingIdx + 1;
+  const room = balances[bindingIdx] / months;
   const perMonth = room > 0 ? Math.floor((room * share) / 10) * 10 : 0;
-  return { room, bindingIdx, perMonth };
+  return { room, bindingIdx, perMonth, months, until };
 }
+const MONTH_DAYS = 365.25 / 12;
+function daysIn(m) { return new Date(Date.UTC(m.year, m.month, 0)).getUTCDate(); }
 
 /**
  * GST refunds and payments for every return not yet settled: a filed
