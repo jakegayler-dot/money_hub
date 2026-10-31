@@ -142,7 +142,7 @@ export default function BudgetFit({ onLoaded, onPickCategory }) {
       {d.tracker?.length > 0 && (
         <div className="bf-month">
           <div className="bf-month-row"><span><b>Month by month</b></span>
-            <span className="split-lines">{(() => { const done = d.tracker.filter((t) => t.budget != null && !t.current); const o = done.filter((t) => t.over > 0).length; return done.length ? `Over in ${o} of ${done.length} month${done.length === 1 ? '' : 's'}` : 'Budgets kept from Oct 2026'; })()}</span>
+            <span className={`split-lines${d.ytd?.over > 0 ? ' neg' : ''}`}>{d.ytd ? `Since ${d.ytd.from}: ${money(d.ytd.spent)} of ${money(d.ytd.budget)}, ${d.ytd.over > 0 ? `${money(d.ytd.over)} over` : `${money(-d.ytd.over)} under`}` : ''}{(() => { const done = d.tracker.filter((t) => t.budget != null && !t.current); const o = done.filter((t) => t.over > 0).length; return done.length ? ` · over in ${o} of ${done.length} month${done.length === 1 ? '' : 's'}` : ''; })()}</span>
           </div>
           <table>
             <thead><tr><th>Month</th><th style={{ textAlign: 'right' }}>Budget</th><th style={{ textAlign: 'right' }}>Spent</th><th style={{ textAlign: 'right' }}>Over / under</th><th style={{ width: '35%' }} /></tr></thead>
@@ -153,16 +153,16 @@ export default function BudgetFit({ onLoaded, onPickCategory }) {
                 return (
                   <tr key={t.month}>
                     <td className="nowrap">{t.label}{t.current ? ' (so far)' : ''}</td>
-                    <td style={{ textAlign: 'right' }}>{t.budget != null ? money(t.budget) : '—'}</td>
+                    <td style={{ textAlign: 'right' }} className="nowrap" title={t.assumed ? "No budget was kept for this month; this month's is used" : undefined}>{t.budget != null ? <>{money(t.budget)}{t.assumed ? <span className="split-lines" style={{ fontSize: 10, verticalAlign: 'top', lineHeight: 1 }}>*</span> : null}</> : '—'}</td>
                     <td style={{ textAlign: 'right' }}>{money(t.spent)}</td>
-                    <td style={{ textAlign: 'right' }} className={isOver ? 'neg' : ''}>{t.over == null ? '—' : isOver ? `${money(t.over)} over` : `${money(-t.over)} under`}</td>
+                    <td style={{ textAlign: 'right' }} className={`nowrap${isOver ? ' neg' : ''}`}>{t.over == null ? '—' : isOver ? `${money(t.over)} over` : `${money(-t.over)} under`}</td>
                     <td>{t.budget ? <span className="bf-progress" role="img" aria-label={`${money(t.spent)} of ${money(t.budget)}`}><span style={{ width: `${pct}%`, background: isOver ? 'var(--negative)' : SERIES[0] }} /></span> : null}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
-          <p className="split-lines">Each month's budget is the one that stood at its end (it moves as Cash Flow changes); earlier months have no budget kept.</p>
+          <p className="split-lines">Each month's budget is the one that stood at its end (it moves as Cash Flow changes).{d.tracker.some((t) => t.assumed) ? ` * Budgets were only kept from Oct 2026; months before that are set against this month's, ${money(d.monthly)}.` : ''}</p>
         </div>
       )}
 

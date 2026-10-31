@@ -104,6 +104,7 @@ function makeItem(fields) {
   if (item.notes == null || item.notes === '') delete item.notes;
   if (item.deep_link == null) delete item.deep_link;
   if (item.share_scopes == null) delete item.share_scopes;
+  if (item.job == null) delete item.job;
   if (item.amount_cents == null) { delete item.amount_cents; delete item.currency; }
   return item;
 }
@@ -261,10 +262,40 @@ export function contractItems(contracts, { from, to, appUrl }) {
  * Money calendar deadlines (lib/calendar.js): CRA tax and GST dates — a
  * bill when there's an amount to pay — and farm program dates as events.
  */
+// Tasks' reminders in Sentinel (Jake, Oct 31): this many days ahead, and the day before.
+export const TASK_AHEAD_DAYS = 90;
+export const TASK_AHEAD_STATEMENT = 35;
+const TASK_LEAD_DAYS = { tax: 30, gst: 14, program: 14, year_end: 30, custom: 7, statement: 0 };
+const fmtMoney = (n) => `$${Math.abs(n).toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+/** A tax, GST, program, year-end or statement date as a Sentinel task (source_id "task:<calendar id>"). */
+export function taskSnapshotItem(d, { appUrl }) {
+  const lead = TASK_LEAD_DAYS[d.kind] ?? 7;
+  const alerts = [...new Set([lead > 1 ? -lead * 1440 : null, -1440, 0].filter((x) => x != null))].map((offset_minutes) => ({ offset_minutes }));
+  const pays = d.amount != null && d.amount < 0;
+  const refund = d.amount != null && d.amount > 0;
+  return makeItem({
+    source_id: `task:${d.id}`, kind: 'task', category: 'finance',
+    title: pays ? `${d.title} — pay ${fmtMoney(d.amount)}` : d.title,
+    notes: [d.value ? `Worth about ${fmtMoney(d.value)}: ${d.value_basis}.` : null, d.notes, refund ? `Refund expected: ${fmtMoney(d.amount)}` : null, d.url || null].filter(Boolean).join(' · ') || null,
+    starts_at: d.date, status: d.done ? 'done' : 'open', suggested_alerts: alerts,
+    // The estimated economic value of doing it on time (Jake, Oct 31): cents, and what it's based on.
+    job: d.value ? { value_cents: Math.round(d.value * 100), value_basis: d.value_basis } : null,
+    deep_link: linkFor(appUrl, d.link || '/calendar'),
+  });
+}
+
 export function deadlineSnapshotItems(deadlines, { from, to, appUrl, today = null }) {
   const items = [];
   for (const d of deadlines) {
     if (!d.date || !inWindow(d.date, from, to)) continue;
+    // A task once it's within reach (90 days; a statement 35), so Sentinel's task list isn't a year and a
+    // half of them; further out it's an event on the calendar until then.
+    if (d.task && (!today || d.date <= addDays(today, d.kind === 'statement' ? TASK_AHEAD_STATEMENT : TASK_AHEAD_DAYS))) {
+      items.push(taskSnapshotItem(d, { appUrl }));
+      continue;
+    }
+    if (d.heads_up) continue; // Sentinel reminds on its own (a task's alerts)
     const pays = d.amount != null && d.amount < 0;
     items.push(makeItem({
       source_id: d.id, kind: pays ? 'bill' : 'event', category: 'finance',

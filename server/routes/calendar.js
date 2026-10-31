@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { pool, withTransaction } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
-import { calendarItems, recurringSuggestions, describeRule } from '../lib/calendar.js';
+import { calendarItems, recurringSuggestions, describeRule, setTaskDone } from '../lib/calendar.js';
 import { payBill, recordLoanPayment, payCard } from '../lib/postings.js';
 import { toISODate } from '../lib/dates.js';
 import { todayISO, addMonths, addDays } from '../lib/dates.js';
@@ -22,6 +22,12 @@ router.get('/', ah(async (req, res) => {
     pool.query('SELECT * FROM calendar_deadlines ORDER BY month, COALESCE(day, nth * 7), id'),
   ]);
   res.json({ today, from, to, items, suggestions, deadlines: deadlines.map((d) => ({ ...d, rule: describeRule(d) })) });
+}));
+
+// Tick a task off (tax, GST, program, year-end or statement date), or reopen it: { done: true|false }.
+router.put('/tasks/:id', ah(async (req, res) => {
+  await setTaskDone(String(req.params.id), req.body?.done !== false);
+  res.json({ ok: true });
 }));
 
 // ---- Due this week (Jake, Oct 30) ---------------------------------------------

@@ -281,6 +281,10 @@ export async function liquidityFloor({ months = 12, scope = 'everything', accoun
     reserve: reserve ? { startingBalance: reserve.opening, balances: reserve.trajectory.map((t) => t.balance) } : null,
     tax: ctx.tax.available ? { y0: ctx.win.y0, net: ctx.tax.netY0, total: ctx.tax.taxY0, instalment: ctx.tax.instalmentY0 } : null,
     personal: ctx.personal || null,
+    agriinvest: (() => {
+      const m = (f) => ({ program_year: f.ref.program_year, date: f.date, amount: f.amount, ans: f.ref.ans, sold_so_far: f.ref.sold_so_far, to_sell: f.ref.to_sell, purchases: f.ref.purchases });
+      return { counted: ctx.flows.filter((f) => f.ref?.program === 'agriinvest').map(m), later: (ctx.lookahead || []).filter((f) => f.ref?.program === 'agriinvest').map(m), skipped: ctx.agriinvest_skipped || [] };
+    })(),
   };
 }
 

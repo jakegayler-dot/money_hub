@@ -2014,3 +2014,7 @@ button:active { transform: none !important; }
 .dw-waiting ul { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; }
 .dw-waiting li { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto; gap: 10px; align-items: center; font-size: 13px; color: var(--text-muted); }
 .dw-pending { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--gold); }
+.cal-item.heads .cal-title { color: var(--text-muted); font-style: italic; }
+.cal-tick { display: inline-grid; vertical-align: -4px; margin-right: 8px; }
+.cal-tick.on { border-color: var(--positive, #3fb27f); color: var(--positive, #3fb27f); }
+.cal-item.done .cal-title > a, .cal-item.done .cal-title { text-decoration: line-through; text-decoration-color: var(--text-faint); }

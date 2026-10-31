@@ -2,15 +2,17 @@
 // out. It doesn't matter if I take the money out or not - it's simply a cash inflow"). For each program year (the
 // calendar year) the governments match 1% of allowable net sales (ANS: qualifying commodity sales less qualifying
 // commodity purchases), on ANS up to $1,000,000, so at most $10,000; under $25,000 of ANS there's nothing (taxlib
-// "agriinvest"). The forms go in with the tax return (by June 30 the year after), so the match is counted on
-// MATCH_DAY of the year after the program year. ANS = what's been sold and bought so far that year (the ledger)
+// "agriinvest"). The match is counted on MATCH_DAY of the year after the program year (Jake, Oct 31: "it arrives in
+// June most years" — it was Nov 15). A match past its day and not in the ledger is counted from today for two months
+// (it's late); after that it's taken to have come in under another category, and shown as not counted, with why. ANS = what's been sold and bought so far that year (the ledger)
 // plus what the forecast has for the rest of it. Sales: grain and cattle (contracts, inventory, Quarter Section's
 // crop plan and unharvested grain, the cattle manager's forecast). Purchases: livestock (bulls included), feed
 // grain and hay bought. A year whose match is already in the ledger (Program payments › AgriInvest) is skipped.
 export const MATCH_PCT = 0.01;
 export const ANS_CAP = 1000000;
 export const MIN_ANS = 25000;
-export const MATCH_DAY = '11-15';
+export const MATCH_DAY = '06-15';
+export const LATE_DAYS = 60;
 const SALE_CATS = new Set(['grain sales', 'cattle sales']);
 const PURCHASE_CATS = new Set(['livestock purchased', 'grain purchased', 'hay & straw purchased']);
 
@@ -35,25 +37,38 @@ export const isPurchase = (f, purchaseIds = new Set()) => f.amount < 0 && (
  * The AgriInvest matching payments the window holds (pure). actual: { [year]: { sales, purchases, agriinvest_in } }
  * from the ledger before today; flows: the forecast's flows (from today).
  */
-export function agriInvestFlows({ flows, actual = {}, purchaseIds = new Set(), today, endStr }) {
+export function agriInvestFlows({ flows, actual = {}, purchaseIds = new Set(), today, endStr, skipped = null }) {
   const out = [];
+  const skip = (y, why, extra = {}) => { if (skipped) skipped.push({ program_year: y, date: `${y + 1}-${MATCH_DAY}`, reason: why, ...extra }); };
   const y0 = Number(today.slice(0, 4));
   const yEnd = Number(endStr.slice(0, 4));
   for (let y = y0 - 1; y < yEnd; y++) {
-    const date = `${y + 1}-${MATCH_DAY}`;
-    if (date < today || date >= endStr) continue;
-    if (Number(actual[y + 1]?.agriinvest_in) > 0) continue;
+    const due = `${y + 1}-${MATCH_DAY}`;
+    // Past its day and not in the ledger yet: late, counted from today — for two months, then not at all.
+    const lateBy = (Date.parse(`${today}T00:00:00Z`) - Date.parse(`${due}T00:00:00Z`)) / 86400000;
+    if (lateBy > LATE_DAYS) {
+      if (y + 1 === y0) skip(y, `it was due in June ${y + 1} and isn't in the ledger — the filing was missed, or the deposit is under another category (file it under Program payments › AgriInvest)`);
+      continue;
+    }
+    const date = due < today ? today : due;
+    if (date >= endStr) continue;
+    if (Number(actual[y + 1]?.agriinvest_in) > 0) { skip(y, 'already in the ledger (Program payments › AgriInvest)', { received: Number(actual[y + 1].agriinvest_in) }); continue; }
     const inYear = (f) => f.date >= today && f.date >= `${y}-01-01` && f.date < `${y + 1}-01-01`; // the ledger has the rest
     const share = (f) => Math.abs(f.amount) * (f.farm ?? 1);
-    const sales = (Number(actual[y]?.sales) || 0) + flows.filter((f) => inYear(f) && isSale(f)).reduce((a, f) => a + share(f), 0);
+    const soldSoFar = Number(actual[y]?.sales) || 0; // the ledger, Jan 1 to today
+    const toSell = flows.filter((f) => inYear(f) && isSale(f)).reduce((a, f) => a + share(f), 0); // the forecast, to Dec 31
+    const sales = soldSoFar + toSell;
     const purchases = (Number(actual[y]?.purchases) || 0) + flows.filter((f) => inYear(f) && isPurchase(f, purchaseIds)).reduce((a, f) => a + share(f), 0);
     const ans = sales - purchases;
-    if (ans < MIN_ANS) continue;
+    if (ans < MIN_ANS) {
+      skip(y, `allowable net sales of $${Math.round(ans).toLocaleString('en-CA')} are under the $25,000 the program needs — grain and cattle sales less livestock, feed grain and hay bought, from the ledger${y >= y0 ? ' and the forecast' : ''}. If ${y}'s sales aren't all in the ledger, the match can't be worked out.`, { ans: Math.round(ans), sales: Math.round(sales), purchases: Math.round(purchases) });
+      continue;
+    }
     const amount = Math.round(Math.min(ans, ANS_CAP) * MATCH_PCT * 100) / 100;
     out.push({
       key: `agriinvest:${y}`, kind: 'estimate_in', label: `AgriInvest match for ${y} (1% of $${Math.round(ans).toLocaleString('en-CA')} allowable net sales)`,
       date, amount, farm: 1, taxable: amount, estimate: true,
-      ref: { program: 'agriinvest', program_year: y, ans: Math.round(ans), sales: Math.round(sales), purchases: Math.round(purchases) },
+      ref: { program: 'agriinvest', program_year: y, ans: Math.round(ans), sales: Math.round(sales), sold_so_far: Math.round(soldSoFar), to_sell: Math.round(toSell), purchases: Math.round(purchases) },
     });
   }
   return out;

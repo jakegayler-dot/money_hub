@@ -30,7 +30,7 @@ test('no down-payment rule (Oct 31: the leasing company takes 0% down); the stra
   const [r] = planGoals(b, [g], { strategies: true });
   assert.ok(r.month_index != null, '0% down can be bought');
   assert.ok(!r.tests.some((x) => x.id === 'equity'));
-  assert.equal(r.strategies.length, 10, 'cash and 0/10/20% down over 3/5/7 years');
+  assert.equal(r.strategies.length, 10, 'cash and 0/10/20% down over 3/5/7 years (yours is one of them)');
   assert.ok(r.strategies.find((x) => x.yours).label.startsWith('0% down, 7 years'));
   assert.ok(r.recommended && r.recommended.why, 'a recommendation with its reason');
   const h = r.health;
@@ -73,4 +73,34 @@ test('no floor: cash at $0 is the line; a goal that can never be reached no long
   assert.ok(truck.month_index != null && truck.month_index < 12, 'the truck is planned on its own merits');
   const e = explain(b, truck);
   assert.equal(e.conditions.find((c) => c.id === 'cash').label, 'Cash never goes below $0');
+});
+
+test('terms by what is bought, and the goal’s own term is always a row (Oct 31: "revert to a 7 year term")', () => {
+  const g = { id: 9, name: 'Quarter section', kind: 'land', price: 600000, funding: 'financed', down_pct: 25, rate: 6, years: 25, per_year: 1, owner: 'farm' };
+  const b = base({ reserve: 0, sheet: { assets: 3000000, liabilities: 900000, equity: 2100000 }, principal: new Array(H).fill(1000) });
+  const [r] = planGoals(b, [g], { strategies: true });
+  const mine = r.strategies.find((x) => x.yours);
+  assert.ok(mine && mine.years === 25 && mine.down_pct === 25, 'your 25% down over 25 years is compared');
+  assert.ok(!r.strategies.some((x) => x.years === 3), 'no 3-year land loans');
+  assert.ok(r.strategies.some((x) => x.years === 20));
+  const tr = planGoals(base(), [{ id: 8, name: 'Tractor', kind: 'tractor', price: 300000, funding: 'financed', down_pct: 15, rate: 7, years: 8, per_year: 1, owner: 'farm' }], { strategies: true })[0];
+  assert.ok(tr.strategies.find((x) => x.yours).years === 8, 'an 8-year tractor loan is its own row');
+});
+
+test('net worth looks ahead: the forecast’s savings and debt paid off by the month it’s bought, and in ten years', () => {
+  const g = { id: 9, name: 'Quarter section', kind: 'land', price: 600000, funding: 'financed', down_pct: 25, rate: 6, years: 25, per_year: 1, owner: 'farm' };
+  const b = base({ reserve: 0, sheet: { assets: 3000000, liabilities: 900000, equity: 2100000 }, principal: new Array(H).fill(1000) });
+  const [r] = planGoals(b, [g]);
+  const nw = r.health.net_worth;
+  const t = r.month_index;
+  assert.equal(nw.today, 2100000);
+  assert.equal(nw.before, 2100000 + 21000 * (t + 1), 'today plus $20k a month saved and $1k a month of principal');
+  assert.ok(nw.ten_year.before > nw.before);
+  // Land at cost: on the day it costs the fees, closing taxes and nothing else; ten years on, the loan's interest.
+  assert.ok(Math.abs(nw.after - nw.before) < 20000);
+  assert.ok(nw.ten_year.after < nw.ten_year.before, 'interest paid over ten years');
+  // A tractor loses value at its CCA rate.
+  const tr = { id: 8, name: 'Tractor', kind: 'tractor', price: 300000, funding: 'cash', owner: 'farm' };
+  const [x] = planGoals(b, [tr]);
+  assert.ok(x.health.net_worth.ten_year.before - x.health.net_worth.ten_year.after > 250000, 'worth little after ten years at 30%');
 });

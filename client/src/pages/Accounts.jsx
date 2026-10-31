@@ -17,6 +17,63 @@ const emptyForm = {
   ...emptyOwnerFields,
 };
 
+// Delete a redundant account (Oct 31): an empty one outright; a duplicate after its entries are matched to the real
+// account's (lib/accountDelete.js). Shows what will happen before anything is removed.
+function DeleteAccount({ account, accounts, onDeleted }) {
+  const [open, setOpen] = useState(false);
+  const [dupOf, setDupOf] = useState('');
+  const [u, setU] = useState(null);
+  const [err, setErr] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    setErr(null); setU(null);
+    fetch(`/api/accounts/${account.id}/usage${dupOf ? `?duplicate_of=${dupOf}` : ''}`).then((r) => r.json())
+      .then((d) => (d.error ? setErr(d.error) : setU(d))).catch((e) => setErr(e.message));
+  }, [open, dupOf, account.id]);
+  const go = async () => {
+    setBusy(true); setErr(null);
+    const q = dupOf ? `?duplicate_of=${dupOf}${u?.unmatched?.length ? '&move_unmatched=true' : ''}` : '';
+    const r = await fetch(`/api/accounts/${account.id}${q}`, { method: 'DELETE' });
+    const d = await r.json().catch(() => ({}));
+    setBusy(false);
+    if (!r.ok) { setErr(d.error || `HTTP ${r.status}`); return; }
+    onDeleted();
+  };
+  if (!open) return <div style={{ gridColumn: '1 / -1' }}><button className="small-link" onClick={() => setOpen(true)}>Delete this account…</button></div>;
+  const others = accounts.filter((x) => x.id !== account.id);
+  const ready = u && (u.empty || (dupOf && u.target));
+  return (
+    <div className="field" style={{ gridColumn: '1 / -1', borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+      <label>Delete {account.name}</label>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>It's a duplicate of</span>
+        <select value={dupOf} onChange={(e) => setDupOf(e.target.value)} aria-label="Duplicate of">
+          <option value="">{u && !u.empty ? 'Choose the real account' : 'Nothing — it’s just empty'}</option>
+          {others.map((x) => <option key={x.id} value={x.id}>{x.name}{x.last4 ? ` ··${x.last4}` : ''} — {money(Number(x.opening_balance))}</option>)}
+        </select>
+      </div>
+      {u && (
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '6px 0' }}>
+          {u.empty ? `Nothing posted to it${Number(u.account.balance) ? ` — its ${money(u.account.balance)} balance goes with it` : ''}.`
+            : !u.target ? `${u.transactions} transaction${u.transactions === 1 ? '' : 's'} in it. Choose the account it duplicates so they can be matched to their copies.`
+            : `${u.matched} of ${u.transactions} entries match a copy in ${u.target.name} (same amount, within 3 days) and are dropped — any bill, loan payment or statement line they were tied to moves to the copy.`
+              + (u.unmatched.length ? ` ${u.unmatched.length} have no copy and move to ${u.target.name}, changing its balance by ${money(u.unmatched_total)}.` : '')}
+          {u.references.length > 0 && ` ${u.references.map((r) => `${r.count} ${r.label}${r.count === 1 ? '' : 's'}`).join(', ')} ${u.target ? `move to ${u.target.name}` : 'are unlinked'}.`}
+        </p>
+      )}
+      {u?.unmatched?.length > 0 && (
+        <ul style={{ fontSize: 12, margin: '0 0 6px 16px' }}>{u.unmatched.slice(0, 8).map((x) => <li key={x.id}>{x.date} · {x.description || '—'} · {money(x.amount)}</li>)}{u.unmatched.length > 8 && <li>and {u.unmatched.length - 8} more</li>}</ul>
+      )}
+      {err && <p className="review-error" style={{ margin: '4px 0' }}>{err}</p>}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button className="small danger" disabled={!ready || busy} onClick={go}>{dupOf && u?.target ? `Delete and merge into ${u.target.name}` : 'Delete account'}</button>
+        <button className="small-link" onClick={() => { setOpen(false); setDupOf(''); }}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 export default function Accounts() {
   const [accounts, setAccounts] = useState([]);
   const [form, setForm] = useState(emptyForm);
@@ -162,6 +219,7 @@ export default function Accounts() {
                             <button className="small secondary" disabled={!ownerEdit.anchor_date || ownerEdit.anchor_balance === ''} onClick={() => anchor(a.id)}>Set balance</button>
                           </div>
                         </div>
+                        <DeleteAccount account={a} accounts={accounts} onDeleted={() => { setEditingId(null); setOwnerEdit(null); load(); }} />
                       </div>
                     </td>
                   </tr>

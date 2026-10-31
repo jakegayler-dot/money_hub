@@ -3,6 +3,7 @@ import { assertNoClosedFrom } from '../lib/periods.js';
 import { pool, withTransaction } from '../db.js';
 import { anchorAccount } from '../lib/postings.js';
 import { ah } from '../lib/asyncHandler.js';
+import { accountUsage, deleteAccount, AccountDeleteError } from '../lib/accountDelete.js';
 import { toISODate } from '../lib/dates.js';
 import { loadBalanceSheet } from '../lib/balanceSheet.js';
 import { cardBalances } from '../lib/cardLedger.js';
@@ -120,6 +121,32 @@ router.post('/:id/anchor', ah(async (req, res) => {
   const r = await withTransaction((client) => anchorAccount(client, req.params.id, { as_of, balance: Number(balance) }));
   if (!r) return res.status(404).json({ error: 'not found' });
   res.json(r);
+}));
+
+// Deleting a redundant account (lib/accountDelete.js). GET shows what's in it and, with ?duplicate_of=,
+// how its entries match the real account's; DELETE does it.
+const targetOf = (q) => (q.duplicate_of != null && q.duplicate_of !== '' ? Number(q.duplicate_of) : null);
+const fail = (res, e) => {
+  if (e instanceof AccountDeleteError) return res.status(409).json({ error: e.message, ...(e.extra || {}) });
+  if (e.code === '23505' || e.code === '23503') return res.status(409).json({ error: `Couldn't delete it — something still depends on it (${e.detail || e.message}). Nothing was changed.` });
+  if (e.status) return res.status(e.status).json({ error: e.message });
+  throw e;
+};
+router.get('/:id/usage', ah(async (req, res) => {
+  try {
+    const u = await accountUsage(pool, Number(req.params.id), targetOf(req.query));
+    if (!u) return res.status(404).json({ error: 'not found' });
+    res.json(u);
+  } catch (e) { return fail(res, e); }
+}));
+router.delete('/:id', ah(async (req, res) => {
+  try {
+    const r = await withTransaction((client) => deleteAccount(client, Number(req.params.id), {
+      target: targetOf(req.query), moveUnmatched: req.query.move_unmatched === 'true' || req.query.move_unmatched === '1',
+    }));
+    if (!r) return res.status(404).json({ error: 'not found' });
+    res.json(r);
+  } catch (e) { return fail(res, e); }
 }));
 
 export default router;

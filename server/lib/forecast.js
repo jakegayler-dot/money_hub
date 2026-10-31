@@ -391,6 +391,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     });
   }
 
+  const agriSkipped = []; // years with no match counted, and why (shown on Cash Flow)
   // AgriInvest: each program year's government match, worked out from its sales less its purchases (agriInvest.js, Oct 30).
   try {
     const [{ rows: act }, { rows: pids }] = await Promise.all([
@@ -398,7 +399,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
       pool.query(PURCHASE_IDS_SQL),
     ]);
     const actual = Object.fromEntries(act.map((r) => [r.year, r]));
-    for (const f of agriInvestFlows({ flows, actual, purchaseIds: new Set(pids.map((r) => Number(r.id))), today, endStr })) add(f);
+    for (const f of agriInvestFlows({ flows, actual, purchaseIds: new Set(pids.map((r) => Number(r.id))), today, endStr, skipped: agriSkipped })) add(f);
   } catch (e) { console.error('AgriInvest unavailable for the forecast:', e.message); }
 
   // Loan payments: principal + interest; only the interest is deductible.
@@ -521,6 +522,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
   return {
     win, today, flows: flows.filter((f) => inWindow(f.date)), lookahead: flows.filter((f) => !inWindow(f.date)), accounts: accountRows, groups, known, personal, splits,
     bills: billRows.rows.filter((b) => inWindow(b.due_date)), loans: loanRows.rows.filter((l) => inWindow(l.due_date)), contracts: contractRows.rows, estimates,
+    agriinvest_skipped: agriSkipped.filter((x) => x.date < win.endStr),
     inventory: inv, floorDays, floorCap, gstFreq: String(gstFreq || 'quarterly'),
     tax: {
       available: !!taxY0, netY0, taxY0: taxY0 ? taxY0.projected.tax.total : null,

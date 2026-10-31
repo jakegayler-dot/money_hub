@@ -11,6 +11,7 @@ import { forecastEstimates } from './inventoryForecast.js';
 import { billDates } from './billDates.js';
 import { assetValueAt } from './balanceSheet.js';
 import { personalTax } from './taxRates.js';
+import { ACTUAL_SQL, PURCHASE_IDS_SQL, agriInvestFlows } from './agriInvest.js';
 
 const r2 = (n) => Math.round(Number(n) * 100) / 100;
 const lastDay = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate(); // m = 1..12
@@ -218,6 +219,25 @@ export async function farmIncomeTax(year, whatIf = {}) {
   }
   addFc('Account fees to Dec 31', -fees);
 
+  // AgriInvest (Oct 31: "why isn't agriinvest included … in tax tab"): the government match that lands by Dec 31, the
+  // same one Cash Flow counts (lib/agriInvest.js). Counted as income here because Cash Flow counts it as cash in hand:
+  // the match is taxed in the year it's taken out of the AgriInvest account. Left in the account, it isn't taxed yet.
+  const agri = { included: [], skipped: [] };
+  try {
+    const [{ rows: act }, { rows: pids }] = await Promise.all([
+      pool.query(ACTUAL_SQL, [`${year - 1}-01-01`, today < yEndExcl ? today : yEndExcl]),
+      pool.query(PURCHASE_IDS_SQL),
+    ]);
+    // The match landing this year is for last year's program year, which is all in the ledger by now.
+    const flows = agriInvestFlows({ flows: [], actual: Object.fromEntries(act.map((r) => [r.year, r])),
+      purchaseIds: new Set(pids.map((r) => Number(r.id))), today: today > yStart ? today : yStart, endStr: yEndExcl, skipped: agri.skipped });
+    for (const f of flows) {
+      addFc(`AgriInvest match for ${f.ref.program_year} (taxable when withdrawn)`, f.amount);
+      agri.included.push({ program_year: f.ref.program_year, date: f.date, amount: r2(f.amount), ans: f.ref.ans });
+    }
+    agri.skipped = agri.skipped.filter((x) => x.date >= yStart && x.date < yEndExcl);
+  } catch (e) { console.error('AgriInvest unavailable for the tax estimate:', e.message); }
+
   // ---- CCA ----
   // Estimate: each depreciating farm asset's value on Jan 1 × its rate.
   // Book value, not the CRA's undepreciated capital cost — replace it with
@@ -288,6 +308,6 @@ export async function farmIncomeTax(year, whatIf = {}) {
     cca: { amount: r2(cca), estimate: r2(ccaEstimate), override: ccaOverride != null ? Number(ccaOverride) : null, assets: ccaAssets },
     projected, scenario,
     what_if: { defer_sales: deferSales, prepay_inputs: prepay, oia },
-    instalment,
+    instalment, agriinvest: agri,
   };
 }

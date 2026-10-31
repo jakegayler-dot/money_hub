@@ -12,7 +12,9 @@
 
 import { pool, withTransaction } from '../db.js';
 import { buildSnapshot, reginaToday, WINDOW_PAST_DAYS, WINDOW_FUTURE_DAYS } from './sentinelSnapshot.js';
-import { deadlineItems, statementReleaseItems, taxItems, gstItems } from './calendar.js';
+import { deadlineItems, statementReleaseItems, taxItems, gstItems, incomingItems, applyDone } from './calendar.js';
+import { attachValues } from './taskValues.js';
+import { loadForecast } from './forecast.js';
 import { buildSummary } from './sentinelSummary.js';
 import { liquidityFloor, termDebtCoverage, scheduledServiceBetween } from './calculations.js';
 import { loadBalanceSheet, inventoryOwnerRow } from './balanceSheet.js';
@@ -84,8 +86,13 @@ export async function loadCalendarDeadlines(now = new Date()) {
   const today = reginaToday(now);
   const from = addDays(today, -WINDOW_PAST_DAYS);
   const to = addDays(today, WINDOW_FUTURE_DAYS);
-  const parts = await Promise.all([deadlineItems(from, to), taxItems(from, to), gstItems(from, to), statementReleaseItems(from, to)]);
-  return parts.flat();
+  const parts = await Promise.all([deadlineItems(from, to), taxItems(from, to), gstItems(from, to), statementReleaseItems(from, to), incomingItems(from, to, today)]);
+  // Tax, GST, program and statement dates go as tasks, ticked off or not (Jake, Oct 31); Sentinel's own
+  // alerts remind ahead of them.
+  const items = await applyDone(parts.flat());
+  // What each is worth (Jake, Oct 31): AgriInvest's match comes from the forecast.
+  const flows = await loadForecast({ months: 24, today }).then((c) => c.flows).catch(() => null);
+  return attachValues(items, { forecastFlows: flows });
 }
 
 export async function buildSnapshotFromDb(now = new Date()) {

@@ -97,7 +97,8 @@ export function goalEffect(g, t, meta, floorDays = 60) {
       if (x.date >= start && x.date < addDays(start, floorDays)) due[k] += x.payment;
     }
   }
-  return { terms, net, due, annual: terms.owner === 'farm' ? terms.annual_payment : 0, pays };
+  const payIdx = pays.map((x) => idx.get(x.date.slice(0, 7)) ?? (x.date.slice(0, 7) < ym(0) ? 0 : null));
+  return { terms, net, due, annual: terms.owner === 'farm' ? terms.annual_payment : 0, pays, payIdx };
 }
 const monthStart = (meta, i) => {
   const last = meta[meta.length - 1];
@@ -154,7 +155,7 @@ export function testsAt(base, g, eff, t, addedAnnual = 0) {
  */
 export function planGoals(base, goals, { strategies: withStrategies = false } = {}) {
   const H = base.meta.length;
-  const cur = { ...base, net: [...base.net], floor: [...base.floor] };
+  const cur = { ...base, net: [...base.net], floor: [...base.floor], equityExtra: new Array(H).fill(0) };
   let addedAnnual = new Array(H).fill(0);
   let from = 0;
   const out = [];
@@ -181,6 +182,7 @@ export function planGoals(base, goals, { strategies: withStrategies = false } = 
       const { t, eff, tests } = found;
       Object.assign(res, { month_index: t, tests, terms: stripTerms(eff.terms) });
       for (let i = 0; i < H; i++) { cur.net[i] += eff.net[i]; cur.floor[i] += eff.due[i]; }
+      if (cur.sheet) { const ge = goalEquity(g, eff, t, H); for (let i = 0; i < H; i++) cur.equityExtra[i] += ge[i]; }
       // The new farm payments count against coverage from the month bought, for as long as they run.
       const runs = eff.pays.map((x) => x.date.slice(0, 7));
       addedAnnual = addedAnnual.map((v, i) => {
@@ -204,7 +206,16 @@ export function planGoals(base, goals, { strategies: withStrategies = false } = 
 // 20% down over 3, 5 or 7 years at the goal's rate (a 0%-down lease is the 0% row). Each is placed at its first month
 // that works with the goals before it counted. Best: the cheapest (least interest) that's bought by the want-by date;
 // if none is, the soonest.
-const VARIANTS = [{ funding: 'cash' }, ...[0, 10, 20].flatMap((d) => [3, 5, 7].map((y) => ({ funding: 'financed', down_pct: d, years: y })))];
+// Terms by what's bought (Oct 31: "why does the goal option revert to a 7 year term" — only 3, 5 and 7 years were
+// tried, so a land goal set at 25 years was compared against, and "Use this" put, 7). Land and buildings run longer; the
+// goal's own down payment and term are always one of the rows.
+export const TERMS = { land: [10, 20, 25], building: [10, 15, 20], combine: [3, 5, 7, 10] };
+export function variantsFor(g) {
+  const own = g.funding === 'cash' ? null : { d: Number(g.down_pct) || 0, y: Number(g.years) || 5 };
+  const downs = [...new Set([0, 10, 20, ...(own ? [own.d] : [])])].sort((a, b) => a - b);
+  const years = [...new Set([...(TERMS[g.kind] || [3, 5, 7]), ...(own ? [own.y] : [])])].sort((a, b) => a - b);
+  return [{ funding: 'cash' }, ...downs.flatMap((d) => years.map((y) => ({ funding: 'financed', down_pct: d, years: y })))];
+}
 const money0 = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-CA');
 const ymLabel = (ym) => monthLabel({ year: Number(ym.slice(0, 4)), month: Number(ym.slice(5, 7)) });
 export function strategiesFor(cur, g, addedAnnual) {
@@ -213,7 +224,7 @@ export function strategiesFor(cur, g, addedAnnual) {
   const want = g.want_by ? String(g.want_by).slice(0, 7) : null;
   const rate = Number(g.rate) || 7;
   const own = g.funding === 'cash' ? 'cash' : `${Number(g.down_pct) || 0}|${Number(g.years) || 5}`;
-  const list = VARIANTS.map((v) => {
+  const list = variantsFor(g).map((v) => {
     const gv = { ...g, ...v, rate: v.funding === 'cash' ? 0 : rate, per_year: Number(g.per_year) || 12 };
     let at = null; let eff = null;
     for (let t = 0; t < H; t++) {
@@ -271,13 +282,54 @@ export function healthOf(cur, g, { t, eff }, addedT = 0) {
   };
   const sh = cur.sheet;
   const price = Number(g.price) || 0;
-  const nwChange = r2(price - tm.cash_up_front + (tm.gst_refund || 0) - tm.financed);
+  const nw = sh ? netWorthPath(cur, g, { t, eff }) : null;
   return {
     lowest_cash: { before: Math.round(low.before), after: Math.round(low.after), month: low.month },
     dscr,
     debt_to_assets: sh && sh.assets > 0 ? { before: r2(sh.liabilities / sh.assets), after: r2((sh.liabilities + tm.financed) / (sh.assets + price)) } : null,
-    net_worth: sh ? { before: Math.round(sh.equity), after: Math.round(sh.equity + nwChange) } : null,
+    net_worth: nw,
     new_debt: r2(tm.financed), payment: tm.financed > 0 ? r2(tm.payment) : null, per_year: tm.per_year, total_interest: r2(tm.total_interest || 0),
+  };
+}
+
+/**
+ * Net worth month by month (Oct 31: "not account for future net worth change" — it showed today's net worth with the
+ * asset added, as if bought today). From the balance sheet today, each month adds what the forecast leaves in the bank
+ * and the principal paid off the loans already on the books (the interest is the cost; the principal is debt gone).
+ * Goals planned before this one are in. With this one: its cash and payments, the asset at its price written down at
+ * its CCA rate (machinery loses value; land and breeding stock are held at cost), less what's still owed on its loan.
+ * Existing assets are held at book value — no depreciation or land appreciation is assumed for them.
+ */
+export function goalEquity(g, eff, t, H) {
+  const tm = eff.terms;
+  const rate = Number(goalPurchase(g, '2000-01').cca_rate) || 0;
+  const price = Number(g.price) || 0;
+  const out = new Array(H).fill(0);
+  let owed = tm.financed || 0; let k = 0;
+  const pays = eff.pays || [];
+  for (let i = t; i < H; i++) {
+    while (k < pays.length && (eff.payIdx[k] ?? Infinity) <= i) { owed -= pays[k].principal; k += 1; }
+    const value = price * Math.pow(1 - rate / 100, (i - t) / 12);
+    out[i] = value - Math.max(0, owed);
+  }
+  return out;
+}
+export function netWorthPath(cur, g, { t, eff }) {
+  const H = cur.meta.length;
+  const extra = goalEquity(g, eff, t, H);
+  let cash0 = 0; let cash1 = 0; let prin = 0;
+  const before = []; const after = [];
+  for (let i = 0; i < H; i++) {
+    cash0 += cur.net[i]; cash1 += cur.net[i] + eff.net[i]; prin += cur.principal?.[i] || 0;
+    const b = cur.sheet.equity + cash0 + prin + (cur.equityExtra?.[i] || 0);
+    before.push(b); after.push(cur.sheet.equity + cash1 + prin + (cur.equityExtra?.[i] || 0) + extra[i]);
+  }
+  const end = H - 1;
+  return {
+    today: Math.round(cur.sheet.equity),
+    before: Math.round(before[t]), after: Math.round(after[t]), month: monthLabel(cur.meta[t]),
+    ten_year: { before: Math.round(before[end]), after: Math.round(after[end]), month: monthLabel(cur.meta[end]) },
+    yearly: cur.meta.map((m, i) => ({ i, m })).filter(({ m }) => m.month === cur.meta[0].month).map(({ m, i }) => ({ year: m.year, before: Math.round(before[i]), after: Math.round(after[i]) })),
   };
 }
 
@@ -303,18 +355,20 @@ export async function loadBase({ today = todayISO(), budgetShare = null } = {}) 
 
   // Loan payments on their real schedules, all ten years.
   const { rows: lp } = await pool.query(
-    `SELECT lp.due_date, lp.principal_amount + lp.interest_amount AS total, l.segment, l.is_segment_split, l.segment_grain_pct, l.segment_livestock_pct
+    `SELECT lp.due_date, lp.principal_amount, lp.principal_amount + lp.interest_amount AS total, l.segment, l.is_segment_split, l.segment_grain_pct, l.segment_livestock_pct
      FROM loan_payments lp JOIN loans l ON l.id = lp.loan_id
      WHERE NOT lp.paid AND NOT lp.is_adjustment AND lp.due_date < $1
        AND NOT EXISTS (SELECT 1 FROM bills b WHERE b.loan_id = lp.loan_id AND b.status = 'unpaid' AND b.frequency = 'one_time' AND b.due_date <= lp.due_date)`,
     [endStr]).catch(() => ({ rows: [] }));
   const loanNet = new Array(HORIZON).fill(0);
   const farmService = new Array(HORIZON).fill(0); // farm loan payments in each month
-  const pays = lp.map((p) => ({ date: toISODate(p.due_date) < today ? today : toISODate(p.due_date), amt: Number(p.total), farm: businessShare(p) }));
+  const principal = new Array(HORIZON).fill(0); // debt paid off each month (net worth)
+  const pays = lp.map((p) => ({ date: toISODate(p.due_date) < today ? today : toISODate(p.due_date), amt: Number(p.total), prin: Number(p.principal_amount) || 0, farm: businessShare(p) }));
   for (const p of pays) {
     const i = idx.get(p.date.slice(0, 7));
     if (i == null) continue;
     loanNet[i] -= p.amt;
+    principal[i] += p.prin;
     farmService[i] += p.amt * p.farm;
   }
   const days = ctx.floorDays || 60;
@@ -356,7 +410,7 @@ export async function loadBase({ today = todayISO(), budgetShare = null } = {}) 
     return svc0 > 0 ? lenderSvc * (mine / svc0) : mine;
   });
   return {
-    today, meta, opening: ev.opening, net, floor, floorDays: days, floorCap: 0, reserve: 0, sheet,
+    today, meta, opening: ev.opening, net, principal, floor, floorDays: days, floorCap: 0, reserve: 0, sheet,
     budget: { per_month: steady, cash_flow_budget: perMonth, share, year_surplus: r2(yearSurplus) },
     dscr: {
       capacity: coverage?.projected?.capacity ?? null, threshold: Number(coverage?.threshold) || 1.25,

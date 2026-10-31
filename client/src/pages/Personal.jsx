@@ -134,7 +134,7 @@ function Legend({ items, total, selected, onSelect, onHover }) {
 }
 
 export default function Personal() {
-  const [period, setPeriod] = useState('3m');
+  const [period, setPeriod] = useState('year');
   const [b, setB] = useState(null);
   const [plan, setPlan] = useState(null);
   const [error, setError] = useState(null);

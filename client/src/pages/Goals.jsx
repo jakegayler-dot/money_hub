@@ -147,7 +147,8 @@ function GoalHealth({ h, when }) {
     ['Lowest cash, next 2 years', money(h.lowest_cash.before), money(h.lowest_cash.after), h.lowest_cash.after < 0, h.lowest_cash.month ? `lowest ${h.lowest_cash.month}` : ''],
     h.dscr && h.dscr.farm ? ['Debt coverage', x(h.dscr.before), x(h.dscr.after), h.dscr.after != null && h.dscr.after < h.dscr.threshold, `lenders want ${h.dscr.threshold}×`] : null,
     h.debt_to_assets ? ['Debt to assets', pct(h.debt_to_assets.before), pct(h.debt_to_assets.after), h.debt_to_assets.after > 0.5, 'under 50% is comfortable'] : null,
-    h.net_worth ? ['Net worth on the day', money(h.net_worth.before), money(h.net_worth.after), false, 'the asset at its price, less cash and loan'] : null,
+    h.net_worth ? [`Net worth, ${h.net_worth.month}`, money(h.net_worth.before), money(h.net_worth.after), false, `${money(h.net_worth.today)} today, plus what the forecast saves and the debt paid off by then`] : null,
+    h.net_worth?.ten_year ? [`Net worth, ${h.net_worth.ten_year.month}`, money(h.net_worth.ten_year.before), money(h.net_worth.ten_year.after), h.net_worth.ten_year.after < h.net_worth.ten_year.before, 'with its interest paid and the asset written down at its CCA rate (land at cost)'] : null,
   ].filter(Boolean);
   return (
     <div className="gl-health">

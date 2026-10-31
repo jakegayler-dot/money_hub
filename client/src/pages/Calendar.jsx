@@ -137,10 +137,17 @@ export default function Calendar() {
               {list.map((i) => {
                 const past = i.date < data.today;
                 return (
-                  <li key={i.id} className={`cal-item kind-${i.kind}${i.done ? ' done' : ''}${past ? ' past' : ''}${i.overdue ? ' overdue' : ''}`}>
+                  <li key={i.id} className={`cal-item kind-${i.kind}${i.done ? ' done' : ''}${past ? ' past' : ''}${i.overdue ? ' overdue' : ''}${i.heads_up ? ' heads' : ''}`}>
                     <span className="cal-date"><b>{Number(i.date.slice(8, 10))}</b><em>{DOW[dayOf(i.date)]}</em></span>
                     <span className="cal-body">
                       <span className="cal-title">
+                        {i.task && (
+                          <button type="button" className={`dw-check cal-tick${i.done ? ' on' : ''}`} aria-pressed={!!i.done}
+                            aria-label={i.done ? `Reopen: ${i.title}` : `Done: ${i.title}`} title={i.done ? (i.ticked ? 'Done — click to reopen' : 'Done') : 'Mark done'}
+                            disabled={i.done && !i.ticked} onClick={() => send('PUT', `/api/calendar/tasks/${encodeURIComponent(i.id)}`, { done: !i.done })}>
+                            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                          </button>
+                        )}
                         {i.link ? <a href={i.link}>{i.title}</a> : i.url ? <a href={i.url} target="_blank" rel="noreferrer">{i.title}</a> : i.title}
                       </span>
                       <span className="cal-meta">

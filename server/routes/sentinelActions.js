@@ -10,6 +10,8 @@
 //                                         Jake's words in a Sentinel thread
 //   GET  /api/sentinel/actions/goals      the goals, with their studies
 //   POST /api/sentinel/actions/goals      add or change a goal (and save a study)
+//   PATCH /api/sentinel/actions/tasks/:id { status: "open"|"done" }  tick a tax, GST, program or statement
+//                                         task off (or reopen it); answers { source_id, item } as Sentinel stores it
 //   POST /api/sentinel/actions/goals/:id/study  the money side of a goal study
 //                                         (lib/goalStudy.js); not saved
 import { Router } from 'express';
@@ -21,6 +23,9 @@ import { advise } from '../lib/advisor/advisor.js';
 import { AdvisorToolError } from '../lib/advisor/tools.js';
 import { clean as cleanGoal, COLS as GOAL_COLS, shape as goalShape } from './goals.js';
 import { studyGoal, flowsFromInput } from '../lib/goalStudy.js';
+import { setTaskDone } from '../lib/calendar.js';
+import { loadCalendarDeadlines } from '../lib/sentinel.js';
+import { taskSnapshotItem } from '../lib/sentinelSnapshot.js';
 
 const router = Router();
 router.use(requireActionKey);
@@ -157,6 +162,22 @@ router.post('/goals/:id/study', ah(async (req, res) => {
   const goal = { ...goalShape(g), buy_month: b.buy_month || g.details?.buy_month || null };
   const scope = ['everything', 'farm'].includes(b.scope) ? b.scope : 'everything';
   res.json(await studyGoal(goal, { cases }, { scope }));
+}));
+
+// A Money Hub task ticked off or reopened in Sentinel (Jake, Oct 31). Money Hub keeps the record; the answer
+// is the task as the next snapshot will send it (item null: outside the snapshot's window).
+router.patch('/tasks/:id', ah(async (req, res) => {
+  const id = String(req.params.id || '');
+  const b = req.body || {};
+  const other = Object.keys(b).filter((k) => k !== 'status' && b[k] !== undefined);
+  if (other.length) return res.status(422).json({ error: 'Money Hub tasks can be ticked off or reopened from Sentinel; dates and titles come from Money Hub.' });
+  if (!['open', 'done'].includes(b.status)) return res.status(422).json({ error: 'status is open or done' });
+  const all = await loadCalendarDeadlines();
+  const d = all.find((x) => String(x.id) === id && x.task);
+  if (!d) return res.status(404).json({ error: 'No such Money Hub task' });
+  await setTaskDone(id, b.status === 'done');
+  d.done = b.status === 'done' || (d.done && !d.ticked); // a filed return stays done
+  res.json({ source_id: `task:${id}`, item: taskSnapshotItem(d, { appUrl: process.env.APP_URL || null }) });
 }));
 
 router.post('/purchase', ah(async (req, res) => {

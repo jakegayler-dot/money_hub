@@ -89,19 +89,28 @@ export async function generateBudget({ today = todayISO(), months = 12 } = {}) {
   }
   const scheduledItems = [...items].map(([name, v]) => ({ name, monthly: r2(v / n) })).filter((x) => x.monthly >= 1).sort((a, b) => b.monthly - a.monthly);
 
-  // The tracker: the last 12 months, each one's budget (kept since Oct 2026) against what was spent.
-  const first = new Date(Date.UTC(Number(today.slice(0, 4)), Number(today.slice(5, 7)) - 12, 1)).toISOString().slice(0, 7);
+  // The tracker: every month since Jan 1 (Jake, Oct 31: "should work retroactively going back to beginning of the year"),
+  // each against the budget that stood at its end — kept since Oct 2026. A month from before then is set against this
+  // month's budget (assumed: true), so the whole year reads one way. Months before any spending is on record are left out.
+  const y = Number(today.slice(0, 4)); const mNow = Number(today.slice(5, 7));
+  const first = `${y}-01`;
   const [spentBy, budgets, entriesNow] = await Promise.all([householdSpentByMonth(first, today), getSetting('household_budget_by_month', {}), discretionaryEntriesThisMonth(today)]);
-  const tracker = Array.from({ length: 12 }, (_, i) => {
-    const d = new Date(Date.UTC(Number(today.slice(0, 4)), Number(today.slice(5, 7)) - 12 + i, 1));
-    const key = d.toISOString().slice(0, 7);
-    const budget = budgets?.[key] != null ? Number(budgets[key]) : null;
+  let tracker = Array.from({ length: mNow }, (_, i) => {
+    const key = `${y}-${String(i + 1).padStart(2, '0')}`;
+    const kept = budgets?.[key] != null ? Number(budgets[key]) : null;
+    const current = key === today.slice(0, 7);
+    const budget = kept != null ? kept : current ? monthly : (monthly > 0 ? monthly : null);
     const spent = r2(spentBy[key] || 0);
-    return { month: key, label: label({ year: d.getUTCFullYear(), month: d.getUTCMonth() + 1 }), budget, spent, over: budget != null ? r2(spent - budget) : null, current: key === today.slice(0, 7) };
+    return { month: key, label: label({ year: y, month: i + 1 }), budget, assumed: kept == null && !current && budget != null, spent, over: budget != null ? r2(spent - budget) : null, current };
   });
+  const firstSpent = tracker.findIndex((t) => t.spent > 0.5);
+  tracker = firstSpent < 0 ? tracker.filter((t) => t.current) : tracker.slice(firstSpent);
+  const withBudget = tracker.filter((t) => t.budget != null);
+  const ytd = withBudget.length ? { from: tracker[0].label, budget: r2(withBudget.reduce((a, t) => a + t.budget, 0)), spent: r2(withBudget.reduce((a, t) => a + t.spent, 0)) } : null;
+  if (ytd) ytd.over = r2(ytd.spent - ytd.budget);
 
   return {
-    today, months: n, tracker, entries_this_month: entriesNow,
+    today, months: n, tracker, ytd, entries_this_month: entriesNow,
     monthly, share: p.share, room: p.room, typical,
     spent_this_month: p.spent_this_month,
     left_this_month: r2(Math.max(0, monthly - p.spent_this_month)),

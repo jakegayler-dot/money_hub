@@ -127,10 +127,13 @@ export async function gstItems(from, to) {
  * day). A reminder to send the statement in.
  */
 export async function statementReleaseItems(from, to, db = pool) {
-  const [{ rows: accts }, { rows: cards }] = await Promise.all([
+  const [{ rows: accts }, { rows: cards }, { rows: got }] = await Promise.all([
     db.query('SELECT id, name, statement_day FROM accounts WHERE statement_day IS NOT NULL'),
     db.query(`SELECT id, name, statement_day FROM credit_cards WHERE statement_day IS NOT NULL AND status = 'active'`),
+    // The newest statement sent in for each: a statement-out task is done once one covering it is in.
+    db.query(`SELECT account_id, credit_card_id, MAX(COALESCE(period_end, created_at::date)) AS last FROM statement_imports GROUP BY 1, 2`).catch(() => ({ rows: [] })),
   ]);
+  const lastIn = new Map(got.map((g) => [g.credit_card_id ? `c${g.credit_card_id}` : `a${g.account_id}`, g.last ? toISODate(g.last) : null]));
   const out = [];
   const [fy, fm] = from.split('-').map(Number);
   const [ty, tm] = to.split('-').map(Number);
@@ -139,7 +142,9 @@ export async function statementReleaseItems(from, to, db = pool) {
       for (let y = fy, m = fm; y < ty || (y === ty && m <= tm); m === 12 ? (y++, m = 1) : m++) {
         const date = `${y}-${pad(m)}-${pad(Math.min(Number(x.statement_day), lastDay(y, m)))}`;
         if (date < from || date > to) continue;
+        const last = lastIn.get(`${prefix}${x.id}`);
         out.push({ id: `stmt-out:${prefix}${x.id}:${date}`, date, kind: 'statement', title: `Statement out — ${x.name}`, amount: null,
+          done: !!last && last >= addDays(date, -5),
           notes: 'Send it in so the ledger stays current.', link: prefix === 'c' ? '/credit-cards' : '/accounts' });
       }
     }
@@ -189,6 +194,23 @@ export async function calendarItems({ from, to, today = todayISO() }) {
     if (d < from || d > to || left < 0.5) continue;
     items.push({ id: `contract:${c.id}`, date: d, kind: 'contract', title: `${c.commodity}${c.counterparty ? ` — ${c.counterparty}` : ''} payment expected`, amount: r2(left), link: '/contracts' });
   }
+  items.push(...await incomingItems(from, to, today));
+  for (const l of loans) {
+    const d = toISODate(l.covenant_date);
+    if (d < from || d > to) continue;
+    items.push({ id: `covenant:${l.id}`, date: d, kind: 'program', title: `Loan covenant / review — ${l.name}`, notes: l.covenant_notes || null, link: '/loans' });
+  }
+  await applyDone(items);
+  items.push(...headsUp(items, from, to, today));
+  return items.sort((a, b) => a.date.localeCompare(b.date) || String(a.kind).localeCompare(String(b.kind)) || a.title.localeCompare(b.title));
+}
+
+/**
+ * Rebates (claim deadlines while still earning, cheques expected), gift cards about to expire with money on
+ * them, and invoices the farm sent, on their due dates — on the calendar and pushed to Sentinel.
+ */
+export async function incomingItems(from, to, today = todayISO()) {
+  const items = [];
   // Rebates (Jake, Oct 29): the claim deadline while it's still being earned, and the cheque's expected date.
   const { rows: rbs } = await pool.query(`SELECT id, program, status, claim_by, expected_date, amount, qualifying_spend, rate_pct FROM rebates WHERE status IN ('earning', 'claimed', 'approved')`).catch(() => ({ rows: [] }));
   for (const r of rbs) {
@@ -219,12 +241,55 @@ export async function calendarItems({ from, to, today = todayISO() }) {
     if (date < from || date > to) continue;
     items.push({ id: `invoice:${v.id}`, date, kind: 'contract', title: `${v.number} — ${v.party_name} owes`, amount: r2(Number(v.total)), overdue: d < today, due: d, link: '/invoices' });
   }
-  for (const l of loans) {
-    const d = toISODate(l.covenant_date);
-    if (d < from || d > to) continue;
-    items.push({ id: `covenant:${l.id}`, date: d, kind: 'program', title: `Loan covenant / review — ${l.name}`, notes: l.covenant_notes || null, link: '/loans' });
+  return items;
+}
+
+// ---- Tasks ------------------------------------------------------------------
+// Tax, GST, program, year-end and statement dates are things to do (Jake, Oct 31: "they are meant to show
+// as tasks"): each can be ticked off here or in Sentinel (PATCH /api/sentinel/actions/tasks/:id), kept in
+// calendar_done by the item's id. A GST return filed or an instalment paid is done on its own.
+export const TASK_KINDS = new Set(['tax', 'gst', 'program', 'year_end', 'custom', 'statement']);
+export const isTask = (i) => TASK_KINDS.has(i.kind) && !i.heads_up;
+
+/** Marks each task done that's been ticked off; returns the same list. */
+export async function applyDone(items, db = pool) {
+  const ids = items.filter(isTask).map((i) => String(i.id));
+  if (!ids.length) return items;
+  const { rows } = await db.query('SELECT task_id, done_at FROM calendar_done WHERE task_id = ANY($1)', [ids]).catch(() => ({ rows: [] }));
+  const done = new Map(rows.map((r) => [r.task_id, r.done_at]));
+  for (const i of items) {
+    if (!isTask(i)) continue;
+    i.task = true;
+    if (done.has(String(i.id))) { i.done = true; i.ticked = true; }
   }
-  return items.sort((a, b) => a.date.localeCompare(b.date) || String(a.kind).localeCompare(String(b.kind)) || a.title.localeCompare(b.title));
+  return items;
+}
+
+export async function setTaskDone(id, done, db = pool) {
+  if (done) await db.query('INSERT INTO calendar_done (task_id) VALUES ($1) ON CONFLICT (task_id) DO NOTHING', [String(id)]);
+  else await db.query('DELETE FROM calendar_done WHERE task_id = $1', [String(id)]);
+}
+
+// Reminders ahead of the dates that need something done (Jake, Oct 31: "GST returns, tax return and programs like
+// AgriInvest reminded on the calendar and pushed to Sentinel"): a heads-up this many days before each.
+export const LEAD_DAYS = { tax: 30, gst: 14, program: 14, year_end: 30, custom: 7 };
+const leadFor = (i) => (String(i.id).startsWith('stmt-out:') ? 0 : LEAD_DAYS[i.kind] || 0);
+
+/** A heads-up for each tax, GST, program and year-end date still to come, `LEAD_DAYS` before it. */
+export function headsUp(items, from, to, today = todayISO()) {
+  const out = [];
+  for (const i of items) {
+    const lead = leadFor(i);
+    if (!lead || i.done || i.heads_up || !i.date || i.date < today) continue;
+    const date = addDays(i.date, -lead);
+    if (date < from || date > to || date < today) continue;
+    out.push({
+      id: `heads:${i.id}`, date, kind: i.kind, heads_up: true, due: i.date,
+      title: `Coming up in ${lead} days: ${i.title}`,
+      notes: [`Due ${i.date}.`, i.notes].filter(Boolean).join(' '), url: i.url || null, link: i.link || null, amount: null,
+    });
+  }
+  return out;
 }
 
 // ---- Learning recurring payments from the ledger -----------------------------

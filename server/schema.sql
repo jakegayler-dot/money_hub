@@ -1818,3 +1818,16 @@ CREATE TABLE IF NOT EXISTS rebates (
   notes           TEXT,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- AgriInvest's deposit deadline on the calendar and in Sentinel by default (Jake, Oct 31: "programs like
+-- AgriInvest reminded"). Turned on once; switching it off on the Calendar page sticks.
+UPDATE calendar_deadlines SET enabled = true
+WHERE key = 'agriinvest_deposit' AND NOT EXISTS (SELECT 1 FROM settings WHERE key = 'agriinvest_deposit_on_once');
+INSERT INTO settings (key, value) VALUES ('agriinvest_deposit_on_once', 'true') ON CONFLICT (key) DO NOTHING;
+
+-- Tasks ticked off (Jake, Oct 31: tax, GST, program and statement dates are tasks, here and in Sentinel):
+-- the calendar item's id ("gst:2026-07-01", "deadline:agri_forms:2027-06-30", "tax:file:2026"…).
+CREATE TABLE IF NOT EXISTS calendar_done (
+  task_id  TEXT PRIMARY KEY,
+  done_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
