@@ -12,7 +12,7 @@
 import crypto from 'node:crypto';
 
 export const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
-const MAX_BODY = 200 * 1024;
+const MAX_BODY = 4 * 1024 * 1024; // Nov 2: big pages (a course's whole learning path, the desk) came back cut; Sentinel outlines and picks from them
 const TIMEOUT_MS = 25000;
 // The bridge itself and Sentinel's routes, sign-in, the machine ingest routes (their own keys), uploads that take
 // raw files, and the Quicken import.
