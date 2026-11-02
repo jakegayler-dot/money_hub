@@ -63,7 +63,7 @@ export async function categoryBuckets(db = pool) {
  * Household spending (positive) and income from `from` to `to`
  * (exclusive), as lines { date, month 'YYYY-MM', bucket, category, amount }.
  */
-async function householdLines(from, to, buckets) {
+export async function householdLines(from, to, buckets) {
   // Each line also says whether it paid a bill or a loan (`scheduled`): those are forecast on their
   // own dates, so the estimate of everything else leaves them out (Jake, Oct 24: an annual bill the
   // typical month never saw was being subtracted from it, dropping the month's groceries and fuel).

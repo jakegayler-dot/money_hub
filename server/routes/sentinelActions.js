@@ -26,6 +26,7 @@ import { studyGoal, flowsFromInput } from '../lib/goalStudy.js';
 import { setTaskDone } from '../lib/calendar.js';
 import { loadCalendarDeadlines } from '../lib/sentinel.js';
 import { taskSnapshotItem } from '../lib/sentinelSnapshot.js';
+import { budgetView, setLine, LINES } from '../lib/householdBudget.js';
 
 const router = Router();
 router.use(requireActionKey);
@@ -66,6 +67,14 @@ router.get('/', (req, res) => res.json({
     name: 'goal_study', method: 'POST', path: '/api/sentinel/actions/goals/:id/study',
     description: 'The money side of a goal study (nothing saved): the 24-month cash forecast with the goal bought, in the bad, normal and good years Sentinel simulated, each judged like a lender; how far sales can fall (break_even_revenue, a share of the normal year’s); the most it could cost (max_price); and the changes tried (more down, longer term, lower price, later, costs trimmed).',
     body: { farm: '{ cases: { bad, base, good }: { flows: [{ label, amount, month: "YYYY-MM", revenue, part: "farm"|"goal", kind?: "rent" }] } }', buy_month: 'YYYY-MM', scope: 'everything (default) or farm' },
+  }, {
+    name: 'household_budget', method: 'GET', path: '/api/sentinel/actions/budget',
+    description: 'The household budget (what isn\'t a bill or loan payment) for a month: each line\'s budget and what was spent, and every month of the year so far. ?month=YYYY-MM (default this month), ?who=both|jake|ashley.',
+  }, {
+    name: 'set_budget_line', method: 'POST', path: '/api/sentinel/actions/budget',
+    description: `Sets one household budget line from a month on (it stays until changed). Lines: ${LINES.map((l) => `${l.key} (${l.label})`).join(', ')}. amount null puts the line back to the standard bracket's share of Cash Flow's total. Cash Flow spends the lines' total.`,
+    body: { key: 'the line', amount: 'dollars a month, or null', from_month: 'YYYY-MM (default this month)' },
+    example: { key: 'groceries', amount: 1400, from_month: '2026-11' },
   }],
 }));
 
@@ -162,6 +171,15 @@ router.post('/goals/:id/study', ah(async (req, res) => {
   const goal = { ...goalShape(g), buy_month: b.buy_month || g.details?.buy_month || null };
   const scope = ['everything', 'farm'].includes(b.scope) ? b.scope : 'everything';
   res.json(await studyGoal(goal, { cases }, { scope }));
+}));
+
+// The household budget, read and set by Sentinel (Nov 1: "editable by me or sentinel").
+router.get('/budget', ah(async (req, res) => {
+  res.json(await budgetView({ month: req.query.month, who: ['both', 'jake', 'ashley'].includes(req.query.who) ? req.query.who : 'both' }));
+}));
+router.post('/budget', ah(async (req, res) => {
+  try { res.json(await setLine({ ...(req.body || {}), set_by: 'sentinel' })); }
+  catch (e) { if (e.status) return res.status(e.status).json({ error: e.message }); throw e; }
 }));
 
 // A Money Hub task ticked off or reopened in Sentinel (Jake, Oct 31). Money Hub keeps the record; the answer

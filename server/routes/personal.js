@@ -4,6 +4,8 @@ import { ah } from '../lib/asyncHandler.js';
 import { personalPlan, spendingBreakdown, categoryEntries } from '../lib/personal.js';
 import { ownerCheck } from '../lib/ownerCheck.js';
 import { generateBudget } from '../lib/budgetPlan.js';
+import { budgetView, lineEntries, setLine, lineFor } from '../lib/householdBudget.js';
+import { categoryBuckets } from '../lib/personal.js';
 import { todayISO } from '../lib/dates.js';
 
 const router = Router();
@@ -59,6 +61,24 @@ router.put('/budget/share', ah(async (req, res) => {
   if (!(v > 0 && v <= 1)) return res.status(400).json({ error: 'share is a fraction from 0 to 1 (0.9 = 90%).' });
   await setSetting('household_budget_share', v);
   res.json(await generateBudget());
+}));
+
+// The budget page (lib/householdBudget.js): ?month=YYYY-MM&who=both|jake|ashley.
+const WHO = ['both', 'jake', 'ashley'];
+const whoOf = (q) => (WHO.includes(q.who) ? q.who : 'both');
+router.get('/budget-view', ah(async (req, res) => {
+  const [v, cats] = await Promise.all([budgetView({ month: req.query.month, who: whoOf(req.query) }), categoryBuckets()]);
+  res.json({ ...v, categories: cats.map((c) => ({ id: c.id, name: c.full, line: lineFor(c.full) })).sort((a, b) => a.name.localeCompare(b.name)) });
+}));
+// The transactions behind a line in a month: ?month&line&who.
+router.get('/budget-view/entries', ah(async (req, res) => {
+  try { res.json(await lineEntries({ month: req.query.month, line: req.query.line, who: whoOf(req.query) })); }
+  catch (e) { if (e.status) return res.status(e.status).json({ error: e.message }); throw e; }
+}));
+// A line's budget from a month on: { key, amount (null = the standard bracket's share), from_month }.
+router.put('/budget-lines', ah(async (req, res) => {
+  try { res.json(await setLine({ ...(req.body || {}), set_by: 'jake' })); }
+  catch (e) { if (e.status) return res.status(e.status).json({ error: e.message }); throw e; }
 }));
 
 // A category's bucket: 'essential', 'discretionary', or null to go back to the default.

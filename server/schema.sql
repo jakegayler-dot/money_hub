@@ -1831,3 +1831,14 @@ CREATE TABLE IF NOT EXISTS calendar_done (
   task_id  TEXT PRIMARY KEY,
   done_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- The household budget by line (lib/householdBudget.js, Nov 1): a line's amount from its month on, set by Jake or
+-- Sentinel. amount NULL = back to the standard bracket's share of Cash Flow's total from that month.
+CREATE TABLE IF NOT EXISTS budget_lines (
+  key         TEXT NOT NULL,
+  from_month  TEXT NOT NULL,          -- YYYY-MM
+  amount      NUMERIC(12,2),
+  set_by      TEXT NOT NULL DEFAULT 'jake',
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (key, from_month)
+);

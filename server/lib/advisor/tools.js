@@ -2,8 +2,9 @@
 // collections Sentinel reads), work numbers out with Money Hub's own engines
 // (the forecast and what-ifs, the purchase verdict, the financial
 // statements, the tax projection), search the tax library, and remember what
-// Jake tells it. Its one write is saving a what-if he can open on the Cash
-// Flow page. It never moves money, files anything or changes a record.
+// Jake tells it. It writes two things: a what-if he can open on the Cash Flow
+// page, and a household budget line when he asks (Nov 1). It never moves money,
+// files anything or changes a record.
 import { pool } from '../../db.js';
 import { catalog, readCollection, ReadError } from '../sentinelRead.js';
 import { loadForecast } from '../forecast.js';
@@ -12,6 +13,7 @@ import { scenarioContext } from '../scenario.js';
 import { incomeStatement, cashFlowStatement } from '../financials.js';
 import { searchLibrary, libraryTopics } from './library.js';
 import { todayISO } from '../dates.js';
+import { budgetView, setLine, LINES } from '../householdBudget.js';
 
 export class AdvisorToolError extends Error {}
 
@@ -81,6 +83,16 @@ Returns the plan and the scenario side by side (lowest month, tightest month aga
     name: 'save_whatif',
     description: 'Save a scenario as a what-if Jake can open on the Cash Flow page (the same name replaces the earlier one). Your only write. Do it when you recommend something he\'ll want to look at, and tell him its name.',
     input_schema: { type: 'object', properties: { name: { type: 'string' }, scenario: { type: 'object' } }, required: ['name', 'scenario'] },
+  },
+  {
+    name: 'household_budget',
+    description: 'The household budget (everything that isn\'t a bill or loan payment) for a month: each line\'s budget against what was spent, and each month of the year so far. who: both (default), jake or ashley.',
+    input_schema: { type: 'object', properties: { month: { type: 'string', description: 'YYYY-MM (default this month)' }, who: { type: 'string', enum: ['both', 'jake', 'ashley'] } } },
+  },
+  {
+    name: 'set_budget_line',
+    description: `Set one household budget line from a month on, when Jake asks for it (it stays until changed; Cash Flow spends the lines' total). Lines: ${LINES.map((l) => l.key).join(', ')}. amount null puts it back to the standard bracket's share.`,
+    input_schema: { type: 'object', properties: { key: { type: 'string', enum: LINES.map((l) => l.key) }, amount: { type: ['number', 'null'] }, from_month: { type: 'string', description: 'YYYY-MM (default this month)' } }, required: ['key', 'amount'] },
   },
   {
     name: 'tax_library',
@@ -204,6 +216,12 @@ export async function runTool(name, input = {}, run = {}) {
       const saved = await saveWhatIf(input.name, input.scenario);
       (run.saved ||= []).push(saved);
       return JSON.stringify(saved);
+    }
+    case 'household_budget':
+      return clip(await budgetView({ month: input.month, who: ['jake', 'ashley'].includes(input.who) ? input.who : 'both' }));
+    case 'set_budget_line': {
+      try { const r = await setLine({ key: input.key, amount: input.amount, from_month: input.from_month, set_by: 'advisor' }); return JSON.stringify(r); }
+      catch (e) { throw new AdvisorToolError(e.message); }
     }
     case 'tax_library': {
       const hits = searchLibrary(String(input.query || ''), { topic: input.topic || null });

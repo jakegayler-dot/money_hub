@@ -23,6 +23,7 @@
 // Income tax flows are built separately (buildTaxFlows) from a tax figure
 // per year, so a scenario can re-work them.
 
+import { loadOverrides, monthTotal } from './householdBudget.js';
 import { pool, getSetting } from '../db.js';
 import { loadNetting } from './cropPlanNetting.js';
 import { RENT_SQL, projectRent } from './rentProjection.js';
@@ -497,11 +498,14 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
       await pool.query(`INSERT INTO settings (key, value) VALUES ('household_budget_by_month', jsonb_build_object($1::text, $2::numeric))
         ON CONFLICT (key) DO UPDATE SET value = settings.value || EXCLUDED.value`, [today.slice(0, 7), perMonth]).catch(() => {});
     }
+    // Lines set on the Personal page (by Jake or Sentinel) replace their share of it: the month spends the lines' total.
+    const overrides = await loadOverrides();
     win.meta.forEach((m, i) => {
       const key = `${m.year}-${String(m.month).padStart(2, '0')}`;
+      const planned = monthTotal(perMonth, overrides, key);
       // This month: what's left of it (the balance it's worked from already has this month's spending in it); the
       // months after it in full, through August (the one after August's month-end isn't the budget's).
-      const amt = i === 0 ? perMonth * Math.max(0, Math.min(1, (daysIn(m) - Number(today.slice(8, 10)) + 1) / MONTH_DAYS)) : perMonth;
+      const amt = i === 0 ? planned * Math.max(0, Math.min(1, (daysIn(m) - Number(today.slice(8, 10)) + 1) / MONTH_DAYS)) : planned;
       if (amt < 0.5) return;
       flows.push({
         key: `personal:budget:${key}`, kind: 'personal', label: 'Household budget', date: i === 0 ? today : `${key}-15`,
@@ -510,7 +514,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     });
     const worst = ev0.trajectory.reduce((k, t, i) => (t.headroom < ev0.trajectory[k].headroom ? i : k), 0);
     personal = {
-      per_month: perMonth, share, room: r2(Math.max(0, room)), spent_this_month: r2(spent),
+      per_month: monthTotal(perMonth, overrides, today.slice(0, 7)), cash_flow_per_month: perMonth, share, room: r2(Math.max(0, room)), spent_this_month: r2(spent),
       binding: bindingIdx >= 0 ? { year: win.meta[bindingIdx].year, month: win.meta[bindingIdx].month, months_to_it: Math.round(monthsLeft * 100) / 100, until } : null,
       // Even with no household spending, cash goes below the floor here.
       shortfall: room < 0 ? { year: win.meta[worst].year, month: win.meta[worst].month, amount: r2(-ev0.trajectory[worst].headroom) } : null,
