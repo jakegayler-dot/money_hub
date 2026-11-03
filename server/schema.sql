@@ -1842,3 +1842,7 @@ CREATE TABLE IF NOT EXISTS budget_lines (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (key, from_month)
 );
+-- Nov 3: subscriptions are fixed costs (not a budget line); vehicle became fuel & car upkeep.
+DELETE FROM budget_lines WHERE key = 'subscriptions';
+UPDATE budget_lines SET key = 'fuel' WHERE key = 'vehicle' AND NOT EXISTS (SELECT 1 FROM budget_lines b WHERE b.key = 'fuel' AND b.from_month = budget_lines.from_month);
+DELETE FROM budget_lines WHERE key = 'vehicle';
