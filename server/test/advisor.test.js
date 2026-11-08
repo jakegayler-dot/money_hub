@@ -120,3 +120,32 @@ test('weekly budget: low drops to Sonnet, used up stops', async () => {
   assert.match(out.reply, /budget/);
   assert.ok(Math.abs(costOf('claude-opus-5-5', { input_tokens: 1e6, output_tokens: 1e6 }) - 24) < 1e-9);
 });
+
+test('the advisor hands its Data Entry bot work through Sentinel and reads what it reported (Nov 8)', async () => {
+  // Jake: "financial advisor can access moneyhubs data entry slave grok bot".
+  const saved = { url: process.env.SENTINEL_URL, key: process.env.SENTINEL_API_KEY, fetch: globalThis.fetch };
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url, method: init.method, auth: init.headers?.Authorization, body: init.body ? JSON.parse(init.body) : null });
+    const body = init.method === 'POST' ? { job: { id: 17, title: 'Categorise the October Co-op card', worker: 'Data Entry' } } : { jobs: [{ id: 17, title: 'Categorise the October Co-op card', status: 'done', result: '42 transactions set to Fuel' }] };
+    return new Response(JSON.stringify(body), { status: init.method === 'POST' ? 201 : 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    delete process.env.SENTINEL_URL;
+    await assert.rejects(runTool('data_entry_bot', { action: 'list' }), /Sentinel isn't connected/);
+    process.env.SENTINEL_URL = 'https://sentinel.test/'; process.env.SENTINEL_API_KEY = 'snt_live_mh';
+    const sent = JSON.parse(await runTool('data_entry_bot', { action: 'send', title: 'Categorise the October Co-op card', instructions: 'All Co-op Cardlock charges are farm fuel', kind: 'chore' }));
+    assert.equal(sent.job, 17);
+    assert.equal(sent.bot, 'Data Entry');
+    assert.equal(calls[0].url, 'https://sentinel.test/v1/moneyhub/grok/jobs');
+    assert.equal(calls[0].auth, 'Bearer snt_live_mh');
+    assert.equal(calls[0].body.instructions, 'All Co-op Cardlock charges are farm fuel');
+    const list = JSON.parse(await runTool('data_entry_bot', { action: 'list' }));
+    assert.equal(list.jobs[0].result, '42 transactions set to Fuel');
+    await assert.rejects(runTool('data_entry_bot', { action: 'send' }), /title/);
+  } finally {
+    globalThis.fetch = saved.fetch;
+    if (saved.url === undefined) delete process.env.SENTINEL_URL; else process.env.SENTINEL_URL = saved.url;
+    if (saved.key === undefined) delete process.env.SENTINEL_API_KEY; else process.env.SENTINEL_API_KEY = saved.key;
+  }
+});

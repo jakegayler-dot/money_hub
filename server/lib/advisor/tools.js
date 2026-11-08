@@ -4,7 +4,8 @@
 // statements, the tax projection), search the tax library, and remember what
 // Jake tells it. It writes two things: a what-if he can open on the Cash Flow
 // page, and a household budget line when he asks (Nov 1). It never moves money,
-// files anything or changes a record.
+// files anything or changes a record itself; its Data Entry bot (Nov 8, through
+// Sentinel) enters and fixes records when it asks.
 import { pool } from '../../db.js';
 import { catalog, readCollection, ReadError } from '../sentinelRead.js';
 import { loadForecast } from '../forecast.js';
@@ -113,6 +114,22 @@ Returns the plan and the scenario side by side (lowest month, tightest month aga
       type: 'object',
       properties: { kind: { type: 'string', enum: ['fact', 'goal', 'preference', 'decision'] }, text: { type: 'string' } },
       required: ['kind', 'text'],
+    },
+  },
+  // Nov 8 (Jake: "financial advisor can access moneyhubs data entry slave grok bot"): the Data Entry bot in Jake's Grok
+  // network, through Sentinel, answers to the advisor.
+  {
+    name: 'data_entry_bot',
+    description: 'Your Data Entry bot (a Grok bot that answers to you, through Sentinel): action send gives it a job to enter or fix records in Money Hub (missing receipts, uncategorised transactions, a statement to import, a bill or account to add) with exact instructions: what, which account or vendor, the dates, where to find it; action list shows its jobs and what it reported. It works on its own schedule (usually within the hour) and reports every record it added or changed; it never moves or pays money. Use it when the data is missing or wrong, then tell Jake what you asked it to do.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['send', 'list'] },
+        title: { type: 'string', description: 'send: the job in a line' },
+        instructions: { type: 'string', description: 'send: exactly what to enter or fix, and where to find it' },
+        kind: { type: 'string', enum: ['chore', 'intel', 'question'], description: 'chore (enter or fix), intel (find out), question (ask it something)' },
+      },
+      required: ['action'],
     },
   },
   {
@@ -238,6 +255,19 @@ export async function runTool(name, input = {}, run = {}) {
       const { rows: [row] } = await pool.query('INSERT INTO advisor_notes (kind, text, message_id) VALUES ($1, $2, $3) RETURNING id', [kind, text, run.messageId || null]);
       (run.remembered ||= []).push({ id: row.id, kind, text });
       return JSON.stringify({ kept: row.id });
+    }
+    case 'data_entry_bot': {
+      const url = (process.env.SENTINEL_URL || '').replace(/\/+$/, ''); const key = process.env.SENTINEL_API_KEY;
+      if (!url || !key) throw new AdvisorToolError("Sentinel isn't connected (SENTINEL_URL and SENTINEL_API_KEY), so the Data Entry bot can't be reached.");
+      const send = input.action === 'send';
+      if (send && !String(input.title || '').trim()) throw new AdvisorToolError('Give the job a title.');
+      const res = await fetch(`${url}/v1/moneyhub/grok/jobs`, {
+        method: send ? 'POST' : 'GET', headers: { Authorization: `Bearer ${key}`, ...(send ? { 'Content-Type': 'application/json' } : {}) },
+        body: send ? JSON.stringify({ title: input.title, instructions: input.instructions || '', kind: input.kind || 'chore' }) : undefined, signal: AbortSignal.timeout(20000),
+      }).catch(() => null);
+      const out = res ? await res.json().catch(() => null) : null;
+      if (!res || !res.ok) throw new AdvisorToolError(`Sentinel didn't take it${out?.error?.message ? `: ${out.error.message}` : res ? ` (${res.status})` : ''}.`);
+      return clip(send ? { sent: out.job?.title, job: out.job?.id, bot: out.job?.worker || 'Data Entry', note: 'It reports back on its own schedule; check with action list.' } : out);
     }
     case 'forget': {
       const { rowCount } = await pool.query('UPDATE advisor_notes SET retired_at = now() WHERE id = $1 AND retired_at IS NULL', [Number(input.id)]);
