@@ -15,8 +15,9 @@ const fmt = (d) => { const [, m, dd] = d.split('-').map(Number); return `${MONTH
 const dow = (d) => { const [y, m, dd] = d.split('-').map(Number); return DAYS[new Date(Date.UTC(y, m - 1, dd)).getUTCDay()]; };
 const plus = (d, n) => { const t = new Date(`${d}T00:00:00Z`); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
 
-function PaidForm({ item, accounts, today, onDone, onCancel }) {
-  const [account, setAccount] = useState(item.pay.account_id ? String(item.pay.account_id) : '');
+function PaidForm({ item, accounts, cards = [], today, onDone, onCancel }) {
+  // "a:<id>" a bank account, "c:<id>" a credit card (Nov 8: bills can be paid from a card).
+  const [account, setAccount] = useState(item.pay.account_id ? `a:${item.pay.account_id}` : '');
   const [amount, setAmount] = useState(Math.abs(item.amount).toFixed(2));
   const [date, setDate] = useState(today);
   const [busy, setBusy] = useState(false);
@@ -24,7 +25,7 @@ function PaidForm({ item, accounts, today, onDone, onCancel }) {
   const save = async () => {
     setBusy(true); setErr(null);
     const r = await fetch('/api/calendar/week/pay', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...item.pay, account_id: Number(account), amount: Number(amount), date }) });
+      body: JSON.stringify({ ...item.pay, account_id: account.startsWith('a:') ? Number(account.slice(2)) : null, credit_card_id: account.startsWith('c:') ? Number(account.slice(2)) : null, amount: Number(amount), date }) });
     const d = await r.json().catch(() => ({}));
     setBusy(false);
     if (!r.ok) { setErr(d.error || `HTTP ${r.status}`); return; }
@@ -35,7 +36,8 @@ function PaidForm({ item, accounts, today, onDone, onCancel }) {
       <span className="split-lines">Paid from</span>
       <select value={account} aria-label="Paid from" onChange={(e) => setAccount(e.target.value)}>
         <option value="">Choose the account</option>
-        {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+        <optgroup label="Bank accounts">{accounts.map((a) => <option key={a.id} value={`a:${a.id}`}>{a.name}</option>)}</optgroup>
+        {item.pay.type === 'bill' && cards.length > 0 && <optgroup label="Credit cards">{cards.map((c) => <option key={c.id} value={`c:${c.id}`}>{c.name}{c.last4 ? ` ··${c.last4}` : ''}</option>)}</optgroup>}
       </select>
       <input type="number" step="0.01" min="0" aria-label="Amount paid" value={amount} onChange={(e) => setAmount(e.target.value)} />
       <input type="date" aria-label="Paid on" value={date} onChange={(e) => setDate(e.target.value)} />
@@ -92,7 +94,7 @@ export default function DueThisWeek({ compact = false, onChanged }) {
                   <span className="cal-title">{i.link ? <a href={i.link}>{i.title}</a> : i.title}</span>
                   <span className="cal-meta"><span className="cal-kind">{KIND[i.kind] || i.kind}</span>{i.recurring && <span className="cal-kind">Recurring</span>}
                     {i.overdue && <span className="badge fail">OVERDUE</span>}{!i.pay && !compact && <span className="split-lines">pay on the Tax page</span>}</span>
-                  {asking === i.id && <PaidForm item={i} accounts={d.accounts} today={d.today} onCancel={() => setAsking(null)} onDone={changed} />}
+                  {asking === i.id && <PaidForm item={i} accounts={d.accounts} cards={d.cards || []} today={d.today} onCancel={() => setAsking(null)} onDone={changed} />}
                 </span>
                 <span className="cal-amt out">−{cents(Math.abs(i.amount))}</span>
               </li>

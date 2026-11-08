@@ -24,6 +24,12 @@ function validateCard(c) {
 // status (was the last statement paid in full by its due date), and
 // reward categories — everything the Purchase Evaluator's "is it worth
 // using a card" question and the dashboard's liability figures need.
+// The active cards, for the "Paid from" pickers (Nov 8: a bill can be paid from a card).
+router.get('/list', ah(async (req, res) => {
+  const { rows } = await pool.query(`SELECT id, name, last4 FROM credit_cards WHERE status = 'active' ORDER BY name`);
+  res.json(rows);
+}));
+
 router.get('/', ah(async (req, res) => {
   const [{ rows: cards }, { rows: statements }, { rows: rewards }] = await Promise.all([
     pool.query(`SELECT * FROM credit_cards ORDER BY (status = 'active') DESC, name`),

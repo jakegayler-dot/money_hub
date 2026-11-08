@@ -239,9 +239,11 @@ router.post('/:id/pay', ah(async (req, res) => {
   const {
     paid_date = todayISO(),
     account_id = null,
+    credit_card_id = null,
     paid_by_check = false,
   } = req.body;
-  const r = await withTransaction((client) => payBill(client, req.params.id, { account_id, date: paid_date, paid_by_check }));
+  // Paid from a bank account, or charged to a credit card (Nov 8): a card charge goes on the card's balance.
+  const r = await withTransaction((client) => payBill(client, req.params.id, { account_id: credit_card_id ? null : account_id, credit_card_id: credit_card_id ? Number(credit_card_id) : null, date: paid_date, paid_by_check: credit_card_id ? false : paid_by_check }));
   if (!r) return res.status(404).json({ error: 'not found' });
   setImmediate(() => matchPending().catch(() => {})); // a photographed invoice attaches to this payment
   autoLinkBillsSoon(); // a recurring bill's next cycle may already be paid

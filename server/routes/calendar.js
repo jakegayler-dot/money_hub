@@ -65,19 +65,21 @@ router.get('/week', ah(async (req, res) => {
   }
   // Ticked off (or paid from these screens) in the last 60 days and not yet on a statement.
   const { rows: waiting } = await pool.query(
-    `SELECT t.id, t.date, t.amount, t.description, a.name AS account,
+    `SELECT t.id, t.date, t.amount, t.description, coalesce(a.name, (SELECT c.name FROM credit_cards c WHERE c.id = t.credit_card_id)) AS account,
             (SELECT b.id FROM bills b WHERE b.linked_transaction_id = t.id LIMIT 1) AS bill_id,
             (SELECT p.id FROM loan_payments p WHERE p.linked_transaction_id = t.id LIMIT 1) AS loan_payment_id,
             CASE WHEN t.credit_card_id IS NOT NULL THEN t.credit_card_id END AS card_id
-     FROM transactions t JOIN accounts a ON a.id = t.account_id
+     FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
      WHERE t.awaiting_statement AND t.amount < 0 AND t.date >= CURRENT_DATE - 60
        AND (EXISTS (SELECT 1 FROM bills b WHERE b.linked_transaction_id = t.id)
             OR EXISTS (SELECT 1 FROM loan_payments p WHERE p.linked_transaction_id = t.id)
             OR t.credit_card_id IS NOT NULL)
      ORDER BY t.date DESC, t.id DESC`);
   const { rows: accounts } = await pool.query(`SELECT id, name FROM accounts ORDER BY account_type = 'operating' DESC, name`);
+  // A bill can be charged to a credit card too (Nov 8).
+  const { rows: cards } = await pool.query(`SELECT id, name, last4 FROM credit_cards WHERE status = 'active' ORDER BY name`);
   res.json({
-    today, end, items, accounts,
+    today, end, items, accounts, cards,
     waiting: waiting.map((t) => ({ ...t, date: toISODate(t.date), amount: Number(t.amount) })),
     total: Math.round(items.reduce((a, i) => a + i.amount, 0) * 100) / 100,
   });
@@ -86,12 +88,13 @@ router.get('/week', ah(async (req, res) => {
 // Tick one off: { type: bill|loan|card, id, account_id, date?, amount? } — booked from that account now,
 // unconfirmed until the statement shows it.
 router.post('/week/pay', ah(async (req, res) => {
-  const { type, id, account_id, date = todayISO(), amount = null } = req.body || {};
-  if (!account_id) return res.status(400).json({ error: 'Which account was it paid from?' });
+  const { type, id, account_id, credit_card_id = null, date = todayISO(), amount = null } = req.body || {};
+  if (!account_id && !credit_card_id) return res.status(400).json({ error: 'Which account or card was it paid from?' });
+  if (credit_card_id && type !== 'bill') return res.status(400).json({ error: 'Only a bill can be put on a card here.' });
   const amt = amount === '' || amount == null ? null : Math.abs(Number(amount));
   if (amt != null && !(amt > 0)) return res.status(400).json({ error: 'The amount must be more than zero.' });
   const out = await withTransaction(async (client) => {
-    if (type === 'bill') return payBill(client, Number(id), { account_id: Number(account_id), date, amount: amt });
+    if (type === 'bill') return payBill(client, Number(id), credit_card_id ? { credit_card_id: Number(credit_card_id), date, amount: amt } : { account_id: Number(account_id), date, amount: amt });
     if (type === 'loan') return recordLoanPayment(client, Number(id), { account_id: Number(account_id), date, amount: amt });
     if (type === 'card') {
       const { rows: [st] } = await client.query('SELECT * FROM credit_card_statements WHERE id = $1', [id]);

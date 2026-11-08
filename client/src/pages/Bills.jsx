@@ -110,6 +110,7 @@ const financePayload = (f) => ({
 export default function Bills() {
   const [bills, setBills] = useState([]);
   const [accounts, setAccounts] = useState([]);
+  const [cards, setCards] = useState([]); // Nov 8: a bill can be paid from a card
   const [form, setForm] = useState(emptyForm);
   const [filter, setFilter] = useState('unpaid');
   const [error, setError] = useState(null);
@@ -150,6 +151,7 @@ export default function Bills() {
   useEffect(() => {
     fetch('/api/loans').then((r) => r.json()).then((d) => setLoans(Array.isArray(d) ? d : [])).catch(() => {});
     fetch('/api/accounts').then((r) => r.json()).then(setAccounts);
+    fetch('/api/credit-cards/list').then((r) => r.json()).then((c) => setCards(Array.isArray(c) ? c : [])).catch(() => {});
     const loadCats = () => fetch('/api/expenses').then((r) => r.json()).then((c) => setCategories(Array.isArray(c) ? c : []));
     loadCats();
     window.addEventListener('categories-changed', loadCats);
@@ -220,7 +222,8 @@ export default function Bills() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         paid_date: localToday(),
-        account_id: payAccountId || null,
+        account_id: payAccountId && !String(payAccountId).startsWith('c:') ? payAccountId : null,
+        credit_card_id: String(payAccountId).startsWith('c:') ? Number(String(payAccountId).slice(2)) : null,
         paid_by_check: payByCheck,
       }),
     });
@@ -481,9 +484,10 @@ export default function Bills() {
                           <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
                             <select value={payAccountId} onChange={(e) => setPayAccountId(e.target.value)}>
                               <option value="">Paid from…</option>
-                              {accounts.map((a) => (
+                              <optgroup label="Bank accounts">{accounts.map((a) => (
                                 <option key={a.id} value={a.id}>{a.name} ({a.ledger})</option>
-                              ))}
+                              ))}</optgroup>
+                              {cards.length > 0 && <optgroup label="Credit cards">{cards.map((c) => <option key={`c${c.id}`} value={`c:${c.id}`}>{c.name}{c.last4 ? ` ··${c.last4}` : ''}</option>)}</optgroup>}
                             </select>
                             <label style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
                               <input type="checkbox" checked={payByCheck} onChange={(e) => setPayByCheck(e.target.checked)} />
