@@ -1846,3 +1846,7 @@ CREATE TABLE IF NOT EXISTS budget_lines (
 DELETE FROM budget_lines WHERE key = 'subscriptions';
 UPDATE budget_lines SET key = 'fuel' WHERE key = 'vehicle' AND NOT EXISTS (SELECT 1 FROM budget_lines b WHERE b.key = 'fuel' AND b.from_month = budget_lines.from_month);
 DELETE FROM budget_lines WHERE key = 'vehicle';
+
+-- Calves (Nov 7): when the animals in a market-livestock item were born (the cattle manager sends it; the group's
+-- earliest birth date). They can't be sold before 6 months old (lib/inventoryForecast.js SELLABLE_MONTHS).
+ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS born_on DATE;

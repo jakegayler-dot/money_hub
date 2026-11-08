@@ -71,6 +71,10 @@ export default function TaxPrograms({ year }) {
           <input value={kids} placeholder="e.g. 2021, 2023" onChange={(e) => setKids(e.target.value)}
             onBlur={() => save({ kids_birth_years: kids.split(/[ ,;]+/).filter(Boolean).map(Number) })} />
         </label>
+        <label>Child benefit now, a month
+          <input type="number" min="0" step="0.01" defaultValue={p.ccb_monthly ?? ''} key={`ccb-${p.ccb_monthly}`} placeholder="from your CRA notice"
+            onBlur={(e) => { const v = e.target.value === '' ? null : Number(e.target.value); if (v !== (p.ccb_monthly ?? null)) save({ ccb_monthly: v }); }} />
+        </label>
         <label>Ashley is a certified teacher or ECE
           <select value={p.ashley_educator == null ? '' : p.ashley_educator ? 'yes' : 'no'} onChange={(e) => save({ ashley_educator: e.target.value === '' ? null : e.target.value === 'yes' })}>
             <option value="">Not sure</option><option value="yes">Yes</option><option value="no">No</option>

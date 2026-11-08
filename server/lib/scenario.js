@@ -159,7 +159,12 @@ function applyTiming(flows, adj, ctx, sc) {
   }
   for (const [key, cfg] of Object.entries(sc.commodities || {})) {
     if (!ym(cfg.sell_month)) continue;
-    for (const f of flows) if (f.kind === 'inventory' && f.ref.group === key) { f.date = midMonth(cfg.sell_month); f.moved = true; }
+    // Calves not yet 6 months old by then sell the day they are (inventoryForecast.js sellableFrom).
+    for (const f of flows) {
+      if (f.kind !== 'inventory' || f.ref.group !== key) continue;
+      const to = midMonth(cfg.sell_month);
+      f.date = f.ref.sellable_from && to < f.ref.sellable_from ? f.ref.sellable_from : to; f.moved = true;
+    }
   }
   return flows;
 }
@@ -689,6 +694,8 @@ export function scenarioContext(ctx) {
       on_hand: r2(g.on_hand), uncontracted: r2(g.uncontracted), price: g.avg_price != null ? r2(g.avg_price) : null,
       value: r2(fl.filter(inWindow).reduce((s, f) => s + f.amount, 0)),
       sells: fl.length ? fl.map((f) => f.date).sort()[0] : null,
+      // Calves: the soonest any of them can be sold (6 months old).
+      sellable_from: fl.some((f) => f.ref.sellable_from) ? fl.map((f) => f.ref.sellable_from || ctx.today).sort()[0] : null,
     };
   });
   // Commodities only in estimates (a crop still in the field): % changes only.

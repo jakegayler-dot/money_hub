@@ -61,7 +61,7 @@ export const TOOL_DEFS = [
   leases: [{ label, payment (before tax), per_year (12,4,2,1), start_month, years, pst_pct, down, buyout, cca_rate, owner }]  (deductible as paid; farm gets GST back)
   oneoffs: [{ label, amount (negative = money out), month, treatment: "farm"|"capital"|"personal", cca_rate }]
   prepay: [{ label, amount, month, instead_month }]  (prepaying inputs: deductible in the month paid)
-  commodities: { [key from whatif_options]: { price, pct, qty, sell_month } }  (sell later or sooner, at another price)
+  commodities: { [key from whatif_options]: { price, pct, qty, sell_month } }  (sell later or sooner, at another price; uncontracted grain and market cattle both count — calves can't be sold before 6 months old, whatif_options gives each group's sellable_from)
   contracts_new: [{ commodity, crop: "bins"|"next", group, quantity, unit, price, pay_month }]
   contract_moves: { [contract_id]: "YYYY-MM" },  bill_moves: { [bill_id]: "YYYY-MM-DD" }
   costs_pct (e.g. 10 for input costs up 10%), rate_pts (interest rates up by points), rate_scope "variable"|"all", gst_delay

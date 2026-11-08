@@ -10,11 +10,14 @@
 // childhood educator, whether you own your home.
 import { pool, getSetting } from '../db.js';
 import { todayISO } from './dates.js';
+import { ccbYear } from './ccb.js';
+
+const money = (n) => `$${Math.round(Number(n) || 0).toLocaleString('en-CA')}`;
 
 const r0 = (n) => Math.round(Number(n) || 0);
 export const VERIFIED = '2026-10-24';
 
-const DEFAULT_PROFILE = { kids_birth_years: [], ashley_educator: null, owns_home: true, childcare: false, jake_tuition: false };
+const DEFAULT_PROFILE = { kids_birth_years: [], ashley_educator: null, owns_home: true, childcare: false, jake_tuition: false, ccb_monthly: null };
 
 export async function taxProfile() {
   const v = await getSetting('tax_profile', null);
@@ -27,6 +30,8 @@ export async function saveTaxProfile(b = {}) {
   const next = { ...cur };
   if (Array.isArray(b.kids_birth_years)) next.kids_birth_years = b.kids_birth_years.map(Number).filter((y) => y > 1990 && y <= new Date().getFullYear()).slice(0, 10);
   for (const k of ['ashley_educator', 'owns_home', 'childcare', 'jake_tuition']) if (b[k] !== undefined) next[k] = b[k] === null ? null : !!b[k];
+  // This benefit year's Canada Child Benefit, a month (from the CRA notice) — Jake's actual (Nov 6).
+  if (b.ccb_monthly !== undefined) next.ccb_monthly = b.ccb_monthly === null || b.ccb_monthly === '' || !(Number(b.ccb_monthly) >= 0) ? null : Math.round(Number(b.ccb_monthly) * 100) / 100;
   await pool.query(`INSERT INTO settings (key, value) VALUES ('tax_profile', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [JSON.stringify(next)]);
   return next;
 }
@@ -55,6 +60,12 @@ async function facts(year) {
     ashley: { gross: ashleyGross, employer: emp?.employer || null, pension: pay?.totals?.pension || 0 },
     familyNet: farmNet != null ? farmNet + ashleyGross - (pay?.totals?.pension || 0) : null,
   };
+}
+
+/** Family net income for a calendar year (CCB uses it): the farm's net income plus Ashley's pay less her pension. */
+export async function familyNetIncome(year) {
+  const f = await facts(year);
+  return f.familyNet;
 }
 
 const educatorGuess = (f) => (f.profile.ashley_educator != null ? f.profile.ashley_educator
@@ -196,15 +207,21 @@ export async function taxPrograms(year = Number(todayISO().slice(0, 4))) {
     claim: 'Form T778, on the return of whichever of you has the lower income. Receipts with the provider\'s name and SIN or business number.',
     sources: [],
   });
+  // The Canada Child Benefit, worked out (lib/ccb.js, Nov 6): this benefit year's payments and next July's.
+  const by = year; // the benefit year that starts this July, from this year's income, is next year's (by + 1)
+  const nextCcb = kids.length && f.familyNet != null ? ccbYear(by + 1, f.profile.kids_birth_years, f.familyNet) : null;
+  const nowMonthly = Number(f.profile.ccb_monthly) > 0 ? Number(f.profile.ccb_monthly) : null;
   add({
     id: 'ccb', who: 'household', level: 'Federal', kind: 'Tax-free benefit',
     name: 'Canada Child Benefit',
-    what: 'A tax-free monthly payment for each child under 18, larger under 6, reduced as family net income rises. Every deduction that lowers family net income (RRSP, child care, AgriInvest timing) raises it.',
+    what: `A tax-free payment on the 20th of each month for each child under 18 — for July ${by + 1} to June ${by + 2}, up to ${nextCcb ? money(nextCcb.params.under6) : '$8,157'} a year under 6 and ${nextCcb ? money(nextCcb.params.age6to17) : '$6,883'} for 6 to 17 — reduced once family net income passes ${nextCcb ? money(nextCcb.params.t1) : '$38,237'} (${kids.length >= 2 ? '13.5%' : '7%'} of income over it, then ${kids.length >= 2 ? '5.7%' : '3.2%'} over ${nextCcb ? money(nextCcb.params.t2) : '$82,846'}). It's set each July from the year before's income, so every deduction that lowers family net income (RRSP, child care, AgriInvest timing) raises the next year's payments.`,
     status: kids.length ? 'auto' : 'check',
-    value: null,
-    value_note: 'Paid automatically when you both file on time. A low-income farm year raises next year\'s payments.',
-    claim: 'Both of you file every year, on time.',
-    sources: [],
+    value: nextCcb ? nextCcb.annual : null,
+    value_note: !kids.length ? 'Add the children\'s birth years below.'
+      : [nowMonthly ? `Now ${money(nowMonthly)} a month to June ${by + 1} (your figure).` : `Enter this year's monthly payment below for Cash Flow.`,
+        nextCcb ? `July ${by + 1} on: about ${money(nextCcb.monthly)} a month (${money(nextCcb.annual)} a year) on ${money(f.familyNet)} of ${year} family net income — counted in Cash Flow.` : null].filter(Boolean).join(' '),
+    claim: 'Both of you file every year, on time — the payments stop if either return is late.',
+    sources: ['https://www.canada.ca/en/revenue-agency/services/child-family-benefits/canada-child-benefit-overview.html'],
   });
   add({
     id: 'rrsp-spousal', who: 'household', level: 'Federal', kind: 'Deduction',

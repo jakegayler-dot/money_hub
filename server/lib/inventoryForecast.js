@@ -26,6 +26,18 @@ import { toISODate, todayISO } from './dates.js';
 
 export const FORECAST_CLASSES = ['crop', 'market_livestock'];
 export const FALLBACK_KEY = 'inventory_sale_fallback'; // "MM-DD"
+// Calves (Jake, Nov 7: "calves can be sold after 6 months old"): a market-livestock item with born_on can't sell
+// before then — its forecast date and any "sell sooner" move stop at sellableFrom.
+export const SELLABLE_MONTHS = 6;
+export function sellableFrom(bornOn) {
+  if (!bornOn) return null;
+  const d = new Date(`${toISODate(bornOn)}T00:00:00Z`);
+  const day = d.getUTCDate();
+  d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() + SELLABLE_MONTHS);
+  const last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+  d.setUTCDate(Math.min(day, last));
+  return d.toISOString().slice(0, 10);
+}
 
 const pad = (n) => String(n).padStart(2, '0');
 
@@ -91,12 +103,14 @@ export async function inventorySales() {
       if (est) { date = est; basis = 'crop estimate'; }
     }
     if (!date && fallbackDate) { date = fallbackDate; basis = 'fallback'; }
+    const ready = it.item_class === 'market_livestock' ? sellableFrom(it.born_on) : null;
+    if (date && ready && date < ready) { date = ready; basis = '6 months old'; }
     const label = `${it.commodity}${it.location ? ` — ${it.location}` : ''} (in inventory)`;
     if (!date) { undated.push({ id: it.id, name: label, amount: Math.round(value * 100) / 100 }); continue; }
     items.push({
       id: `inv-${it.id}`, inventory_id: it.id, name: label, commodity: it.commodity,
       direction: 'inflow', amount: Math.round(value * 100) / 100, frequency: 'one_time',
-      start_date: date, end_date: null, status: 'active', basis, source: it.source,
+      start_date: date, end_date: null, status: 'active', basis, source: it.source, sellable_from: ready,
       ...inventoryOwnerRow(it), is_segment_split: false,
     });
   }

@@ -40,6 +40,7 @@ import { billDates } from './billDates.js';
 import { householdSpentThisMonth } from './personal.js';
 import { contractParts } from './contracts.js';
 import { paystubForecastFlows } from './paystubs.js';
+import { ccbFlows } from './ccb.js';
 
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const pad = (n) => String(n).padStart(2, '0');
@@ -353,6 +354,24 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
   try {
     for (const f of await paystubForecastFlows({ today, endStr })) add({ ...f, owners: own({ segment: f.ref?.owner }) });
   } catch (e) { console.error('Paystub pays unavailable for the forecast:', e.message); }
+  // Canada Child Benefit (Nov 6): this benefit year at Jake's figure, from July on worked out from family net income
+  // (lib/ccb.js). Tax-free; Ashley's.
+  try {
+    const { taxProfile, familyNetIncome } = await import('./taxPrograms.js');
+    const profile = await taxProfile();
+    if ((profile.kids_birth_years || []).length) {
+      const thisYear = Number(today.slice(0, 4));
+      const inc = new Map();
+      for (const y of [thisYear - 1, thisYear]) inc.set(y, await familyNetIncome(y).catch(() => null));
+      const incomeOf = (y) => (y >= thisYear ? inc.get(thisYear) : inc.get(y) ?? null);
+      for (const f of ccbFlows({ today, endStr, birthYears: profile.kids_birth_years, actualMonthly: profile.ccb_monthly, incomeOf })) {
+        add({
+          key: `ccb:${f.date}`, kind: 'estimate_in', label: 'Canada Child Benefit', date: f.date, amount: f.amount, farm: 0,
+          owners: own({ segment: 'ashley' }), taxable: 0, estimate: f.basis !== 'actual', ref: { program: 'ccb', benefit_year: f.benefit_year, basis: f.basis },
+        });
+      }
+    }
+  } catch (e) { console.error('Child benefit unavailable for the forecast:', e.message); }
   for (const it of inv.items) {
     const d = toISODate(it.start_date);
     if (d < today || d >= endStr) continue;
@@ -360,7 +379,7 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
     add({
       key: `inv:${it.inventory_id}`, kind: 'inventory', label: it.name, date: d, amount: Number(it.amount), farm, owners: own(it),
       taxable: Number(it.amount) * farm, estimate: true,
-      ref: { inventory_id: it.inventory_id, group: itemGroup.get(it.inventory_id) || groupKey(it.commodity, ''), commodity: norm(it.commodity), basis: it.basis },
+      ref: { inventory_id: it.inventory_id, group: itemGroup.get(it.inventory_id) || groupKey(it.commodity, ''), commodity: norm(it.commodity), basis: it.basis, sellable_from: it.sellable_from || null },
     });
   }
 

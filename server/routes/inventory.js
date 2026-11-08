@@ -27,15 +27,17 @@ function validate(it) {
   if (isNum(it.quantity_contracted) && Number(it.quantity_contracted) > Number(it.quantity)) return 'quantity_contracted is more than quantity';
   if (it.segment && !OWNERS.includes(it.segment)) return `segment must be one of ${OWNERS.join(', ')}`;
   if (it.expected_sale_date && !/^\d{4}-\d{2}-\d{2}$/.test(String(it.expected_sale_date).slice(0, 10))) return 'expected_sale_date must be YYYY-MM-DD';
+  if (it.born_on && !/^\d{4}-\d{2}-\d{2}$/.test(String(it.born_on).slice(0, 10))) return 'born_on must be YYYY-MM-DD';
   return null;
 }
 
-const COLS = `source, external_id, item_class, commodity, quantity, unit, quantity_contracted, price_per_unit, location, as_of, segment, notes, expected_sale_date`;
+const COLS = `source, external_id, item_class, commodity, quantity, unit, quantity_contracted, price_per_unit, location, as_of, segment, notes, expected_sale_date, born_on`;
 const values = (it) => [
   it.source || 'manual', it.external_id || null, it.item_class || 'crop', it.commodity, Number(it.quantity), it.unit,
   isNum(it.quantity_contracted) ? Number(it.quantity_contracted) : null,
   isNum(it.price_per_unit) ? Number(it.price_per_unit) : null,
   it.location || null, it.as_of || todayISO(), it.segment || null, it.notes || null, it.expected_sale_date || null,
+  it.born_on ? String(it.born_on).slice(0, 10) : null,
 ];
 
 // ---- Automated ingest -------------------------------------------------
@@ -86,7 +88,7 @@ router.post('/ingest', requireIngestKey, ah(async (req, res) => {
          item_class = EXCLUDED.item_class, commodity = EXCLUDED.commodity, quantity = EXCLUDED.quantity,
          unit = EXCLUDED.unit, quantity_contracted = EXCLUDED.quantity_contracted,
          price_per_unit = EXCLUDED.price_per_unit, location = EXCLUDED.location, as_of = EXCLUDED.as_of,
-         segment = EXCLUDED.segment, notes = EXCLUDED.notes, expected_sale_date = EXCLUDED.expected_sale_date, updated_at = now()
+         segment = EXCLUDED.segment, notes = EXCLUDED.notes, expected_sale_date = EXCLUDED.expected_sale_date, born_on = EXCLUDED.born_on, updated_at = now()
        RETURNING id, price_per_unit`,
       v
     );
