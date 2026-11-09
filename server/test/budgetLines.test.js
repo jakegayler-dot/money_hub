@@ -1,40 +1,43 @@
-// The household budget by line (Nov 1; Nov 3: fixed costs out, travel one small line).
+// The household budget by line (Nov 1; Nov 9: everything the bills system doesn't cover).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { LINES, lineFor, lineBudgets, monthTotal, whoseKey, isFixed } from '../lib/householdBudget.js';
+import { LINES, lineFor, lineBudgets, monthTotal, whoseKey, coveredByBills, billKey } from '../lib/householdBudget.js';
 
 test('the standard bracket adds to 100%, and travel is small', () => {
   assert.equal(LINES.reduce((a, l) => a + l.pct, 0), 100);
   assert.ok(LINES.find((l) => l.key === 'travel').pct <= 3);
-  assert.ok(!LINES.some((l) => l.key === 'subscriptions'));
 });
 
-test('fixed costs are not in the budget (Nov 3)', () => {
-  const none = { cats: new Set(), payees: new Set() };
-  for (const c of ['Auto insurance', 'Home › Phone & internet', 'Home › Utilities', 'Electricity', 'Subscriptions', 'AI tools', 'Mortgage', 'Vehicle registration'])
-    assert.ok(isFixed({ category: c }, none), c);
-  for (const c of ['Food › Groceries', 'Regular Gas', 'Airfare', 'Hotels/AirBnb', 'Dining out', 'Kids'])
-    assert.ok(!isFixed({ category: c }, none), c);
-  assert.ok(isFixed({ category: 'Gym', category_id: 7 }, { cats: new Set([7]), payees: new Set() }), 'a category a recurring bill uses');
-  assert.ok(isFixed({ category: 'Shopping', transaction_id: 3 }, { cats: new Set(), payees: new Set([9]) }, new Map([[3, 9]])), 'a recurring bill’s payee');
+test('only what the bills system covers is left out (Nov 9) — never a guess from the category name', () => {
+  const bills = { payees: new Set([9]), keys: [billKey('SaskPower - house'), billKey('Netflix'), billKey('Rogers (cell)')] };
+  assert.deepEqual(bills.keys, ['saskpower', 'netflix', 'rogers']);
+  const tx = new Map([
+    [1, { payee_id: null, text: 'saskpowerpreauthorizeddebit' }], [2, { payee_id: 9, text: 'whatever' }],
+    [3, { payee_id: null, text: 'saskenergy' }], [4, { payee_id: null, text: 'costcowholesale' }],
+  ]);
+  assert.ok(coveredByBills({ transaction_id: 1, category: 'Home › Utilities' }, bills, tx), 'a recurring bill’s name');
+  assert.ok(coveredByBills({ transaction_id: 2 }, bills, tx), 'a recurring bill’s payee');
+  assert.ok(coveredByBills({ transaction_id: 5, scheduled: true }, bills, tx), 'linked to a bill or loan payment');
+  assert.ok(!coveredByBills({ transaction_id: 3, category: 'Home › Utilities' }, bills, tx), 'no bill for it: discretionary, whatever its category');
+  assert.ok(!coveredByBills({ transaction_id: 4, category: 'Auto insurance' }, bills, tx));
 });
 
 test('ledger categories land on their line; airfare and lodging are one travel line', () => {
-  const cases = { 'Food › Groceries': 'groceries', 'Food › Restaurants': 'dining', 'Regular Gas': 'fuel', 'Hotels/AirBnb': 'travel', Airfare: 'travel',
+  const cases = { 'Food › Groceries': 'groceries', 'Food › Restaurants': 'dining', 'Regular Gas': 'fuel', 'Auto insurance': 'fuel', 'Home › Utilities': 'home', 'AI tools': 'subscriptions', 'Hotels/AirBnb': 'travel', Airfare: 'travel',
     Kids: 'kids', 'Clothing & shoes': 'shopping', 'Personal care': 'health', Alcohol: 'dining', 'Fun › Entertainment': 'fun', 'Parking & transit': 'fuel', Uncategorized: 'other' };
   for (const [name, key] of Object.entries(cases)) assert.equal(lineFor(name), key, name);
 });
 
 test('a set line holds from its month on; the rest follow Cash Flow', () => {
   const o = [{ key: 'groceries', from_month: '2026-11', amount: 1500 }];
-  assert.equal(lineBudgets(5000, o, '2026-10').find((l) => l.key === 'groceries').budget, 2000);
+  assert.equal(lineBudgets(5000, o, '2026-10').find((l) => l.key === 'groceries').budget, 1900);
   const dec = lineBudgets(5000, o, '2026-12');
   assert.equal(dec.find((l) => l.key === 'groceries').budget, 1500);
   assert.equal(dec.find((l) => l.key === 'travel').budget, 100);
   assert.equal(lineBudgets(50850, [], '2026-11').reduce((a, l) => a + l.budget, 0), 50850, 'whole dollars that add up');
   assert.equal(monthTotal(5000, [], '2026-12'), 5000);
-  assert.equal(monthTotal(5000, o, '2026-12'), 5000 - 2000 + 1500);
-  assert.equal(lineBudgets(5000, [...o, { key: 'groceries', from_month: '2027-02', amount: null }], '2027-03').find((l) => l.key === 'groceries').budget, 2000);
+  assert.equal(monthTotal(5000, o, '2026-12'), 5000 - 1900 + 1500);
+  assert.equal(lineBudgets(5000, [...o, { key: 'groceries', from_month: '2027-02', amount: null }], '2027-03').find((l) => l.key === 'groceries').budget, 1900);
 });
 
 test('whose', () => {

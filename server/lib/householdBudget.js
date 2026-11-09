@@ -15,40 +15,51 @@ import { todayISO } from './dates.js';
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const pad = (n) => String(n).padStart(2, '0');
 
-// Fixed costs aren't in the budget (Jake, Nov 3: "auto insurance, phone and internet, electricity, subscriptions … most
-// of these are covered by the recurring bills"): a category whose name says it's a fixed cost, any category or payee
-// that a recurring bill is set up under, and anything paid as a bill or loan payment. Their spending doesn't count here.
-export const FIXED = /insurance|\bsgi\b|utilit|electric|power|natural gas|\bheat|water|sewer|phone|cell|mobile|internet|cable|satellite|starlink|subscri|streaming|netflix|spotify|software|\bai tools?\b|\bapps?\b|membership|mortgage|\brent\b|property tax|\btaxes?\b|loan|interest|registration|licen[cs]e|daycare|child ?care|tuition/;
+// What's in the budget (Jake, Nov 9: "Money Hub already has a system for recurring bills and forecasted bills.
+// Personal/discretionary is for everything that falls outside of this"): every household purchase except what the
+// bills system covers — a payment linked to a bill or loan payment, or one to the payee of a recurring bill (by the
+// payee, or the bill's name in the payee or description, for a cycle that wasn't linked). No guessing from category
+// names: a category the bills don't cover is discretionary, and shows under its group.
 
-// The standard bracket for what's left — day-to-day variable spending — in %. Travel is the yearly trip set aside
-// a month at a time, so it's small; airfare and lodging are one line. Order is the order categories are matched in.
+// The standard bracket, in %. Each ledger category sits in the first group whose pattern its name matches (Other if none).
 export const LINES = [
   { key: 'dining', label: 'Dining out', pct: 9, match: /restaurant|dining|eating out|take ?out|fast food|coffee|\bbars?\b|\bpubs?\b|alcohol|liquor|\bbeer|\bwine/ },
-  { key: 'groceries', label: 'Groceries', pct: 40, match: /grocer|supermarket|costco|\bfood\b/ },
-  { key: 'fuel', label: 'Fuel & car upkeep', pct: 14, match: /fuel|\bgas\b|gasoline|vehicle|\bauto\b|\bcars?\b|truck|parking|transit|\btires?\b|oil change|car wash/ },
-  { key: 'kids', label: 'Kids', pct: 8, match: /\bkids?\b|child|school|\btoys?\b|baby|lessons/ },
+  { key: 'groceries', label: 'Groceries', pct: 38, match: /grocer|supermarket|costco|\bfood\b/ },
+  { key: 'fuel', label: 'Fuel & vehicle', pct: 14, match: /fuel|\bgas\b|gasoline|vehicle|\bauto\b|\bcars?\b|truck|parking|transit|\btires?\b|oil change|car wash|\bsgi\b|registration/ },
+  { key: 'kids', label: 'Kids', pct: 8, match: /\bkids?\b|child|daycare|school|\btoys?\b|baby|lessons|tuition/ },
   { key: 'health', label: 'Health & personal care', pct: 6, match: /health|medical|dental|pharma|prescri|\bdrugs?\b|personal care|beauty|\bhair|salon|\bspa\b|fitness|\bgym|crossfit|optical|massage|physio/ },
   { key: 'shopping', label: 'Clothing & shopping', pct: 8, match: /cloth|shoes|apparel|shopping|amazon|electronic|jewel/ },
-  { key: 'home', label: 'Household & home', pct: 6, match: /\bhome\b|household|furniture|hardware|\bpets?\b|cleaning|garden|\byard\b|repair/ },
+  { key: 'subscriptions', label: 'Subscriptions', pct: 2, match: /subscri|streaming|netflix|spotify|software|\bai tools?\b|\bapps?\b|membership/ },
+  { key: 'home', label: 'Household & home', pct: 6, match: /\bhome\b|house|furniture|hardware|\bpets?\b|cleaning|garden|\byard\b|repair|utilit|electric|power|energy|water|phone|internet|insurance/ },
   { key: 'fun', label: 'Entertainment & hobbies', pct: 4, match: /entertain|hobb|gaming|\bgames?\b|sport|golf|\bhunt|fishing|camping|concert|ticket|attraction|activit|movie|recreation|\bfun\b|\bbooks?\b/ },
   { key: 'travel', label: 'Travel', pct: 2, match: /travel|hotel|airbnb|air ?fare|flight|vacation|holiday|lodging/ },
   { key: 'gifts', label: 'Gifts & giving', pct: 2, match: /\bgifts?\b|donation|charit|church|tith/ },
   { key: 'other', label: 'Other', pct: 1, match: null },
 ];
 export const LINE_KEYS = LINES.map((l) => l.key);
-/** Categories and payees covered by recurring bills (their spending is fixed, not budgeted here). */
-export async function fixedSources(db = pool) {
-  const { rows } = await db.query(`SELECT category_id, payee_id FROM bills WHERE frequency <> 'one_time'`).catch(() => ({ rows: [] }));
-  return { cats: new Set(rows.map((r) => r.category_id).filter(Boolean)), payees: new Set(rows.map((r) => r.payee_id).filter(Boolean)) };
+const squash = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+/** A bill's name as it shows on a payment: before any " - ", "(", "#" or "invoice", letters and digits only. */
+export const billKey = (name) => squash(String(name || '').split(/\s[-–—]\s|\(|#|\binvoice\b/i)[0]);
+
+/** The recurring bills' payees and names (pure input to coveredByBills). */
+export async function billSources(db = pool) {
+  const { rows } = await db.query(`SELECT name, payee_id FROM bills WHERE frequency <> 'one_time'`).catch(() => ({ rows: [] }));
+  return { payees: new Set(rows.map((r) => r.payee_id).filter(Boolean)), keys: [...new Set(rows.map((r) => billKey(r.name)).filter((k) => k.length >= 4))] };
 }
-/** Is a household line a fixed cost? payeeOf: transaction id → payee id. */
-export const isFixed = (l, fixed, payeeOf = new Map()) => FIXED.test(String(l.category || '').toLowerCase())
-  || (l.category_id && fixed.cats.has(l.category_id)) || fixed.payees.has(payeeOf.get(l.transaction_id));
-async function payeesOf(lines) {
+/** Is a line covered by the bills system? tx: transaction id → { payee_id, text } (payee name + description, squashed). */
+export function coveredByBills(l, bills, tx = new Map()) {
+  if (l.scheduled) return true;
+  const t = tx.get(l.transaction_id);
+  if (!t) return false;
+  if (t.payee_id && bills.payees.has(t.payee_id)) return true;
+  return bills.keys.some((k) => t.text.includes(k));
+}
+async function txInfo(lines) {
   const ids = [...new Set(lines.map((l) => l.transaction_id))];
   if (!ids.length) return new Map();
-  const { rows } = await pool.query('SELECT id, payee_id FROM transactions WHERE id = ANY($1)', [ids]);
-  return new Map(rows.map((r) => [r.id, r.payee_id]));
+  const { rows } = await pool.query(`SELECT t.id, t.payee_id, COALESCE(p.name, '') AS payee, COALESCE(t.description, '') AS description
+    FROM transactions t LEFT JOIN payees p ON p.id = t.payee_id WHERE t.id = ANY($1)`, [ids]);
+  return new Map(rows.map((r) => [r.id, { payee_id: r.payee_id, text: squash(`${r.payee} ${r.description}`) }]));
 }
 export const lineFor = (categoryName) => {
   const n = String(categoryName || '').toLowerCase();
@@ -102,18 +113,24 @@ export async function budgetView({ month, who = 'both', today = todayISO() } = {
   const keys = monthsOfYear(year, last);
   const to = year < Number(cur.slice(0, 4)) ? `${year + 1}-01-01` : addDay(today);
   const [overrides, totals, cats] = await Promise.all([loadOverrides(), cashTotals(keys, today), categoryBuckets()]);
-  const [{ spending }, fixed] = await Promise.all([householdLines(`${year}-01-01`, to, cats), fixedSources()]);
-  const payeeOf = await payeesOf(spending);
+  const [{ spending }, bills] = await Promise.all([householdLines(`${year}-01-01`, to, cats), billSources()]);
+  const tx = await txInfo(spending);
   const share = (l) => (who === 'jake' ? l.jake : who === 'ashley' ? l.ashley : l.amount);
   const spent = new Map(); // month → line → amount
+  const byCat = new Map(); // the chosen month: line → category → amount
   for (const l of spending) {
-    if (!discretionary(l) || isFixed(l, fixed, payeeOf)) continue;
+    if (!discretionary(l) || coveredByBills(l, bills, tx)) continue;
     const v = share(l);
     if (Math.abs(v) < 0.005) continue;
     const m = spent.get(l.month) || new Map();
     const k = lineFor(l.category);
     m.set(k, (m.get(k) || 0) + v);
     spent.set(l.month, m);
+    if (l.month === sel) {
+      const c = byCat.get(k) || new Map();
+      c.set(l.category, (c.get(l.category) || 0) + v);
+      byCat.set(k, c);
+    }
   }
   const months = keys.map((k) => {
     const lines = lineBudgets(totals[k], overrides, k);
@@ -121,7 +138,10 @@ export async function budgetView({ month, who = 'both', today = todayISO() } = {
     return { month: k, label: monthLabel(k), current: k === cur, budget: lines.reduce((a, l) => a + l.budget, 0), spent: r2([...s.values()].reduce((a, v) => a + v, 0)) };
   });
   const s = spent.get(sel) || new Map();
-  const lines = lineBudgets(totals[sel], overrides, sel).map((l) => ({ ...l, spent: r2(s.get(l.key) || 0) }));
+  const lines = lineBudgets(totals[sel], overrides, sel).map((l) => ({
+    ...l, spent: r2(s.get(l.key) || 0),
+    categories: [...(byCat.get(l.key) || new Map())].map(([name, v]) => ({ name, spent: r2(v) })).sort((a, b) => b.spent - a.spent),
+  }));
   return {
     month: sel, label: monthLabel(sel), who, today, cash_flow_total: totals[sel],
     months, lines, total: { budget: lines.reduce((a, l) => a + l.budget, 0), spent: r2(lines.reduce((a, l) => a + l.spent, 0)) },
@@ -135,10 +155,10 @@ export async function lineEntries({ month, line, who = 'both', today = todayISO(
   const [y, m] = month.split('-').map(Number);
   const end = m === 12 ? `${y + 1}-01-01` : `${y}-${pad(m + 1)}-01`;
   const cats = await categoryBuckets();
-  const [{ spending }, fixed] = await Promise.all([householdLines(`${month}-01`, end < addDay(today) ? end : addDay(today), cats), fixedSources()]);
-  const payeeOf = await payeesOf(spending);
+  const [{ spending }, bills] = await Promise.all([householdLines(`${month}-01`, end < addDay(today) ? end : addDay(today), cats), billSources()]);
+  const tx = await txInfo(spending);
   const share = (l) => (who === 'jake' ? l.jake : who === 'ashley' ? l.ashley : l.amount);
-  const mine = spending.filter((l) => discretionary(l) && !isFixed(l, fixed, payeeOf) && lineFor(l.category) === line && Math.abs(share(l)) >= 0.005);
+  const mine = spending.filter((l) => discretionary(l) && !coveredByBills(l, bills, tx) && lineFor(l.category) === line && Math.abs(share(l)) >= 0.005);
   const ids = [...new Set(mine.map((l) => l.transaction_id))];
   if (!ids.length) return [];
   const { rows: txs } = await pool.query(

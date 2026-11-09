@@ -93,6 +93,7 @@ export default function Personal() {
   const [d, setD] = useState(null);
   const [open, setOpen] = useState(null);
   const [entries, setEntries] = useState(null);
+  const [openCat, setOpenCat] = useState(null);
   const [err, setErr] = useState(null);
 
   const load = () => fetch(`/api/personal/budget-view?who=${who}${month ? `&month=${month}` : ''}`).then((r) => r.json())
@@ -155,30 +156,47 @@ export default function Personal() {
           <span className="pb-sum">{both ? `${money(t.spent)} of ${money(t.budget)} · ${t.spent > t.budget ? `${money(t.spent - t.budget)} over` : `${money(t.budget - t.spent)} left`}` : `${money(t.spent)} spent`}</span>
         </div>
         <table className="pb-table" data-nostack="">
-          <thead><tr><th>Category</th>{both && <th className="num">Budget</th>}<th className="num">Spent</th>{both && <th className="num">Left</th>}{both && <th className="pb-barcol" />}</tr></thead>
+          <thead><tr><th>Group</th>{both && <th className="num">Budget</th>}<th className="num">Spent</th>{both && <th className="num">Left</th>}{both && <th className="pb-barcol" />}</tr></thead>
           <tbody>
             {d.lines.filter((l) => both || l.spent > 0.005).map((l) => {
               const left = l.budget - l.spent;
               const isOpen = open === l.key;
               return (
                 <Fragment key={l.key}>
-                  <tr className={`pb-row${isOpen ? ' on' : ''}`} onClick={() => setOpen(isOpen ? null : l.key)}>
+                  <tr className={`pb-row${isOpen ? ' on' : ''}`} onClick={() => { setOpenCat(null); setOpen(isOpen ? null : l.key); }}>
                     <td><span className="pb-caret">{isOpen ? '▾' : '▸'}</span>{l.label}</td>
                     {both && <td className="num"><BudgetCell line={l} month={d.month} onSaved={changed} onError={setErr} /></td>}
                     <td className="num">{money(l.spent)}</td>
                     {both && <td className={`num${left < 0 ? ' neg' : ''}`}>{money(left)}</td>}
                     {both && <td className="pb-barcol"><Bar budget={l.budget} spent={l.spent} /></td>}
                   </tr>
-                  {isOpen && (
-                    <tr className="pb-detail"><td colSpan={both ? 5 : 2}>
-                      {entries == null ? <p className="pb-empty">Loading…</p> : entries.length === 0 ? <p className="pb-empty">Nothing spent here in {longMonth(d.month)}.</p> : (
-                        <table className="pb-entries" data-nostack="">
-                          <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Whose</th><th className="num">Amount</th><th /></tr></thead>
-                          <tbody>{entries.map((e) => <Entry key={e.id} e={e} categories={d.categories} onChanged={changed} onError={setErr} />)}</tbody>
-                        </table>
-                      )}
-                    </td></tr>
+                  {isOpen && l.categories.length === 0 && (
+                    <tr className="pb-detail"><td colSpan={both ? 5 : 2}><p className="pb-empty">Nothing spent here in {longMonth(d.month)}.</p></td></tr>
                   )}
+                  {isOpen && l.categories.map((c) => {
+                    const catOpen = openCat === c.name;
+                    const mine = (entries || []).filter((e) => e.category === c.name);
+                    return (
+                      <Fragment key={c.name}>
+                        <tr className={`pb-row pb-cat${catOpen ? ' on' : ''}`} onClick={() => setOpenCat(catOpen ? null : c.name)}>
+                          <td><span className="pb-caret">{catOpen ? '▾' : '▸'}</span>{c.name}</td>
+                          {both && <td />}
+                          <td className="num">{money(c.spent)}</td>
+                          {both && <td />}{both && <td />}
+                        </tr>
+                        {catOpen && (
+                          <tr className="pb-detail"><td colSpan={both ? 5 : 2}>
+                            {entries == null ? <p className="pb-empty">Loading…</p> : (
+                              <table className="pb-entries" data-nostack="">
+                                <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Whose</th><th className="num">Amount</th><th /></tr></thead>
+                                <tbody>{mine.map((e) => <Entry key={e.id} e={e} categories={d.categories} onChanged={changed} onError={setErr} />)}</tbody>
+                              </table>
+                            )}
+                          </td></tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
                 </Fragment>
               );
             })}

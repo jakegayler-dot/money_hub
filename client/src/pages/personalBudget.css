@@ -45,3 +45,6 @@
   .pb-detail > td { padding: 4px 6px 10px; overflow-x: auto; }
   .pb-entries { min-width: 640px; }
 }
+
+.pb-cat td:first-child { padding-left: 36px; color: var(--text-muted); }
+.pb-cat td { font-size: 13px; }
