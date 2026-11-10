@@ -67,8 +67,13 @@ test('a turn: tools run, the answer comes back and both sides are saved', async 
   const out = await advise({ threadKey: 'moneyhub:direct', threadTitle: 'You and the advisor', author: 'jake', text: 'Can I buy the Smith quarter?', fetchImpl });
   assert.equal(out.reply, 'Hold off: cash is $80,000 and the floor needs it.');
   assert.deepEqual(out.tools, ['read_money_hub', 'remember']);
-  assert.equal(out.model, 'claude-opus-5-5');
+  assert.equal(out.model, 'claude-sonnet-5-5');
   assert.equal(out.remembered[0].text, 'Wants to buy the Smith quarter by 2028');
+  // Each round caches the conversation so far: one mark, on the last block sent.
+  const marks = (body) => body.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((b) => b.cache_control);
+  assert.equal(marks(sent[0]).length, 1);
+  assert.equal(marks(sent[1]).length, 1);
+  assert.equal(sent[1].messages.at(-1).content.at(-1).cache_control.type, 'ephemeral');
   // The tool results went back to Claude, the balances among them.
   const results = sent[1].messages.at(-1).content;
   assert.ok(results.some((r) => r.tool_use_id === 't1' && /Ops/.test(r.content)));
@@ -85,7 +90,7 @@ test('Sentinel’s quick checks run on Sonnet', async () => {
   const { fetchImpl, sent } = fakeClaude([{ stop_reason: 'end_turn', content: [{ type: 'text', text: 'Fine.' }] }]);
   await advise({ threadKey: 'sentinel:abc', threadTitle: 'Money', kind: 'group', author: 'sentinel', text: 'Is the floor OK?', depth: 'quick', fetchImpl });
   assert.equal(sent[0].model, 'claude-sonnet-5-5');
-  assert.match(sent[0].messages[0].content, /^Sentinel: Is the floor OK\?/);
+  assert.match(sent[0].messages[0].content[0].text, /^Sentinel: Is the floor OK\?/);
 });
 
 test('tools: a what-if runs through the forecast and can be saved', async () => {

@@ -13,7 +13,9 @@ import { pool, getSetting } from '../../db.js';
 import { TOOL_DEFS, runTool, activeNotes, AdvisorToolError } from './tools.js';
 import { reginaToday } from '../sentinelSnapshot.js';
 
-export const DEEP_MODEL = process.env.ADVISOR_DEEP_MODEL || 'claude-opus-5-5';
+// Sonnet for decisions too (Jake, Nov 9: "Mike burry used a lot of credits"; Opus cost twice as much a word). Opus stays one
+// setting away (ADVISOR_DEEP_MODEL).
+export const DEEP_MODEL = process.env.ADVISOR_DEEP_MODEL || 'claude-sonnet-5-5';
 export const QUICK_MODEL = process.env.ADVISOR_MODEL || 'claude-sonnet-5-5';
 const MAX_ROUNDS = 16;
 const HISTORY = 24; // messages of the thread the advisor sees
@@ -59,6 +61,25 @@ export async function weeklySpend() {
   const budget = Number(await getSetting('advisor_weekly_budget_usd', DEFAULT_WEEKLY_BUDGET)) || DEFAULT_WEEKLY_BUDGET;
   const spent = Number(r.spent);
   return { spent: Math.round(spent * 100) / 100, budget, share: budget > 0 ? spent / budget : 1, state: spent >= budget ? 'stopped' : spent >= budget * 0.8 ? 'low' : 'ok' };
+}
+
+/**
+ * The conversation with a cache mark on its last text or tool result, so each round of the tool loop reads everything
+ * before it from the cache (a tenth of the price) instead of paying full price for the whole thread and every lookup
+ * again: up to 16 rounds a question, and before this only the system prompt was cached. Copies; the loop's own list is
+ * left unmarked, so only one mark is ever sent (with the system prompt's, two of the four allowed).
+ */
+export function cacheTail(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    const blocks = typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : m.content;
+    if (!Array.isArray(blocks) || !blocks.length) continue;
+    const last = blocks.at(-1);
+    if (!['text', 'tool_result'].includes(last.type) || (last.type === 'text' && !last.text)) continue;
+    const marked = { ...m, content: [...blocks.slice(0, -1), { ...last, cache_control: { type: 'ephemeral' } }] };
+    return [...messages.slice(0, i), marked, ...messages.slice(i + 1)];
+  }
+  return messages;
 }
 
 async function recordUsage(model, u = {}) {
@@ -164,7 +185,7 @@ export async function advise(opts) {
   let reply = '';
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const data = await callClaude({
-      model, max_tokens: 16000, system, tools, messages,
+      model, max_tokens: 16000, system, tools, messages: cacheTail(messages),
       output_config: { effort: depth === 'quick' ? 'medium' : 'high' },
     }, fetchImpl);
     await recordUsage(model, data.usage);
