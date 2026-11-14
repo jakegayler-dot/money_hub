@@ -476,6 +476,7 @@ test('no secrets, full account numbers, raw payloads or images; nothing is writt
     const rec = (await read('/receipts')).body.rows.find((r) => r.party);
     assert.equal(rec.party, 'Co-op');
     assert.equal(rec.items, 1);
+    assert.deepEqual(rec.lines, [{ description: 'Diesel', amount: 250 }], 'the lines as printed (Nov 14)');
     assert.equal(rec.size_kb, 0);
     assert.deepEqual(await fingerprint(), before);
   } finally {

@@ -701,17 +701,18 @@ def({
 // ---------- receipts (no images) ----------
 def({
   name: 'receipts', mode: 'sql',
-  description: 'Receipt, invoice and sales-ticket photos (details read from them, never the image): who, total, GST, and the entry, bill or contract they belong to. Newest upload first.',
-  fields: ['id', 'uploaded_on', 'status', 'doc_type', 'document_date', 'party', 'total', 'gst', 'currency', 'invoice_number', 'category', 'items',
-    'reader_notes', 'error', 'size_kb', 'transaction', 'bill', 'contract'],
+  description: 'Receipt, invoice and sales-ticket photos (details read from them, never the image): who, total, GST, whose it was filed under, each line as printed with its amount (lines), whether its clothes went to his Self Hub wardrobe (wardrobe: sent, none, failed), and the entry, bill or contract they belong to. Newest upload first.',
+  fields: ['id', 'uploaded_on', 'status', 'doc_type', 'document_date', 'party', 'total', 'gst', 'currency', 'invoice_number', 'category', 'owner', 'items', 'lines',
+    'wardrobe', 'reader_notes', 'error', 'size_kb', 'transaction', 'bill', 'contract'],
   search: ['party', 'invoice_number', 'category', 'reader_notes', 'tx_description', 'bill'], date: 'uploaded_on',
   filters: [f.eq('status', 'status', ['reading', 'unmatched', 'matched', 'review', 'failed', 'not_receipt', 'unread']),
     f.eq('doc_type', 'doc_type', ['receipt', 'invoice', 'sales_ticket'])],
   base: () => `SELECT r.id, r.uploaded_at::date AS uploaded_on, r.status, r.bytes, r.error,
       COALESCE(r.extracted->>'doc_type', 'receipt') AS doc_type, r.extracted->>'date' AS document_date, r.extracted->>'party' AS party,
       r.extracted->>'total' AS total, r.extracted->>'gst' AS gst, r.extracted->>'invoice_number' AS invoice_number,
-      r.extracted->>'category' AS category, r.extracted->>'notes' AS reader_notes,
+      r.extracted->>'category' AS category, r.extracted->>'notes' AS reader_notes, r.extracted->>'owner' AS owner, r.clothes AS wardrobe,
       CASE WHEN jsonb_typeof(r.extracted->'items') = 'array' THEN jsonb_array_length(r.extracted->'items') ELSE 0 END AS items,
+      CASE WHEN jsonb_typeof(r.extracted->'items') = 'array' THEN r.extracted->'items' ELSE '[]'::jsonb END AS item_lines,
       t.id AS tx_id, t.date AS tx_date, t.amount AS tx_amount, t.description AS tx_description, b.name AS bill, c.commodity AS contract
     FROM receipts r LEFT JOIN transactions t ON t.id = r.transaction_id LEFT JOIN bills b ON b.id = r.bill_id
     LEFT JOIN sale_contracts c ON c.id = r.contract_id`,
@@ -719,7 +720,11 @@ def({
   shape: (r) => ({
     id: r.id, uploaded_on: day(r.uploaded_on), status: r.status, doc_type: r.doc_type,
     document_date: PARSE.date(String(r.document_date || '')) || null, party: text(r.party, 200), total: money(r.total), gst: money(r.gst),
-    currency: CURRENCY, invoice_number: text(r.invoice_number, 100), category: text(r.category, 200), items: r.items,
+    currency: CURRENCY, invoice_number: text(r.invoice_number, 100), category: text(r.category, 200), owner: text(r.owner, 20), items: r.items,
+    // The lines as printed (Nov 14: Andrew couldn't see what Jake bought); 80 at most, the description and amount only.
+    lines: (Array.isArray(r.item_lines) ? r.item_lines : []).slice(0, 80).filter((i) => i && typeof i === 'object')
+      .map((i) => ({ description: text(i.description, 120), amount: money(i.amount) })),
+    wardrobe: r.wardrobe || null,
     reader_notes: text(r.reader_notes), error: text(r.error, 300), size_kb: Math.round(Number(r.bytes || 0) / 1024),
     transaction: r.tx_id ? { id: r.tx_id, date: day(r.tx_date), amount: money(r.tx_amount), description: text(r.tx_description, 200) } : null,
     bill: r.bill, contract: r.contract,
