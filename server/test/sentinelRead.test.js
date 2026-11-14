@@ -149,7 +149,7 @@ test('no SENTINEL_ACTION_KEY configured: 503', async () => {
   delete process.env.SENTINEL_ACTION_KEY;
   const r = await get('/api/sentinel/read');
   assert.equal(r.status, 503);
-  assert.deepEqual(r.body, { error: 'Sentinel actions are not configured' });
+  assert.deepEqual(r.body, { error: 'Andrew actions are not configured' });
 });
 
 test('missing or wrong key: 401; right key: 200', () => withKey(async () => {

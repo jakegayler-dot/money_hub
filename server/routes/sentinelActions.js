@@ -49,23 +49,23 @@ router.get('/', (req, res) => res.json({
     name: 'advisor', method: 'POST', path: '/api/sentinel/actions/advisor',
     description: 'One turn with Jake\'s financial advisor, the agent in Money Hub that owns everything to do with money (farm, household, debt, tax, investing). It reads all of Money Hub, runs decisions through the forecast and what-ifs, searches a Canadian tax library and cites it, remembers what Jake tells it, and can save a what-if on the Cash Flow page (its only write). Takes 20 seconds to a couple of minutes. The reply is plain text; when author is "sentinel" it is at most about 200 words, answer first.',
     body: {
-      thread: '{ id, title, kind: "direct"|"group" }: the Sentinel thread this turn belongs to',
-      author: '"sentinel" (Sentinel asking) or "jake" (Jake\'s words in that thread)',
+      thread: '{ id, title, kind: "direct"|"group" }: the Andrew thread this turn belongs to',
+      author: '"sentinel" (Andrew asking) or "jake" (Jake\'s words in that thread)',
       text: 'the message',
       transcript: 'optional: the thread\'s recent messages [{ author: "jake"|"sentinel"|"advisor", body }], oldest first, without this one',
       depth: '"quick" (a fast check) or "deep" (default: a decision worth thinking through)',
     },
-    example: { thread: { id: '7f1c…', title: 'Money: Sentinel and the advisor', kind: 'group' }, author: 'sentinel', text: 'Jake asks whether to prepay fertilizer before Dec 31 or wait for the spring price.', depth: 'deep' },
+    example: { thread: { id: '7f1c…', title: 'Money: Andrew and the advisor', kind: 'group' }, author: 'sentinel', text: 'Jake asks whether to prepay fertilizer before Dec 31 or wait for the spring price.', depth: 'deep' },
   }, {
     name: 'goals', method: 'GET', path: '/api/sentinel/actions/goals',
-    description: "Jake's goals (status exploring, active, bought, dropped) with Sentinel's latest study and the weekly re-checks (history).",
+    description: "Jake's goals (status exploring, active, bought, dropped) with Andrew's latest study and the weekly re-checks (history).",
   }, {
     name: 'goal', method: 'POST', path: '/api/sentinel/actions/goals',
     description: 'Adds a goal (as "exploring" unless a status is given) or changes one (with id). details (acres, use, buy_month…) are merged; study replaces the saved study; history_add appends one weekly check.',
     body: { id: 'the goal to change (omit to add)', name: 'what it is', kind: 'land|cattle|tractor|combine|machinery|truck|building|other', price: 'price', down_pct: '%', rate: '%', years: 'term', status: 'exploring|active|bought|dropped', details: '{ acres, cultivated_acres, use, buy_month, … }', study: 'object', history_add: 'object' },
   }, {
     name: 'goal_study', method: 'POST', path: '/api/sentinel/actions/goals/:id/study',
-    description: 'The money side of a goal study (nothing saved): the 24-month cash forecast with the goal bought, in the bad, normal and good years Sentinel simulated, each judged like a lender; how far sales can fall (break_even_revenue, a share of the normal year’s); the most it could cost (max_price); and the changes tried (more down, longer term, lower price, later, costs trimmed).',
+    description: 'The money side of a goal study (nothing saved): the 24-month cash forecast with the goal bought, in the bad, normal and good years Andrew simulated, each judged like a lender; how far sales can fall (break_even_revenue, a share of the normal year’s); the most it could cost (max_price); and the changes tried (more down, longer term, lower price, later, costs trimmed).',
     body: { farm: '{ cases: { bad, base, good }: { flows: [{ label, amount, month: "YYYY-MM", revenue, part: "farm"|"goal", kind?: "rent" }] } }', buy_month: 'YYYY-MM', scope: 'everything (default) or farm' },
   }, {
     name: 'household_budget', method: 'GET', path: '/api/sentinel/actions/budget',
@@ -81,14 +81,14 @@ router.get('/', (req, res) => res.json({
 router.post('/advisor', ah(async (req, res) => {
   const b = req.body || {};
   const t = b.thread || {};
-  if (!t.id || !/^[\w-]{1,80}$/.test(String(t.id))) return res.status(422).json({ error: 'thread.id is required (the Sentinel thread\'s id).' });
+  if (!t.id || !/^[\w-]{1,80}$/.test(String(t.id))) return res.status(422).json({ error: 'thread.id is required (the Andrew thread\'s id).' });
   const author = b.author === 'jake' ? 'jake' : 'sentinel';
   const text = String(b.text || '').trim();
   if (!text) return res.status(422).json({ error: 'text is required.' });
   if (text.length > 8000) return res.status(422).json({ error: 'text is too long (8,000 characters at most).' });
   try {
     const out = await advise({
-      threadKey: `sentinel:${t.id}`, threadTitle: String(t.title || 'Sentinel').slice(0, 120), kind: t.kind === 'group' ? 'group' : 'direct',
+      threadKey: `sentinel:${t.id}`, threadTitle: String(t.title || 'Andrew').slice(0, 120), kind: t.kind === 'group' ? 'group' : 'direct',
       author, text, transcript: Array.isArray(b.transcript) ? b.transcript : null, depth: b.depth === 'quick' ? 'quick' : 'deep',
     });
     res.json({ reply: out.reply, model: out.model, cost_usd: out.cost_usd, tools: out.tools, saved: out.saved, remembered: out.remembered,
@@ -188,7 +188,7 @@ router.patch('/tasks/:id', ah(async (req, res) => {
   const id = String(req.params.id || '');
   const b = req.body || {};
   const other = Object.keys(b).filter((k) => k !== 'status' && b[k] !== undefined);
-  if (other.length) return res.status(422).json({ error: 'Money Hub tasks can be ticked off or reopened from Sentinel; dates and titles come from Money Hub.' });
+  if (other.length) return res.status(422).json({ error: 'Money Hub tasks can be ticked off or reopened from Andrew; dates and titles come from Money Hub.' });
   if (!['open', 'done'].includes(b.status)) return res.status(422).json({ error: 'status is open or done' });
   const all = await loadCalendarDeadlines();
   const d = all.find((x) => String(x.id) === id && x.task);

@@ -1243,7 +1243,7 @@ export function centsToDollars(v) {
 }
 def({
   name: 'overview', mode: 'js', idType: 'text', summary: true,
-  description: 'SUMMARY (one row). The headline the Sentinel Money tile shows, built by the same code: status line, last-30-day cash flow, 90-day forecast vs floor, equity, operating margin, debt coverage and ROA, with notes on how each was worked out. Start here for "how are the finances".',
+  description: 'SUMMARY (one row). The headline the Andrew Money tile shows, built by the same code: status line, last-30-day cash flow, 90-day forecast vs floor, equity, operating margin, debt coverage and ROA, with notes on how each was worked out. Start here for "how are the finances".',
   fields: ['id', 'generated_at', 'status_line', 'cash_flow', 'forecast_90d', 'equity', 'performance', 'notes', 'currency'],
   search: [], filters: [],
   load: async () => {

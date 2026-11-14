@@ -14,7 +14,7 @@ const digest = (s) => crypto.createHash('sha256').update(String(s)).digest();
 /** Bearer SENTINEL_ACTION_KEY, compared in constant time. */
 export function requireActionKey(req, res, next) {
   const key = process.env.SENTINEL_ACTION_KEY;
-  if (!key) return res.status(503).json({ error: 'Sentinel actions are not configured' });
+  if (!key) return res.status(503).json({ error: 'Andrew actions are not configured' });
   const m = /^Bearer\s+(.+)$/i.exec(req.get('authorization') || '');
   // Hash both sides so timingSafeEqual always compares equal lengths.
   if (!m || !crypto.timingSafeEqual(digest(m[1].trim()), digest(key))) {

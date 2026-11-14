@@ -51,7 +51,7 @@ test('the thread becomes alternating turns, every voice labelled', () => {
     { author: 'advisor', body: 'Probably not this year.' },
   ], { author: 'jake', body: 'Why?' });
   assert.deepEqual(m.map((x) => x.role), ['user', 'assistant', 'user']);
-  assert.match(m[0].content, /^Jake: Should I buy the quarter\?\n\nSentinel: He means/);
+  assert.match(m[0].content, /^Jake: Should I buy the quarter\?\n\nAndrew: He means/);
   assert.equal(m[2].content, 'Jake: Why?');
 });
 
@@ -90,7 +90,7 @@ test('Sentinel’s quick checks run on Sonnet', async () => {
   const { fetchImpl, sent } = fakeClaude([{ stop_reason: 'end_turn', content: [{ type: 'text', text: 'Fine.' }] }]);
   await advise({ threadKey: 'sentinel:abc', threadTitle: 'Money', kind: 'group', author: 'sentinel', text: 'Is the floor OK?', depth: 'quick', fetchImpl });
   assert.equal(sent[0].model, 'claude-sonnet-5-5');
-  assert.match(sent[0].messages[0].content[0].text, /^Sentinel: Is the floor OK\?/);
+  assert.match(sent[0].messages[0].content[0].text, /^Andrew: Is the floor OK\?/);
 });
 
 test('tools: a what-if runs through the forecast and can be saved', async () => {
@@ -137,7 +137,7 @@ test('the advisor hands its Data Entry bot work through Sentinel and reads what 
   };
   try {
     delete process.env.SENTINEL_URL;
-    await assert.rejects(runTool('data_entry_bot', { action: 'list' }), /Sentinel isn't connected/);
+    await assert.rejects(runTool('data_entry_bot', { action: 'list' }), /Andrew isn't connected/);
     process.env.SENTINEL_URL = 'https://sentinel.test/'; process.env.SENTINEL_API_KEY = 'snt_live_mh';
     const sent = JSON.parse(await runTool('data_entry_bot', { action: 'send', title: 'Categorise the October Co-op card', instructions: 'All Co-op Cardlock charges are farm fuel', kind: 'chore' }));
     assert.equal(sent.job, 17);

@@ -47,7 +47,7 @@ router.post('/ask', ah(async (req, res) => {
   if (req.body?.thread_id) {
     const { rows: [t] } = await pool.query('SELECT key, title, kind FROM advisor_threads WHERE id = $1', [Number(req.body.thread_id)]);
     if (!t) return res.status(404).json({ error: 'No such thread' });
-    if (t.key.startsWith('sentinel:')) return res.status(422).json({ error: 'Reply to a Sentinel thread in Sentinel, so Sentinel sees it too.' });
+    if (t.key.startsWith('sentinel:')) return res.status(422).json({ error: 'Reply to an Andrew thread in Andrew, so Andrew sees it too.' });
     ({ key, title, kind } = t);
   }
   try {

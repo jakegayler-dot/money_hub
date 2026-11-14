@@ -54,17 +54,17 @@ export function hasNextCrop(ctx) {
 /** The baseline with the existing farm's next crop year added; rent the forecast already has isn't added twice. */
 export function withFarmYear(ctx, farmFlows, notes) {
   if (!farmFlows.length) return ctx;
-  if (hasNextCrop(ctx)) { notes.push('Money Hub already has next year\'s crop sales, so Sentinel\'s estimate of the existing farm\'s crop year was left out.'); return ctx; }
+  if (hasNextCrop(ctx)) { notes.push('Money Hub already has next year\'s crop sales, so Andrew\'s estimate of the existing farm\'s crop year was left out.'); return ctx; }
   const end = ctx.win?.endStr || '9999-12-31';
   let rentHad = ctx.flows.filter((f) => f.kind === 'bill' && f.amount < 0 && RENT.test(f.label || '') && f.date >= ctx.today && f.date < end).reduce((t, f) => t - f.amount, 0);
   const added = [];
   for (const [i, f] of farmFlows.entries()) {
     let amount = f.amount;
     if (f.kind === 'rent' && rentHad > 0) { const take = Math.min(rentHad, -amount); rentHad -= take; amount = r2(amount + take); if (!amount) continue; }
-    added.push({ key: `goalstudy:farm:${i}`, kind: amount > 0 ? 'estimate_in' : 'estimate_out', label: `${f.label} (Sentinel's estimate)`, date: `${f.month}-15`,
+    added.push({ key: `goalstudy:farm:${i}`, kind: amount > 0 ? 'estimate_in' : 'estimate_out', label: `${f.label} (Andrew's estimate)`, date: `${f.month}-15`,
       amount, farm: 1, taxable: amount, estimate: true, ref: { goal_study: true, revenue: f.revenue } });
   }
-  notes.push('Money Hub\'s forecast had no next crop year, so the existing farm\'s crop year is Sentinel\'s estimate from Quarter Section (sales, inputs, other costs and the rent not already in Money Hub).');
+  notes.push('Money Hub\'s forecast had no next crop year, so the existing farm\'s crop year is Andrew\'s estimate from Quarter Section (sales, inputs, other costs and the rent not already in Money Hub).');
   return { ...ctx, flows: [...ctx.flows, ...added] };
 }
 

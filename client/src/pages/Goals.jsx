@@ -113,7 +113,7 @@ function StudyPanel({ g }) {
   const ms = s.latest?.milestones || v.milestones || [];
   return (
     <div className="panel">
-      <div className="panel-header">{g.name}: Sentinel's study <span className="split-lines" style={{ marginLeft: 8 }}>{VERDICT[v.verdict] || ''}{s.studied_at ? ` · ${s.studied_at.slice(0, 10)}` : ''}</span></div>
+      <div className="panel-header">{g.name}: Andrew's study <span className="split-lines" style={{ marginLeft: 8 }}>{VERDICT[v.verdict] || ''}{s.studied_at ? ` · ${s.studied_at.slice(0, 10)}` : ''}</span></div>
       <div style={{ padding: '4px 16px 14px' }}>
         <p style={{ marginTop: 0 }}>{v.headline}</p>
         <table className="gl-list">

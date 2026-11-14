@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 // threads it has had in Sentinel (read here, answered in Sentinel), what it
 // remembers, and what it has cost this week.
 
-const WHO = { jake: 'You', sentinel: 'Sentinel', advisor: 'Advisor' };
+const WHO = { jake: 'You', sentinel: 'Andrew', advisor: 'Advisor' };
 const STARTERS = [
   'Where should my next $20,000 go?',
   'Should I prepay inputs before December 31?',
@@ -69,7 +69,7 @@ export default function Advisor() {
           {info.threads.map((t) => (
             <button key={t.id} type="button" className={`adv-thread${t.id === threadId ? ' on' : ''}`} onClick={() => setThreadId(t.id)}>
               <span className="adv-thread-title">{t.title}</span>
-              <span className="adv-thread-meta">{t.where === 'sentinel' ? (t.kind === 'group' ? 'Group in Sentinel' : 'In Sentinel') : 'Here'} · {t.messages}</span>
+              <span className="adv-thread-meta">{t.where === 'sentinel' ? (t.kind === 'group' ? 'Group in Andrew' : 'In Andrew') : 'Here'} · {t.messages}</span>
             </button>
           ))}
         </nav>
@@ -90,7 +90,7 @@ export default function Advisor() {
           </div>
           {error && <p className="review-error" role="alert">{error}</p>}
           {readOnly ? (
-            <p className="adv-readonly">This thread lives in Sentinel. Reply there so Sentinel sees it too.</p>
+            <p className="adv-readonly">This thread lives in Andrew. Reply there so Andrew sees it too.</p>
           ) : (
             <form className="adv-compose" onSubmit={(e) => { e.preventDefault(); ask(); }}>
               <textarea aria-label="Your question" rows={2} value={text} placeholder="Ask the advisor…" disabled={busy}
