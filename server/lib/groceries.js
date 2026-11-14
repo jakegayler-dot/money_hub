@@ -92,6 +92,8 @@ Record EVERY purchased line by calling record_grocery_lines (angle brackets desc
     "qty": <how many packages; 1 for a weighed item>,
     "size_value": <package size or weighed weight as a number, null if not shown>,
     "size_unit": <"g" | "kg" | "lb" | "oz" | "ml" | "l" | "each" | null>,
+    "usual_size_value": <when size_value is null: the pack size this product most commonly comes in at Canadian stores, judged from the brand, the product and the price paid ("GV NAT SM PB 3.68" is Great Value natural peanut butter, 1 kg; "HLMNS MAYO 6.47" is Hellmann's mayonnaise, 890 ml; a carton of ready-to-use broth is 900 ml; a loaf of sandwich bread 675 g; a dozen eggs 12 each). Null only when you can't tell what the product is>,
+    "usual_size_unit": <"g" | "kg" | "ml" | "l" | "each" | null>,
     "amount": <what was paid for this line after its own discounts, positive>,
     "discount": <the saving shown for this line (sale, coupon, member price), positive, 0 if none>
   }]
@@ -101,6 +103,7 @@ Rules:
 - A coupon or "you saved" line printed under an item belongs to that item: take it off that item's amount and put it in its discount. Never list it as its own line.
 - Bottle deposits, environmental fees and bag charges are lines with food_type "other".
 - Weighed produce and meat ("1.235 kg @ $3.99/kg"): qty 1, size_value 1.235, size_unit "kg".
+- size_value is only ever what's printed. A pack size you know but the slip doesn't show goes in usual_size_value, never size_value.
 - "2 @ 1.99": qty 2, amount 3.98.
 - Read till abbreviations into words ("GRN ONION" → "green onions", "BNLS SKNLS CHKN BRST" → "chicken breasts").
 - Check the amounts add up to the subtotal before tax. If a line is unreadable, give your best reading of its amount and item "unreadable".
@@ -162,7 +165,12 @@ export function cleanLine(l) {
     store_brand: l.store_brand === true, food_type, qty: num(l.qty), size_value: num(l.size_value),
     size_unit: l.size_unit ? String(l.size_unit).toLowerCase().slice(0, 10) : null, amount, discount: Math.abs(r2(num(l.discount) || 0)),
   };
-  return { ...out, ...unitPrice(out) };
+  // The usual pack size when none is printed (Jake, Nov 14: yes, for the pantry): sent on to Sentinel, never stored as the
+  // size, so the price book only compares what was printed.
+  const usualUnit = String(l.usual_size_unit || '').toLowerCase();
+  const usual = out.size_value == null && num(l.usual_size_value) > 0 && ['g', 'kg', 'ml', 'l', 'each'].includes(usualUnit)
+    ? { usual_size_value: num(l.usual_size_value), usual_size_unit: usualUnit } : {};
+  return { ...out, ...unitPrice(out), ...usual };
 }
 
 /** Replaces a receipt's catalogued lines. */
@@ -227,7 +235,8 @@ export async function pushToSentinel({ receipt_id, store, date, lines }) {
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       // Size and count too (Nov 14): Sentinel puts what the list didn't cover into Self Hub's pantry by weight.
       body: JSON.stringify({ receipt_id, store, date, lines: lines.map((l) => ({ item: l.item, printed: l.printed, food_type: l.food_type || null,
-        qty: l.qty ?? null, size_value: l.size_value ?? null, size_unit: l.size_unit || null })) }),
+        qty: l.qty ?? null, size_value: l.size_value ?? null, size_unit: l.size_unit || null,
+        ...(l.usual_size_value ? { usual_size_value: l.usual_size_value, usual_size_unit: l.usual_size_unit } : {}) })) }),
       signal: AbortSignal.timeout(30000),
     });
     const out = await res.json().catch(() => null);

@@ -28,14 +28,14 @@ export function looksLikeClothes(ex) {
   return (ex.items || []).some((i) => CLOTHES_WORDS.test(String(i?.description || '')));
 }
 
-const PROMPT = ({ party, date, owner }) => `This is a receipt${party ? ` from ${party}` : ''}${date ? ` dated ${date}` : ''}, bought by a farm family in Saskatchewan: Jake (an adult man, the farmer), Ashley (an adult woman) and their boys Alex (5) and Ollie (3).${owner ? ` It was filed under "${owner}".` : ''}
+export const PROMPT = ({ party, date, owner }) => `This is a receipt${party ? ` from ${party}` : ''}${date ? ` dated ${date}` : ''}, bought by a farm family in Saskatchewan: Jake (an adult man, the farmer), Ashley (an adult woman) and their boys Alex (5) and Ollie (3).${owner ? ` It was filed under "${owner}".` : ''}
 
 Record every CLOTHING, FOOTWEAR or wearable ACCESSORY line (hats, toques, gloves, scarves, belts) by calling record_clothes. Leave out everything else: food, household, tools, parts, fees, gift cards. Angle brackets describe the value; never copy them.
 {
   "is_clothing": <false when nothing on it is clothing>,
   "items": [{
     "printed": <the line as printed>,
-    "for": <"jake" for a men's item, or a plainly adult unisex item in a man's size, with nothing pointing to Ashley; "ashley" for women's or ladies'; "kids" for boys', youth, toddler or kids' sizes (2T to 6X, youth XS to XL, kids' shoe sizes); "unsure" when the slip doesn't say>,
+    "for": <"jake" for a men's item, or a plainly adult unisex item in a man's size, with nothing pointing to Ashley; "ashley" for women's or ladies'; "kids" for boys', youth, toddler or kids' sizes (2T to 6X, youth XS to XL, kids' shoe sizes); "unsure" when the slip doesn't say. On a receipt filed under jake, an adult item with nothing pointing to Ashley or the boys (a toque, gloves, a belt) is "jake">,
     "category": <one of ${CATEGORIES.join(', ')}>,
     "type": <a short plain name: "Jeans", "Work pants", "T-shirt", "Hoodie", "Winter parka", "Work boots", "Toque", "Socks">,
     "brand": <the brand if shown, else null>,
@@ -68,11 +68,20 @@ export async function readClothes(rc, ex) {
     name: 'record_clothes', description: 'Record every clothing line on the receipt.',
     input_schema: { type: 'object', properties: { is_clothing: { type: 'boolean' }, items: { type: 'array', items: { type: 'object' } } }, required: ['is_clothing', 'items'] },
   }];
-  const body = await claude({ model: MODEL, max_tokens: 8000, tools, tool_choice: { type: 'tool', name: 'record_clothes' },
-    messages: [{ role: 'user', content: [...(await documentBlocks(rc)), { type: 'text', text: PROMPT({ party: ex.party, date: ex.date, owner: ex.owner }) }] }] });
-  const tool = (body.content || []).find((c) => c.type === 'tool_use');
+  // No tool_choice: Sonnet 5.5 refuses a forced tool (tried live, Nov 14), so it's asked once more if it answers in words.
+  const userTurn = { role: 'user', content: [...(await documentBlocks(rc)), { type: 'text', text: PROMPT({ party: ex.party, date: ex.date, owner: ex.owner }) }] };
+  let body = await claude({ model: MODEL, max_tokens: 8000, tools, messages: [userTurn] });
+  let tool = (body.content || []).find((c) => c.type === 'tool_use');
+  if (!tool) {
+    body = await claude({ model: MODEL, max_tokens: 8000, tools, messages: [userTurn,
+      { role: 'assistant', content: body.content?.length ? body.content : [{ type: 'text', text: '(no answer)' }] },
+      { role: 'user', content: 'Call record_clothes now (is_clothing false and no items if there are none).' }] });
+    tool = (body.content || []).find((c) => c.type === 'tool_use');
+  }
   if (!tool?.input) throw new Error("The clothes couldn't be read.");
-  return tool.input;
+  const input = tool.input;
+  if (typeof input.items === 'string') { try { input.items = JSON.parse(input.items); } catch { input.items = []; } }
+  return input;
 }
 
 const s = (v, max) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null);

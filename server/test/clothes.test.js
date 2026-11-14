@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { looksLikeClothes, cleanItem, pushClothes } from '../lib/clothes.js';
-import { FOOD_TYPES, NON_FOOD } from '../lib/groceries.js';
+import { FOOD_TYPES, NON_FOOD, cleanLine } from '../lib/groceries.js';
 
 test('which receipts may hold clothes: a clothing store, a receipt filed as clothing, or clothing lines on it', () => {
   const r = (o) => ({ is_receipt: true, doc_type: 'receipt', total: 89.99, ...o });
@@ -46,4 +46,14 @@ test('the clothes go to Sentinel with the receipt', async () => {
     delete process.env.SENTINEL_API_KEY;
     server.close();
   }
+});
+
+test("a grocery line's usual pack size goes on to the pantry, never into the printed size or the price book (Nov 14)", () => {
+  const pb = cleanLine({ printed: 'KRAFT PB SMTH', item: 'peanut butter', food_type: 'pantry', qty: 1, size_value: null, usual_size_value: 1, usual_size_unit: 'KG', amount: 7.99 });
+  assert.equal(pb.size_value, null);
+  assert.equal(pb.unit, 'each', 'priced per jar, as printed');
+  assert.deepEqual([pb.usual_size_value, pb.usual_size_unit], [1, 'kg']);
+  const printed = cleanLine({ item: 'peanut butter', qty: 1, size_value: 500, size_unit: 'g', usual_size_value: 1, usual_size_unit: 'kg', amount: 4.99 });
+  assert.equal(printed.usual_size_value, undefined, 'printed wins');
+  assert.equal(cleanLine({ item: 'bread', qty: 1, usual_size_value: 1, usual_size_unit: 'loaf', amount: 3 }).usual_size_value, undefined);
 });
