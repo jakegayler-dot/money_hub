@@ -19,8 +19,9 @@ const r2 = (n) => Math.round(Number(n) * 100) / 100;
 const r4 = (n) => Math.round(Number(n) * 10000) / 10000;
 
 export const FOOD_TYPES = ['produce', 'meat & seafood', 'dairy & eggs', 'bakery', 'pantry', 'frozen', 'snacks & sweets', 'drinks',
-  'deli & prepared', 'baby', 'household', 'personal care', 'other'];
-export const NON_FOOD = new Set(['household', 'personal care', 'other']);
+  'deli & prepared', 'baby', 'household', 'personal care', 'clothing', 'other'];
+// Clothing (Nov 14): a Walmart or Costco slip's clothes are their own lines, so they reach Self Hub's wardrobe (lib/clothes.js).
+export const NON_FOOD = new Set(['household', 'personal care', 'clothing', 'other']);
 
 // Store names as they're spoken: "SOBEYS #4471 MELFORT" → Sobeys. Grocery-only
 // chains are groceries whatever was filed; the Co-op, Walmart and Costco also
@@ -224,7 +225,9 @@ export async function pushToSentinel({ receipt_id, store, date, lines }) {
     const res = await fetch(`${url.replace(/\/+$/, '')}/v1/groceries/receipt`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ receipt_id, store, date, lines: lines.map((l) => ({ item: l.item, printed: l.printed })) }),
+      // Size and count too (Nov 14): Sentinel puts what the list didn't cover into Self Hub's pantry by weight.
+      body: JSON.stringify({ receipt_id, store, date, lines: lines.map((l) => ({ item: l.item, printed: l.printed, food_type: l.food_type || null,
+        qty: l.qty ?? null, size_value: l.size_value ?? null, size_unit: l.size_unit || null })) }),
       signal: AbortSignal.timeout(30000),
     });
     const out = await res.json().catch(() => null);

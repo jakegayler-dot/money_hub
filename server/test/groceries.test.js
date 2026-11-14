@@ -115,7 +115,7 @@ test("a fresh receipt goes to Sentinel's shopping list", async () => {
     assert.deepEqual(out.ticked, [{ title: 'Milk' }]);
     assert.equal(got.url, '/v1/groceries/receipt');
     assert.equal(got.auth, 'Bearer k');
-    assert.deepEqual(got.body, { receipt_id: 7, store: 'Co-op', date: '2026-10-22', lines: [{ item: '2% milk', printed: '2% MILK 4L' }] });
+    assert.deepEqual(got.body, { receipt_id: 7, store: 'Co-op', date: '2026-10-22', lines: [{ item: '2% milk', printed: '2% MILK 4L', food_type: null, qty: null, size_value: null, size_unit: null }] });
   } finally {
     delete process.env.SENTINEL_URL;
     delete process.env.SENTINEL_API_KEY;

@@ -260,8 +260,11 @@ export async function processReceipt(id) {
     }
     await pool.query(`UPDATE receipts SET status = 'unmatched', extracted = $2, error = NULL WHERE id = $1`, [id, ex]);
     await matchReceipt(id);
-    // A grocery receipt is catalogued line by line (lib/groceries.js) in the background.
-    import('./groceries.js').then((g) => g.catalogueIfGrocery(id)).catch((e) => console.error('Grocery catalogue failed', id, e.message));
+    // A grocery receipt is catalogued line by line (lib/groceries.js) in the background; then any clothes on it (or on a
+    // clothing receipt) go to Self Hub's wardrobe through Sentinel (lib/clothes.js).
+    import('./groceries.js').then((g) => g.catalogueIfGrocery(id))
+      .then((grocery) => import('./clothes.js').then((c) => c.clothesIfAny(id, grocery)))
+      .catch((e) => console.error('Grocery or clothes catalogue failed', id, e.message));
   } catch (e) {
     await pool.query(`UPDATE receipts SET status = 'failed', error = $2 WHERE id = $1`, [id, String(e.message).slice(0, 500)]);
   }
