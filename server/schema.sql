@@ -1850,3 +1850,8 @@ DELETE FROM budget_lines WHERE key = 'vehicle';
 -- Calves (Nov 7): when the animals in a market-livestock item were born (the cattle manager sends it; the group's
 -- earliest birth date). They can't be sold before 6 months old (lib/inventoryForecast.js SELLABLE_MONTHS).
 ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS born_on DATE;
+
+-- Clothes (Nov 14, lib/clothes.js): where a receipt stands with the wardrobe: sent, none, or failed (clothesSweep tries a failed
+-- one again, up to 3 times; NULL = not looked at).
+ALTER TABLE receipts ADD COLUMN IF NOT EXISTS clothes TEXT;
+ALTER TABLE receipts ADD COLUMN IF NOT EXISTS clothes_tries INTEGER NOT NULL DEFAULT 0;

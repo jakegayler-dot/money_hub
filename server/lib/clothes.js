@@ -130,13 +130,46 @@ export async function clothesIfAny(id, grocery = null) {
   const { rows: [rc] } = await pool.query('SELECT * FROM receipts WHERE id = $1', [id]);
   const ex = rc?.extracted;
   if (!rc || !ex) return null;
+  // receipts.clothes says where it stands: sent, none, or failed (tried again by clothesSweep, up to MAX_TRIES).
+  const mark = (v) => pool.query(`UPDATE receipts SET clothes = $2, clothes_tries = COALESCE(clothes_tries, 0) + (CASE WHEN $2 = 'failed' THEN 1 ELSE 0 END)
+    WHERE id = $1`, [id, v]).catch((e) => console.error('Clothes mark failed', id, e.message));
   const maybe = grocery ? (grocery.lines || []).some((l) => l.food_type === 'clothing') : looksLikeClothes(ex);
-  if (!maybe) return null;
+  if (!maybe) { await mark('none'); return null; }
   const date = /^\d{4}-\d{2}-\d{2}$/.test(String(ex.date)) ? ex.date : toISODate(rc.uploaded_at);
   const age = (new Date(`${reginaToday()}T12:00:00Z`) - new Date(`${date}T12:00:00Z`)) / 86400000;
-  if (age > MAX_AGE_DAYS) return null;
-  const read = await readClothes(rc, ex);
+  if (age > MAX_AGE_DAYS) { await mark('none'); return null; }
+  let read;
+  try { read = await readClothes(rc, ex); } catch (e) {
+    console.error('Clothes read failed', id, e.message);
+    await mark('failed');
+    return null;
+  }
   const items = (Array.isArray(read.items) ? read.items : []).map(cleanItem).filter(Boolean);
-  if (read.is_clothing === false || !items.length) return null;
-  return pushClothes({ receipt_id: id, store: storeName(ex.party), date, items });
+  if (read.is_clothing === false || !items.length) { await mark('none'); return null; }
+  const out = await pushClothes({ receipt_id: id, store: storeName(ex.party), date, items });
+  await mark(out ? 'sent' : 'failed');
+  return out;
+}
+
+const MAX_TRIES = 3;
+/** What clothesIfAny is told about a receipt in the sweep: a catalogued grocery slip by its clothing lines, else nothing. */
+export const sweepGrocery = (r) => (r.grocery === 'catalogued' ? { lines: r.clothing_lines ? [{ food_type: 'clothing' }] : [] } : null);
+
+/**
+ * Clothes not yet sent (Nov 14: an H&M receipt read while the reader was broken never reached the wardrobe): every receipt of
+ * the last 45 days not looked at, or failed fewer than MAX_TRIES times, goes through clothesIfAny again. Sentinel takes a
+ * receipt once, so one sent twice adds nothing.
+ */
+export async function clothesSweep({ limit = 20 } = {}) {
+  if (!process.env.ANTHROPIC_API_KEY || !process.env.SENTINEL_URL) return 0;
+  const { rows } = await pool.query(`SELECT r.id, r.grocery,
+      EXISTS (SELECT 1 FROM grocery_items g WHERE g.receipt_id = r.id AND g.food_type = 'clothing') AS clothing_lines
+    FROM receipts r WHERE r.extracted IS NOT NULL AND r.status NOT IN ('failed', 'not_receipt', 'reading') AND r.grocery IS NOT NULL
+      AND r.uploaded_at > now() - interval '${MAX_AGE_DAYS} days'
+      AND (r.clothes IS NULL OR (r.clothes = 'failed' AND COALESCE(r.clothes_tries, 0) < ${MAX_TRIES}))
+    ORDER BY r.id LIMIT $1`, [limit]);
+  for (const r of rows) {
+    try { await clothesIfAny(r.id, sweepGrocery(r)); } catch (e) { console.error('Clothes sweep', r.id, e.message); }
+  }
+  return rows.length;
 }

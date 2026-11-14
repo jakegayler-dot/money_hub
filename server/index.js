@@ -197,4 +197,10 @@ app.listen(port, () => {
   const stubMatch = () => matchAllStubs().catch((e) => console.error('Paystub matching failed:', e.message));
   setTimeout(stubMatch, 9000);
   setInterval(stubMatch, 6 * 60 * 60 * 1000);
+  // Clothes that didn't reach the wardrobe: tried again (lib/clothes.js clothesSweep).
+  const clothesSweep = () => import('./lib/clothes.js').then((c) => c.clothesSweep())
+    .then((n) => n && console.log(`Clothes sweep looked at ${n} receipt(s).`))
+    .catch((e) => console.error('Clothes sweep failed:', e.message));
+  setTimeout(clothesSweep, 120000);
+  setInterval(clothesSweep, 6 * 60 * 60 * 1000);
 });

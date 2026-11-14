@@ -57,3 +57,10 @@ test("a grocery line's usual pack size goes on to the pantry, never into the pri
   assert.equal(printed.usual_size_value, undefined, 'printed wins');
   assert.equal(cleanLine({ item: 'bread', qty: 1, usual_size_value: 1, usual_size_unit: 'loaf', amount: 3 }).usual_size_value, undefined);
 });
+
+test("the sweep tells clothesIfAny about a catalogued grocery slip by its clothing lines, and reads any other receipt itself (Nov 14)", async () => {
+  const { sweepGrocery } = await import('../lib/clothes.js');
+  assert.deepEqual(sweepGrocery({ grocery: 'catalogued', clothing_lines: true }), { lines: [{ food_type: 'clothing' }] });
+  assert.deepEqual(sweepGrocery({ grocery: 'catalogued', clothing_lines: false }), { lines: [] });
+  assert.equal(sweepGrocery({ grocery: 'not_grocery', clothing_lines: false }), null, 'H&M: not a grocery slip, so it is read as a clothing receipt');
+});
