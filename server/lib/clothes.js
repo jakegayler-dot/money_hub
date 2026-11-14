@@ -160,14 +160,14 @@ export const sweepGrocery = (r) => (r.grocery === 'catalogued' ? { lines: r.clot
  * the last 45 days not looked at, or failed fewer than MAX_TRIES times, goes through clothesIfAny again. Sentinel takes a
  * receipt once, so one sent twice adds nothing.
  */
-export async function clothesSweep({ limit = 20 } = {}) {
+export async function clothesSweep({ limit = 60 } = {}) {
   if (!process.env.ANTHROPIC_API_KEY || !process.env.SENTINEL_URL) return 0;
   const { rows } = await pool.query(`SELECT r.id, r.grocery,
       EXISTS (SELECT 1 FROM grocery_items g WHERE g.receipt_id = r.id AND g.food_type = 'clothing') AS clothing_lines
     FROM receipts r WHERE r.extracted IS NOT NULL AND r.status NOT IN ('failed', 'not_receipt', 'reading') AND r.grocery IS NOT NULL
       AND r.uploaded_at > now() - interval '${MAX_AGE_DAYS} days'
       AND (r.clothes IS NULL OR (r.clothes = 'failed' AND COALESCE(r.clothes_tries, 0) < ${MAX_TRIES}))
-    ORDER BY r.id LIMIT $1`, [limit]);
+    ORDER BY r.id DESC LIMIT $1`, [limit]); // newest first: the receipt he just scanned matters most
   for (const r of rows) {
     try { await clothesIfAny(r.id, sweepGrocery(r)); } catch (e) { console.error('Clothes sweep', r.id, e.message); }
   }
