@@ -40,59 +40,24 @@ export function gstPeriods(year, frequency = 'quarterly') {
 }
 
 /**
- * GST for one year by period: collected on farm sales, input tax credits
- * on farm purchases (the farm share of any GST recorded), and the net —
- * negative is a refund to the farm. Also counts farm purchases with no GST
- * recorded, so missing receipts are visible.
+ * GST for one year by period, from each period's return (lib/gstReturn.js): GST collected (line 103), input tax credits
+ * less any taken back (lines 106 - 104), and the net (line 109; negative is a refund to the farm). purchases_no_gst counts
+ * the farm purchases where GST is charged but none is recorded, so missing receipts are visible.
  */
 export async function gstReport(year) {
-  const frequency = String(await getSetting('gst_filing_frequency', 'quarterly'));
-  const periods = gstPeriods(year, frequency);
-  const [{ rows }, { rows: returns }] = await Promise.all([
-    pool.query(
-      `SELECT t.id, t.date, t.amount, t.gst_amount, t.ledger, t.segment, t.is_segment_split,
-              t.segment_grain_pct, t.segment_livestock_pct, t.segment_jake_pct, t.segment_ashley_pct
-       FROM transactions t
-       WHERE NOT t.is_transfer AND NOT t.is_debt_service AND EXTRACT(YEAR FROM t.date) = $1`,
-      [year]
-    ),
-    pool.query(`SELECT * FROM gst_returns WHERE EXTRACT(YEAR FROM period_start) = $1`, [year]),
-  ]);
-  const byStart = new Map(returns.map((r) => [toISODate(r.period_start), r]));
-  const today = todayISO();
-  const out = periods.map((p) => ({ ...p, collected: 0, itc: 0, purchases: 0, purchases_no_gst: 0, purchases_no_gst_amount: 0 }));
-  for (const t of rows) {
-    const d = toISODate(t.date);
-    const p = out.find((x) => d >= x.start && d <= x.end);
-    if (!p) continue;
-    const share = businessShare(t);
-    if (!share) continue;
-    const amt = Number(t.amount);
-    const gst = t.gst_amount == null ? null : Number(t.gst_amount);
-    if (amt < 0) {
-      p.purchases += 1;
-      if (gst == null) { p.purchases_no_gst += 1; p.purchases_no_gst_amount += -amt * share; }
-      else p.itc += gst * share;
-    } else if (gst) {
-      p.collected += gst * share;
-    }
-  }
+  const { gstYear } = await import('./gstReturn.js');
+  const { frequency, returns } = await gstYear(year);
   return {
     year, frequency,
-    periods: out.map((p) => {
-      const ret = byStart.get(p.start);
-      const net = r2(p.collected - p.itc);
-      return {
-        ...p,
-        collected: r2(p.collected), itc: r2(p.itc), net,
-        purchases_no_gst_amount: r2(p.purchases_no_gst_amount),
-        status: ret?.settlement_transaction_id ? 'settled' : ret?.filed_on ? 'filed' : p.end >= today ? 'current' : p.due < today ? 'overdue' : 'to_file',
-        filed_on: ret?.filed_on ? toISODate(ret.filed_on) : null,
-        filed_net: ret?.net_amount != null ? Number(ret.net_amount) : null,
-        settlement_transaction_id: ret?.settlement_transaction_id || null,
-        notes: ret?.notes || null,
-      };
-    }),
+    periods: returns.map((r) => ({
+      start: r.period.start, end: r.period.end, due: r.period.due, label: r.period.label,
+      collected: r.lines[103], itc: r2(r.lines[106] - r.lines[104]), net: r.lines[109],
+      purchases: r.totals.purchases, purchases_no_gst: r.flags.gst_missing.count, purchases_no_gst_amount: r.flags.gst_missing.farm_amount,
+      itc_up_to: r.flags.gst_missing.itc_up_to, no_receipt: r.flags.no_receipt.count, open_flags: r.flags.open, ready: r.ready,
+      status: r.period.status,
+      filed_on: r.filed?.filed_on || null, filed_net: r.filed?.net_amount ?? null,
+      settlement_transaction_id: r.filed?.settlement_transaction_id || null, notes: r.filed?.notes || null,
+    })),
   };
 }
 

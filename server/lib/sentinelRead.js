@@ -1288,6 +1288,28 @@ def({
   },
 });
 
+// ---------- one GST return, line by line ----------
+def({
+  name: 'gst_return', mode: 'js', idType: 'text', summary: true,
+  description: "SUMMARY. One GST return (GST34, regular method) per reporting period of a year (default this year), worked out from the ledger: the lines (101 sales and other revenue in whole dollars, 90/91 its split, 103 GST collected, 104 credits taken back, 106 input tax credits incl. ones carried from filed periods, 108, 109 net tax, 114 refund or 115 payment), what's flagged (purchases claiming GST with no receipt, GST not recorded on taxable purchases with the most it could add, receipts from $100 without the supplier's GST number, entries with no category, unpaid farm invoices with GST) and the flagged entries themselves (open_items). ready = nothing flagged. id = period start. The Tax page's GST return shows the same.",
+  fields: ['id', 'label', 'start', 'end', 'due', 'status', 'business_number', 'lines', 'totals', 'flags', 'ready', 'open_items', 'carried', 'filed', 'currency'],
+  search: ['label', 'status'], date: 'start',
+  filters: [{ name: 'year', type: 'year', param: true, doc: 'YYYY (default: this year)' }, f.jsEq('status', 'status', ['current', 'to_file', 'overdue', 'filed', 'settled'])],
+  load: async (q, ctx) => {
+    const { gstYear, FLAG_TEXT } = await import('./gstReturn.js');
+    const g = await gstYear(q.year || Number(ctx.today.slice(0, 4)));
+    return g.returns.map((r) => ({
+      id: r.period.start, label: r.period.label, start: r.period.start, end: r.period.end, due: r.period.due, status: r.period.status,
+      business_number: r.business_number, lines: r.lines, totals: r.totals, flags: r.flags, ready: r.ready,
+      open_items: r.expenses.filter((e) => e.flags.length).slice(0, 40).map((e) => ({
+        transaction_id: e.transaction_id, date: e.date, supplier: e.payee, description: e.description, category: e.category,
+        farm_amount: e.farm_amount, itc: e.itc, itc_up_to: e.itc_up_to, issues: e.flags.map((x) => FLAG_TEXT[x]),
+      })),
+      carried: r.carried, filed: r.filed, currency: CURRENCY,
+    }));
+  },
+});
+
 // ================= Engine =================
 
 const byName = new Map(collections.map((c) => [c.name, c]));

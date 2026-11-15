@@ -21,6 +21,7 @@ import { closedMonth } from './periods.js';
 import sharp from 'sharp';
 import { confirmFromTicket } from './contracts.js';
 import { OWNERS } from './segments.js';
+import { cleanGstNumber } from './gstReturn.js';
 
 // Handwritten receipt books and cheque stubs need a strong reader; the small
 // model guessed at them. Override with RECEIPT_MODEL in Railway if needed.
@@ -51,6 +52,7 @@ Record what you read by calling the record_document tool with these fields (angl
   "total": <receipt/invoice: amount paid or owed, positive (negative only for a refund). sales_ticket: the NET paid to the farm>,
   "gst": <GST (or the GST part of HST) exactly as printed, else null. Never calculate it>,
   "pst": <Saskatchewan PST as printed, else null>,
+  "gst_number": <the seller's GST/HST registration number as printed (9 digits, usually followed by RT and 4 digits), else null>,
   "party": <the business as printed — reuse the spelling from KNOWN BUSINESSES when it's the same one>,
   "card_last4": <last 4 digits of the card or account used, if printed, else null>,
   "cheque_number": <if it says it was paid by cheque, the cheque number as written (digits only), else null>,
@@ -470,6 +472,10 @@ export async function attachReceipt(receiptId, txId, client = pool, { extra = fa
   const set = (col, v) => { vals.push(v); sets.push(`${col} = $${vals.length}`); };
   if (tx.gst_amount == null && ex.gst != null && Math.abs(Number(ex.gst)) <= Math.abs(Number(tx.amount))) set('gst_amount', Math.abs(r2(ex.gst)));
   if (!tx.payee_id && ex.party) set('payee_id', await payeeId(client, ex.party));
+  // The supplier's GST number, kept on the payee: CRA needs it on a receipt from $100 to allow the credit (lib/gstReturn.js).
+  const gstNo = cleanGstNumber(ex.gst_number);
+  const payeeForNo = tx.payee_id || (ex.party ? await payeeId(client, ex.party) : null);
+  if (gstNo && payeeForNo) await client.query('UPDATE payees SET gst_number = COALESCE(gst_number, $2) WHERE id = $1', [payeeForNo, gstNo]);
   if (!tx.category_id && !tx.is_split && ex.category_id) set('category_id', ex.category_id);
   const pct = Number(ex.farm_share_pct);
   if (!tx.is_split && !tx.is_segment_split && Number.isFinite(pct) && pct > 5 && pct < 95) {

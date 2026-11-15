@@ -2018,3 +2018,27 @@ button:active { transform: none !important; }
 .cal-tick { display: inline-grid; vertical-align: -4px; margin-right: 8px; }
 .cal-tick.on { border-color: var(--positive, #3fb27f); color: var(--positive, #3fb27f); }
 .cal-item.done .cal-title > a, .cal-item.done .cal-title { text-decoration: line-through; text-decoration-color: var(--text-faint); }
+
+/* The GST return (pages/GstReturn.jsx, Nov 15) */
+.gst-head-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.gst-flag { font-size: 12.5px; color: var(--gold-bright); }
+.gst-flag + .gst-flag { margin-top: 3px; }
+.gst-actions { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; min-width: 180px; }
+.gst-inline { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.gst-inline input[type="number"] { width: 90px; }
+.gst-inline input:not([type]) { width: 150px; }
+.gst-lines td { padding-top: 6px; padding-bottom: 6px; }
+.gst-line-no { width: 54px; font-variant-numeric: tabular-nums; color: var(--text-muted); font-weight: 600; }
+.gst-line-val { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.gst-lines tr.key td { color: var(--text); font-weight: 600; }
+.gst-lines tr.key .gst-line-no { color: var(--gold-bright); }
+.gst-group { border-top: 1px solid var(--border); }
+.gst-group-head { all: unset; box-sizing: border-box; width: 100%; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 10px 16px; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text); }
+.gst-group-head:hover { background: rgba(255, 255, 255, 0.03); }
+.gst-group-head:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
+.gst-flagged td:first-child { box-shadow: inset 3px 0 0 var(--gold); }
+@media (max-width: 760px) {
+  .gst-actions { min-width: 140px; }
+  .gst-inline input:not([type]) { width: 130px; }
+}

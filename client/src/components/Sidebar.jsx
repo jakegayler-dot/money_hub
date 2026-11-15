@@ -44,6 +44,7 @@ export const GROUPS = [
     { to: '/expenses', label: 'Income & expenses' },
     { to: '/financials', label: 'Financial statements' },
     { to: '/tax', label: 'Tax' },
+    { to: '/gst', label: 'GST return' },
     { to: '/books', label: 'Year-end books' },
     { to: '/contracts', label: 'Grain & cattle contracts' },
     { to: '/assets', label: 'Assets & inventory' },

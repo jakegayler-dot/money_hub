@@ -1855,3 +1855,24 @@ ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS born_on DATE;
 -- one again, up to 3 times; NULL = not looked at).
 ALTER TABLE receipts ADD COLUMN IF NOT EXISTS clothes TEXT;
 ALTER TABLE receipts ADD COLUMN IF NOT EXISTS clothes_tries INTEGER NOT NULL DEFAULT 0;
+
+-- The GST return (lib/gstReturn.js, Nov 15: "a gst return system that compiles all eligible expenses, flags if there is no
+-- receipt, automatically determines the required data points for the gst return for each quarter"). How GST applies to a
+-- purchase: 'taxable' (GST charged: an input tax credit), 'zero_rated' (seed, fertilizer, chemical, feed, livestock),
+-- 'exempt' (insurance, interest, wages, property tax...). On an entry (Jake's choice for that one) or on a category (for
+-- everything in it); NULL = worked out (GST recorded, then the category's name).
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS gst_treatment TEXT;
+ALTER TABLE expense_categories ADD COLUMN IF NOT EXISTS gst_treatment TEXT;
+DO $$ BEGIN
+  ALTER TABLE transactions ADD CONSTRAINT transactions_gst_treatment_check CHECK (gst_treatment IS NULL OR gst_treatment IN ('taxable', 'zero_rated', 'exempt'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  ALTER TABLE expense_categories ADD CONSTRAINT expense_categories_gst_treatment_check CHECK (gst_treatment IS NULL OR gst_treatment IN ('taxable', 'zero_rated', 'exempt'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- A supplier's GST/HST registration number, from its receipts (needed on a receipt from $100 to claim the credit).
+ALTER TABLE payees ADD COLUMN IF NOT EXISTS gst_number TEXT;
+-- A return as filed: its lines, what it claimed entry by entry ({transaction_id: itc}) and the earlier periods' credits it
+-- carried, so a receipt read after filing is claimed on the next return and nothing is claimed twice.
+ALTER TABLE gst_returns ADD COLUMN IF NOT EXISTS lines JSONB;
+ALTER TABLE gst_returns ADD COLUMN IF NOT EXISTS claimed JSONB;
+ALTER TABLE gst_returns ADD COLUMN IF NOT EXISTS carried JSONB;

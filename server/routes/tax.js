@@ -7,6 +7,8 @@ import { toISODate, addDays } from '../lib/dates.js';
 import { CRA_GST_SQL } from '../lib/gstMatch.js';
 import { TAX_KINDS, guessTaxKind } from '../lib/taxMoves.js';
 import { taxPrograms, saveTaxProfile } from '../lib/taxPrograms.js';
+import { gstReturn, claimOf, TREATMENTS, FLAG_TEXT, TREATMENT_LABEL, cleanGstNumber } from '../lib/gstReturn.js';
+import { cleanGst } from '../lib/postings.js';
 
 const router = Router();
 const yearOf = (q) => Number(q) || new Date().getFullYear();
@@ -33,7 +35,100 @@ const findPeriod = async (start) => {
   return gstPeriods(year, frequency).find((p) => p.start === start) || null;
 };
 
-// Record a return as filed: the date and the net as filed (negative = refund).
+// One period's return (lib/gstReturn.js): the GST34 lines, every farm purchase and sale behind them, and the flags.
+router.get('/gst/return', ah(async (req, res) => {
+  const r = await gstReturn(String(req.query.period_start || ''));
+  if (!r) return res.status(400).json({ error: 'Unknown GST period.' });
+  res.json({ ...r, flag_text: FLAG_TEXT, treatments: TREATMENT_LABEL, line_labels: LINE_LABELS });
+}));
+
+// The farm's GST/HST account number (BN + RT0001), shown on the return.
+router.put('/gst/business-number', ah(async (req, res) => {
+  const raw = String(req.body?.business_number || '').trim();
+  if (!raw) { await clearSetting(pool, 'gst_business_number'); return res.json({ business_number: null }); }
+  const bn = cleanGstNumber(raw);
+  if (!bn || !/RT\d{4}$/.test(bn)) return res.status(400).json({ error: 'A GST account number is the 9-digit business number then RT and 4 digits, e.g. 123456789 RT0001.' });
+  await setSetting(pool, 'gst_business_number', bn);
+  res.json({ business_number: bn });
+}));
+
+const treatmentOf = (v) => (v === null || v === '' || v === undefined ? null : TREATMENTS.includes(v) ? v : undefined);
+
+// How GST applies to one entry (null: worked out again), and the GST from its receipt.
+router.put('/gst/entry/:id', ah(async (req, res) => {
+  const { rows: [tx] } = await pool.query('SELECT * FROM transactions WHERE id = $1', [req.params.id]);
+  if (!tx) return res.status(404).json({ error: 'Transaction not found.' });
+  const sets = [];
+  const vals = [tx.id];
+  if (req.body?.treatment !== undefined) {
+    const t = treatmentOf(req.body.treatment);
+    if (t === undefined) return res.status(400).json({ error: `treatment must be one of ${TREATMENTS.join(', ')} or null` });
+    vals.push(t); sets.push(`gst_treatment = $${vals.length}`);
+  }
+  // GST from the receipt changes what the ledger says, so the month must be open.
+  if (req.body?.gst_amount !== undefined) {
+    let g;
+    try { g = cleanGst(req.body.gst_amount, tx.amount); } catch (e) { return res.status(400).json({ error: e.message }); }
+    await assertOpen(pool, tx.date);
+    vals.push(g); sets.push(`gst_amount = $${vals.length}`);
+  }
+  if (!sets.length) return res.status(400).json({ error: 'Nothing to change.' });
+  await pool.query(`UPDATE transactions SET ${sets.join(', ')} WHERE id = $1`, vals);
+  res.json({ ok: true });
+}));
+
+// How GST applies to everything in a category (null: guessed from its name again).
+router.put('/gst/category/:id', ah(async (req, res) => {
+  const t = treatmentOf(req.body?.treatment);
+  if (t === undefined) return res.status(400).json({ error: `treatment must be one of ${TREATMENTS.join(', ')} or null` });
+  const { rowCount } = await pool.query('UPDATE expense_categories SET gst_treatment = $2 WHERE id = $1', [req.params.id, t]);
+  if (!rowCount) return res.status(404).json({ error: 'Category not found.' });
+  res.json({ ok: true });
+}));
+
+// A supplier's GST number, typed from a receipt.
+router.put('/gst/payee/:id', ah(async (req, res) => {
+  const raw = String(req.body?.gst_number || '').trim();
+  const n = raw ? cleanGstNumber(raw) : null;
+  if (raw && !n) return res.status(400).json({ error: 'A GST number starts with 9 digits (then RT and 4 more).' });
+  const { rowCount } = await pool.query('UPDATE payees SET gst_number = $2 WHERE id = $1', [req.params.id, n]);
+  if (!rowCount) return res.status(404).json({ error: 'Payee not found.' });
+  res.json({ gst_number: n });
+}));
+
+const LINE_LABELS = [
+  [90, 'Sales in Canada, taxable incl. zero-rated (electronic filers, optional)'],
+  [91, 'Exempt supplies and other revenue (electronic filers, optional)'],
+  [101, 'Sales and other revenue (whole dollars)'], [103, 'GST collected or collectible'], [104, 'Adjustments (increase net tax)'],
+  [105, 'Total GST and adjustments'], [106, 'Input tax credits (ITCs)'], [107, 'Adjustments (decrease net tax)'], [108, 'Total ITCs and adjustments'],
+  [109, 'Net tax'], [110, 'Instalments paid'], [111, 'Rebates'], ['113A', 'Balance'], [205, 'GST on taxable real property'],
+  [405, 'Other GST to be self-assessed'], ['113C', 'Balance after self-assessment'], [114, 'Refund claimed'], [115, 'Payment enclosed'],
+];
+
+// The working papers for one period, for the accountant or the file: the lines, then every entry.
+router.get('/gst/return.csv', ah(async (req, res) => {
+  const r = await gstReturn(String(req.query.period_start || ''));
+  if (!r) return res.status(400).json({ error: 'Unknown GST period.' });
+  const q = (v) => (v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+  const row = (...xs) => xs.map(q).join(',');
+  const out = [row('GST return', r.period.label, `${r.period.start} to ${r.period.end}`, `due ${r.period.due}`, r.business_number || '')];
+  for (const [k, label] of LINE_LABELS) out.push(row(`Line ${k}`, label, r.lines[k]));
+  out.push('', row('Purchases', 'date', 'supplier', 'description', 'category', 'paid from', 'total', 'farm share %', 'farm amount', 'GST recorded', 'GST applies', 'ITC', 'receipt', 'flags'));
+  for (const e of r.expenses) out.push(row('', e.date, e.payee, e.description, e.category, e.paid_from, e.amount, e.farm_share, e.farm_amount, e.gst_recorded,
+    TREATMENT_LABEL[e.treatment] + (e.treatment_source === 'guess' ? ' (guessed)' : ''), e.itc,
+    e.receipt ? `receipt ${e.receipt.id}` : e.farm_document ? `farm ${e.farm_document.kind} ${e.farm_document.number || ''}` : 'NONE',
+    e.flags.map((f) => FLAG_TEXT[f]).join('; ')));
+  out.push('', row('Sales', 'date', 'from', 'description', 'category', 'line', 'farm amount', 'GST collected', 'revenue'));
+  for (const x of r.sales) out.push(row('', x.date, x.payee, x.description, x.category, x.line, x.farm_amount, x.gst_collected, x.revenue));
+  if (r.carried.length) {
+    out.push('', row('Earlier periods', 'period', 'date', 'supplier', 'ITC'));
+    for (const c of r.carried) out.push(row('', c.period, c.date, c.payee, c.itc));
+  }
+  res.set('Content-Type', 'text/csv; charset=utf-8').set('Content-Disposition', `attachment; filename="gst-${r.period.start}.csv"`).send(out.join('\n'));
+}));
+
+// Record a return as filed: the date and the net as filed (negative = refund). What it claimed is kept with it, entry by
+// entry, so a receipt read later is claimed on the next return and nothing is claimed twice.
 router.post('/gst/file', ah(async (req, res) => {
   const { period_start, filed_on, net_amount, notes = null } = req.body || {};
   const p = await findPeriod(period_start);
@@ -41,10 +136,16 @@ router.post('/gst/file', ah(async (req, res) => {
   if (!filed_on || net_amount === undefined || net_amount === '' || Number.isNaN(Number(net_amount))) {
     return res.status(400).json({ error: 'Filed date and the net amount as filed are required (negative for a refund).' });
   }
+  const r = await gstReturn(p.start);
+  // Filed again (a correction): the first claim stands.
+  const fresh = !r.filed;
   await pool.query(
-    `INSERT INTO gst_returns (period_start, period_end, filed_on, net_amount, notes) VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (period_start) DO UPDATE SET filed_on = EXCLUDED.filed_on, net_amount = EXCLUDED.net_amount, notes = EXCLUDED.notes`,
-    [p.start, p.end, filed_on, Number(net_amount), notes]
+    `INSERT INTO gst_returns (period_start, period_end, filed_on, net_amount, notes, lines, claimed, carried) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (period_start) DO UPDATE SET filed_on = EXCLUDED.filed_on, net_amount = EXCLUDED.net_amount, notes = EXCLUDED.notes,
+       lines = COALESCE(gst_returns.lines, EXCLUDED.lines), claimed = COALESCE(gst_returns.claimed, EXCLUDED.claimed),
+       carried = COALESCE(gst_returns.carried, EXCLUDED.carried)`,
+    [p.start, p.end, filed_on, Number(net_amount), notes, fresh ? JSON.stringify(r.lines) : null, fresh ? JSON.stringify(claimOf(r)) : null,
+      fresh ? JSON.stringify(r.carried) : null]
   );
   res.json({ filed: p.start });
 }));

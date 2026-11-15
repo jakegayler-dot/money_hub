@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { money, localToday } from '../format.js';
 import { cents } from '../components/SplitEditor.jsx';
 import CraMoney from '../components/CraMoney.jsx';
@@ -196,6 +197,7 @@ function Gst({ gst, reload, send }) {
         </select>
       </div>
       <p>
+        Each period opens its return, line by line, with every purchase behind it and what's missing.
         Exact GST from receipts and invoices only. Input tax credits are the farm's share of GST paid; GST collected is
         on farm sales that carried it (grain and cattle don't). Net below zero is a refund. When it arrives, mark the
         deposit in Money with CRA above so it isn't counted as income; linking it to its quarters here is for the record.
@@ -206,7 +208,8 @@ function Gst({ gst, reload, send }) {
         <tbody>
           {gst.periods.map((p) => (
             <tr key={p.start}>
-              <td>{p.label}<div className="split-lines">{p.start} → {p.end}</div></td>
+              <td><Link to={`/gst?period=${p.start}`}>{p.label}</Link><div className="split-lines">{p.start} → {p.end}</div>
+                {p.open_flags > 0 && <div className="split-lines">{p.open_flags} to fix{p.no_receipt ? `, ${p.no_receipt} without a receipt` : ''}</div>}</td>
               <td>{cents(p.collected)}</td>
               <td>
                 {cents(p.itc)}
