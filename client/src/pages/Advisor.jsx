@@ -61,7 +61,7 @@ export default function Advisor() {
     <>
       <div className="page-header">
         <h1 className="page-title">Advisor</h1>
-        <span className="page-meta">US${spend.spent.toFixed(2)} of US${spend.budget.toFixed(0)} this week</span>
+        <span className="page-meta">US${spend.spent.toFixed(2)}{spend.budget ? ` of US$${spend.budget.toFixed(0)}` : ""} this week</span>
       </div>
 
       <div className="adv">

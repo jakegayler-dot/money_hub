@@ -7,8 +7,8 @@
 // One call = one turn in a thread: the new message in, the advisor's reply
 // out, both saved. Claude Opus 5.5 for Jake's own questions and Sentinel's
 // "deep" ones; Sonnet 5.5 for Sentinel's quick checks. Its own weekly
-// budget (setting advisor_weekly_budget_usd, US$20 by default): over 80% it
-// drops to Sonnet; at 100% it stops until the week rolls on.
+// spend is tracked; a weekly cap (setting advisor_weekly_cap_usd) only applies if Jake sets one: none by default
+// (Jake, Nov 15: "You gotta stop limiting all my agents"). With a cap, over 80% it drops to Sonnet; at 100% it stops.
 import { pool, getSetting } from '../../db.js';
 import { TOOL_DEFS, runTool, activeNotes, AdvisorToolError } from './tools.js';
 import { reginaToday } from '../sentinelSnapshot.js';
@@ -19,7 +19,7 @@ export const DEEP_MODEL = process.env.ADVISOR_DEEP_MODEL || 'claude-sonnet-5-5';
 export const QUICK_MODEL = process.env.ADVISOR_MODEL || 'claude-sonnet-5-5';
 const MAX_ROUNDS = 16;
 const HISTORY = 24; // messages of the thread the advisor sees
-export const DEFAULT_WEEKLY_BUDGET = 20;
+export const DEFAULT_WEEKLY_BUDGET = 0; // no cap (Nov 15); the old advisor_weekly_budget_usd setting is no longer read
 
 // US$ per million tokens: [input, output, cache read, cache write] (the same table Sentinel uses, 2026-10-08).
 const PRICES = {
@@ -58,9 +58,10 @@ THE THREAD: messages from Jake are marked "Jake:", from Andrew "Andrew:". When A
 
 export async function weeklySpend() {
   const { rows: [r] } = await pool.query(`SELECT COALESCE(SUM(cost_usd), 0) AS spent FROM advisor_usage WHERE created_at > now() - interval '7 days'`);
-  const budget = Number(await getSetting('advisor_weekly_budget_usd', DEFAULT_WEEKLY_BUDGET)) || DEFAULT_WEEKLY_BUDGET;
+  const budget = Math.max(0, Number(await getSetting('advisor_weekly_cap_usd', DEFAULT_WEEKLY_BUDGET)) || 0);
   const spent = Number(r.spent);
-  return { spent: Math.round(spent * 100) / 100, budget, share: budget > 0 ? spent / budget : 1, state: spent >= budget ? 'stopped' : spent >= budget * 0.8 ? 'low' : 'ok' };
+  if (!budget) return { spent: Math.round(spent * 100) / 100, budget: null, share: 0, state: 'ok' }; // no cap
+  return { spent: Math.round(spent * 100) / 100, budget, share: spent / budget, state: spent >= budget ? 'stopped' : spent >= budget * 0.8 ? 'low' : 'ok' };
 }
 
 /**
@@ -165,7 +166,7 @@ export async function advise(opts) {
 
   const spend = await weeklySpend();
   if (spend.state === 'stopped') {
-    const reply = `I've used this week's advisor budget (US$${spend.spent.toFixed(2)} of US$${spend.budget.toFixed(2)}), so I'm stopped until it rolls over. The budget is the advisor_weekly_budget_usd setting in Money Hub.`;
+    const reply = `I've used this week's advisor budget (US$${spend.spent.toFixed(2)} of US$${spend.budget.toFixed(2)}), so I'm stopped until it rolls over. The cap is the advisor_weekly_cap_usd setting in Money Hub (0 is no cap).`;
     const { rows: [out] } = await pool.query("INSERT INTO advisor_messages (thread_id, author, body, meta) VALUES ($1, 'advisor', $2, $3) RETURNING id", [thread.id, reply, JSON.stringify({ budget_stopped: true })]);
     return { reply, thread, message_id: out.id, model: null, cost_usd: 0, tools: [], saved: [], remembered: [], cites: [], sources: [], budget: spend };
   }

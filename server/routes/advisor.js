@@ -68,9 +68,9 @@ router.delete('/notes/:id', ah(async (req, res) => {
 
 router.put('/budget', ah(async (req, res) => {
   const usd = Number(req.body?.usd);
-  if (!Number.isFinite(usd) || usd < 0 || usd > 1000) return res.status(422).json({ error: 'A weekly budget in US dollars, 0 to 1,000.' });
+  if (!Number.isFinite(usd) || usd < 0 || usd > 1000) return res.status(422).json({ error: 'A weekly cap in US dollars, 0 (no cap) to 1,000.' });
   await pool.query(
-    `INSERT INTO settings (key, value) VALUES ('advisor_weekly_budget_usd', $1) ON CONFLICT (key) DO UPDATE SET value = $1`, [JSON.stringify(usd)]);
+    `INSERT INTO settings (key, value) VALUES ('advisor_weekly_cap_usd', $1) ON CONFLICT (key) DO UPDATE SET value = $1`, [JSON.stringify(usd)]);
   res.json({ spend: await weeklySpend() });
 }));
 

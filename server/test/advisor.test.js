@@ -109,8 +109,12 @@ test('tax library: best match first, with its citation', () => {
   assert.equal(hits[0].cite, 'ITA s.146; CRA RRSP guide');
 });
 
-test('weekly budget: low drops to Sonnet, used up stops', async () => {
-  await db.query(`INSERT INTO settings (key, value) VALUES ('advisor_weekly_budget_usd', '1') ON CONFLICT (key) DO UPDATE SET value = '1'`);
+test('no cap unless Jake sets one (Nov 15); with one, low drops to Sonnet, used up stops', async () => {
+  await db.query(`DELETE FROM settings WHERE key = 'advisor_weekly_cap_usd'`);
+  await db.query(`DELETE FROM advisor_usage`);
+  await db.query(`INSERT INTO advisor_usage (model, cost_usd) VALUES ('claude-opus-5-5', 500)`);
+  assert.equal((await weeklySpend()).state, 'ok', 'no cap: never stopped');
+  await db.query(`INSERT INTO settings (key, value) VALUES ('advisor_weekly_cap_usd', '1') ON CONFLICT (key) DO UPDATE SET value = '1'`);
   await db.query(`DELETE FROM advisor_usage`);
   await db.query(`INSERT INTO advisor_usage (model, cost_usd) VALUES ('claude-opus-5-5', 0.85)`);
   const low = fakeClaude([{ stop_reason: 'end_turn', content: [{ type: 'text', text: 'ok' }] }]);
