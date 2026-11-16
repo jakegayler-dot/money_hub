@@ -41,6 +41,9 @@ before(async () => {
   await add('2026-11-05', -380, 'Repairs & maintenance', { split: [50, 50] }); // $190 farm on Other, $190 Jake's on Household & home
   await add('2026-11-08', -640, 'Groceries', { account: joint, segment: 'jake' });
   await add('2026-11-06', -3400, 'Machinery', { capex: true, to: 'RB Auction' }); // a small capital buy: Other
+  // Another RB Auction buy, paid against its own one-off invoice (a bill): still a purchase, not something the forecast planned.
+  const welder = await add('2026-11-07', -1150, 'Machinery', { capex: true, to: 'RB Auction' });
+  await one(`INSERT INTO bills (name, ledger, amount, frequency, due_date, status, linked_transaction_id, payee_id) VALUES ('RB Auction invoice 88213', 'business', 1150, 'one_time', '2026-11-07', 'paid', $1, $2) RETURNING id`, [welder.id, payee['RB Auction']]);
   // A planned combine in the same category doesn't swallow the small auction buy: it isn't the combine.
   await one(`INSERT INTO cash_estimates (name, category, direction, amount, frequency, start_date) VALUES ('Combine', 'Machinery', 'outflow', 400000, 'one_time', '2026-11-25') RETURNING id`);
   // A big capital buy the forecast already has as an estimate this month: not in the budget.
@@ -76,14 +79,14 @@ test('the budget is everything the cash flow forecast does not already plan, on 
   const line = (k) => v.lines.find((l) => l.key === k);
   assert.equal(line('fuel').spent, 2000, 'farm fuel is Fuel & vehicle');
   assert.equal(line('fuel').farm, 2000);
-  assert.equal(line('other').spent, 24000 + 190 + 3400 + 1500, 'fertilizer, the farm half of the repair, the RB Auction buy, the seed');
-  assert.equal(line('other').farm, 24000 + 190 + 3400 + 1500);
-  assert.ok(line('other').categories.some((c) => c.name === 'Machinery (capital)' && c.spent === 3400), 'the capital buy is named as one');
+  assert.equal(line('other').spent, 24000 + 190 + 3400 + 1150 + 1500, 'fertilizer, the farm half of the repair, the RB Auction buy, the seed');
+  assert.equal(line('other').farm, 24000 + 190 + 3400 + 1150 + 1500);
+  assert.ok(line('other').categories.some((c) => c.name === 'Machinery (capital)' && c.spent === 4550), 'both RB Auction capital buys, the one paid against its invoice too');
   assert.ok(!line('other').categories.some((c) => /Land Rent|Equipment|Chemical/.test(c.name)), 'rent, the planned drill and the lump sum are out');
   assert.equal(line('groceries').spent, 640);
   assert.equal(line('home').spent, 190, 'only the household half of the repair; a farm repair is not the home');
   assert.equal(v.total.budget, 3000);
-  const farm = 2000 + 24000 + 190 + 3400 + 1500;
+  const farm = 2000 + 24000 + 190 + 3400 + 1150 + 1500;
   assert.equal(v.total.spent, farm + 190 + 640);
   assert.equal(v.total.farm, farm);
   assert.equal(v.months.find((m) => m.month === '2026-11').farm, farm);
@@ -93,7 +96,7 @@ test('the budget is everything the cash flow forecast does not already plan, on 
   assert.deepEqual(v.left_out.map((e) => e.amount), [95000, 8000, 7000, 5000, 4200, 3000]);
   assert.match(why[95000], /Planned in the forecast: New drill/);
   assert.match(why[8000], /Pattison Liquid fall fertilizer/);
-  assert.match(why[7000], /bill/);
+  assert.equal(why[7000], 'Paid against the Land rent bill');
   assert.match(why[5000], /vendor’s account/);
   assert.equal(why[4200], 'Rent (the Randy rent bill)');
   assert.equal(why[3000], 'Rent (the Dancey rent bill)');
@@ -106,7 +109,7 @@ test('the budget is everything the cash flow forecast does not already plan, on 
 
   // The entries behind Other, farm ones tagged grain; the entries behind Fuel & vehicle.
   const e = await lineEntries({ month: '2026-11', line: 'other', today: TODAY });
-  assert.deepEqual(e.map((x) => [x.amount, x.whose]).sort((a, b) => b[0] - a[0]), [[24000, 'grain'], [3400, 'grain'], [1500, 'grain'], [190, 'mixed']]);
+  assert.deepEqual(e.map((x) => [x.amount, x.whose]).sort((a, b) => b[0] - a[0]), [[24000, 'grain'], [3400, 'grain'], [1500, 'grain'], [1150, 'grain'], [190, 'mixed']]);
   assert.ok(e.every((x) => x.key && v.lines.find((l) => l.key === 'other').categories.some((c) => c.name === x.category)), 'each entry sits under its category');
   assert.deepEqual((await lineEntries({ month: '2026-11', line: 'fuel', today: TODAY })).map((x) => x.amount), [2000]);
   assert.equal(whoseKey({ segment: 'livestock' }), 'livestock');

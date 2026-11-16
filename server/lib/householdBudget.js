@@ -13,7 +13,8 @@
 //   rent had landed on Other though the forecast already carries it, farm fuel was on Other, and the small capital buys at
 //   RB Auction were missing): every purchase, the farm's share and the household's, capital ones included, LESS what the
 //   cash flow forecast already plans (forecastWhy, plannedByEstimates): bills (paid by a linked payment, to a recurring
-//   bill's payee or name, or lump sums on a vendor's account), loan payments, rent (projected from the landlords' rent bills)
+//   bill's payee or name, or lump sums on a vendor's account; a capital buy paid against its own one-off invoice is a
+//   purchase, not a planned bill), loan payments, rent (projected from the landlords' rent bills)
 //   and, for the farm and capital buys, an active estimate dated near it, up to the estimate's amount (a capital buy only by
 //   a plan about its size). What's left out is listed on the page with why. A farm purchase sits on its own line by its category
 //   (farm fuel on Fuel & vehicle), except lines that only fit a household (Household & home, Health, Kids): those, and
@@ -64,13 +65,19 @@ export async function billSources(db = pool) {
 }
 /** Which bill covers a line, in words (null: none). tx: transaction id → { payee_id, text } (payee name + description, squashed). */
 export function billFor(l, bills, tx = new Map()) {
-  if (l.scheduled) return 'Paid against a bill or a loan payment';
   const t = tx.get(l.transaction_id);
+  if (l.scheduled && !invoiceBuy(l, t)) {
+    if (t?.loan) return 'A loan payment';
+    return t?.bill_name ? `Paid against the ${t.bill_name} bill` : 'Paid against a bill or a loan payment';
+  }
   if (!t) return null;
   if (t.payee_id && bills.payees.has(t.payee_id)) return `The ${bills.names?.payee.get(t.payee_id) || 'recurring'} bill`;
   const k = bills.keys.find((x) => t.text.includes(x));
   return k ? `The ${bills.names?.key.get(k) || 'recurring'} bill` : null;
 }
+/** A capital buy paid against its own one-off invoice (Nov 16, the RB Auction buys: "Paid against a bill"): the invoice is
+ *  only the record of the purchase, not something the forecast planned, so it counts unless an estimate plans it. */
+const invoiceBuy = (l, t) => !!(l.capex && t?.bill_one_time && !t.loan);
 /** Is a line covered by the bills system? */
 export const coveredByBills = (l, bills, tx = new Map()) => !!billFor(l, bills, tx);
 async function txInfo(lines) {
@@ -79,11 +86,15 @@ async function txInfo(lines) {
   // pays_bills: a lump sum paid on a vendor's account and applied to its invoices (the invoices are the forecast's bills).
   const { rows } = await pool.query(`SELECT t.id, t.payee_id, COALESCE(p.name, '') AS payee, COALESCE(t.description, '') AS description,
       (EXISTS (SELECT 1 FROM vendor_credits vc WHERE vc.transaction_id = t.id AND vc.status <> 'kept')
-       OR EXISTS (SELECT 1 FROM vendor_on_account o WHERE o.transaction_id = t.id)) AS pays_bills
-    FROM transactions t LEFT JOIN payees p ON p.id = t.payee_id WHERE t.id = ANY($1)`, [ids]);
+       OR EXISTS (SELECT 1 FROM vendor_on_account o WHERE o.transaction_id = t.id)) AS pays_bills,
+      b.name AS bill_name, b.frequency::text AS bill_frequency, b.loan_id AS bill_loan,
+      EXISTS (SELECT 1 FROM loan_payments lp WHERE lp.linked_transaction_id = t.id) AS loan_paid
+    FROM transactions t
+    LEFT JOIN LATERAL (SELECT name, frequency, loan_id FROM bills WHERE linked_transaction_id = t.id ORDER BY id LIMIT 1) b ON true LEFT JOIN payees p ON p.id = t.payee_id WHERE t.id = ANY($1)`, [ids]);
   return new Map(rows.map((r) => [r.id, {
     payee_id: r.payee_id, payee: squash(r.payee), text: squash(`${r.payee} ${r.description}`), pays_bills: !!r.pays_bills,
     name: r.payee || r.description || '',
+    bill_name: r.bill_name || null, bill_one_time: r.bill_frequency === 'one_time', loan: !!(r.loan_paid || r.bill_loan),
   }]));
 }
 
@@ -112,10 +123,12 @@ const EST_DAYS = 60; // an estimate covers what's paid within two months of its 
 
 /** Why the forecast already has this purchase, besides an estimate (pure; null: it doesn't). src from forecastSources, tx from txInfo. */
 export function forecastWhy(l, src, tx = new Map()) {
-  if (!discretionary(l)) return l.scheduled ? 'Paid against a bill or a loan payment' : 'A loan, interest or tax payment';
+  const t = tx.get(l.transaction_id);
+  if (!discretionary(l) && !(l.scheduled && invoiceBuy(l, t))) {
+    return l.scheduled ? billFor(l, src, tx) : 'A loan, interest or tax payment';
+  }
   const bill = billFor(l, src, tx);
   if (bill) return bill;
-  const t = tx.get(l.transaction_id);
   if (t?.pays_bills) return 'Paid on the vendor’s account against its invoices (bills)';
   // Rent: the forecast brings every landlord's rent round each year from the rent bills.
   if (src.rent && RENT.test(l.category || '')) {
