@@ -3,7 +3,7 @@ import { money } from '../format.js';
 import './personalBudget.css';
 
 // Spending & budget (Jake, Nov 1): the budget month by month against what was spent, where it went by category, and the
-// transactions behind each category, editable in place. Jake, Ashley or both; farm purchases count on Other (Nov 15).
+// transactions behind each category, editable in place. Jake, Ashley or both. Everything the cash flow forecast doesn't already plan (Nov 16): farm and home, capital buys included.
 // Laid out as an infographic (Nov 15: "You have the most important information at the bottom of the page and no
 // infographics"): the month's figures first, then where it went on one scale, then the year as columns.
 // Budget lines and their totals come from lib/householdBudget.js.
@@ -229,7 +229,7 @@ export default function Personal() {
                   <div><i className="sw farm" /><span>Farm</span><b>{money(t.farm || 0)}</b><em>{Math.round(pctOf(t.farm || 0, t.spent))}%</em></div>
                   <div><i className="sw home" /><span>Home</span><b>{money(home)}</b><em>{Math.round(pctOf(home, t.spent))}%</em></div>
                 </div>
-                <div className="pb-muted pb-note">Farm purchases count on Other.</div>
+                <div className="pb-muted pb-note">Bills, loans and rent are in the cash flow forecast; everything else is here.</div>
               </>
             ) : <div className="pb-muted">Nothing spent yet.</div>}
           </section>
@@ -263,7 +263,7 @@ export default function Personal() {
                 <Fragment key={l.key}>
                   <tr className={`pb-row${isOpen ? ' on' : ''}`} onClick={() => { setOpenCat(null); setOpen(isOpen ? null : l.key); }}>
                     <td><span className="pb-caret">{isOpen ? '▾' : '▸'}</span>{l.label}
-                      {l.key === 'other' && t.farm > 0.005 && <div className="pb-subl">farm {money(t.farm)}</div>}</td>
+                      {both && l.farm > 0.005 && <div className="pb-subl">farm {money(l.farm)}</div>}</td>
                     <td className="pb-barcol"><ScaleBar budget={l.budget} spent={l.spent} max={lineMax} showBudget={both} /></td>
                     <td className="num">{money(l.spent)}</td>
                     {both && <td className="num"><BudgetCell line={l} month={d.month} onSaved={changed} onError={setErr} /></td>}

@@ -63,8 +63,9 @@ export async function categoryBuckets(db = pool) {
  * Household spending (positive) and income from `from` to `to`
  * (exclusive), as lines { date, month 'YYYY-MM', bucket, category, amount }.
  */
-export async function householdLines(from, to, buckets, { farm = false } = {}) {
+export async function householdLines(from, to, buckets, { farm = false, capex = false } = {}) {
   // { farm: true }: the farm's share of each line instead (Grain + Cattle, GST out, as Income & Expenses counts it).
+  // { capex: true }: capital purchases too, marked capex (the budget counts the ones the forecast doesn't plan; Nov 16).
   // Each line also says whether it paid a bill or a loan (`scheduled`): those are forecast on their
   // own dates, so the estimate of everything else leaves them out (Jake, Oct 24: an annual bill the
   // typical month never saw was being subtracted from it, dropping the month's groceries and fuel).
@@ -84,8 +85,8 @@ export async function householdLines(from, to, buckets, { farm = false } = {}) {
   const spending = [];
   let income = 0;
   for (const l of rows) {
-    if (l.is_capex) continue;
-    const v = lineValue(l, farm ? 'farm' : 'household');
+    if (l.is_capex && !capex) continue;
+    const v = lineValue(l.is_capex ? { ...l, is_capex: false } : l, farm ? 'farm' : 'household');
     if (Math.abs(v) < 0.005) continue;
     const kind = l.category_id ? kindOf.get(l.category_id) : (Number(l.amount) > 0 ? 'income' : 'expense');
     if (kind === 'income') { income += v; continue; }
@@ -94,7 +95,7 @@ export async function householdLines(from, to, buckets, { farm = false } = {}) {
     const wsum = (w.jake + w.ashley + w.unassigned) || 1;
     spending.push({ date: toISODate(l.date), month: ym(l.date), bucket: b ? b.bucket : 'essential', category: b ? b.full : 'Uncategorized',
       category_id: l.category_id || null, amount: -v, scheduled: scheduled.has(l.transaction_id), transaction_id: l.transaction_id, description: l.line_description || null,
-      jake: farm ? 0 : -v * w.jake / wsum, ashley: farm ? 0 : -v * w.ashley / wsum, farm });
+      jake: farm ? 0 : -v * w.jake / wsum, ashley: farm ? 0 : -v * w.ashley / wsum, farm, capex: !!l.is_capex });
   }
   return { spending, income: r2(income) };
 }

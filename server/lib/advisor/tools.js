@@ -87,7 +87,7 @@ Returns the plan and the scenario side by side (lowest month, tightest month aga
   },
   {
     name: 'household_budget',
-    description: 'The household budget (everything that isn\'t a bill or loan payment) for a month: each line\'s budget against what was spent, and each month of the year so far. One budget for the sole proprietorship: the farm share of every purchase (GST out, capital purchases left out) is on the Other line. who: both (default, everything), jake or ashley.',
+    description: 'The household budget (everything that isn\'t a bill or loan payment) for a month: each line\'s budget against what was spent, and each month of the year so far. One budget for the sole proprietorship: every purchase the cash flow forecast does not already plan (bills, loans, rent and estimates are planned there), the farm share (GST out) and the household share, capital buys included; farm purchases sit on their own line by category (fuel on Fuel & vehicle), capital buys on Other. who: both (default, everything), jake or ashley.',
     input_schema: { type: 'object', properties: { month: { type: 'string', description: 'YYYY-MM (default this month)' }, who: { type: 'string', enum: ['both', 'jake', 'ashley'] } } },
   },
   {
