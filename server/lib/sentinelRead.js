@@ -1302,7 +1302,7 @@ def({
       id: r.period.start, label: r.period.label, start: r.period.start, end: r.period.end, due: r.period.due, status: r.period.status,
       business_number: r.business_number, lines: r.lines, totals: r.totals, flags: r.flags, ready: r.ready,
       open_items: r.expenses.filter((e) => e.flags.length).slice(0, 40).map((e) => ({
-        transaction_id: e.transaction_id, date: e.date, supplier: e.payee, description: e.description, category: e.category,
+        transaction_id: e.transaction_id, invoice_id: e.bill_id, invoice: e.invoice, date: e.date, supplier: e.payee, description: e.description, category: e.category,
         farm_amount: e.farm_amount, itc: e.itc, itc_up_to: e.itc_up_to, issues: e.flags.map((x) => FLAG_TEXT[x]),
       })),
       carried: r.carried, filed: r.filed, currency: CURRENCY,

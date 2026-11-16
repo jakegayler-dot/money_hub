@@ -1869,9 +1869,15 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN
   ALTER TABLE expense_categories ADD CONSTRAINT expense_categories_gst_treatment_check CHECK (gst_treatment IS NULL OR gst_treatment IN ('taxable', 'zero_rated', 'exempt'));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+-- How GST applies to one vendor invoice (a bill), as on an entry (Nov 15: the GST return counts invoices, not the
+-- payments that pay them).
+ALTER TABLE bills ADD COLUMN IF NOT EXISTS gst_treatment TEXT;
+DO $$ BEGIN
+  ALTER TABLE bills ADD CONSTRAINT bills_gst_treatment_check CHECK (gst_treatment IS NULL OR gst_treatment IN ('taxable', 'zero_rated', 'exempt'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- A supplier's GST/HST registration number, from its receipts (needed on a receipt from $100 to claim the credit).
 ALTER TABLE payees ADD COLUMN IF NOT EXISTS gst_number TEXT;
--- A return as filed: its lines, what it claimed entry by entry ({transaction_id: itc}) and the earlier periods' credits it
+-- A return as filed: its lines, what it claimed entry by entry ({transaction_id: itc}, or {"b<bill id>": itc} for an invoice) and the earlier periods' credits it
 -- carried, so a receipt read after filing is claimed on the next return and nothing is claimed twice.
 ALTER TABLE gst_returns ADD COLUMN IF NOT EXISTS lines JSONB;
 ALTER TABLE gst_returns ADD COLUMN IF NOT EXISTS claimed JSONB;

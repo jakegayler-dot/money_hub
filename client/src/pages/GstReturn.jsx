@@ -69,20 +69,22 @@ export default function GstReturn() {
   const fileRef = useRef(null);
   const [uploadFor, setUploadFor] = useState(null);
   const upload = async (file) => {
-    const id = uploadFor;
+    const e = uploadFor;
     setUploadFor(null);
-    if (!file || !id) return;
-    setBusy(`up:${id}`);
+    if (!file || !e) return;
+    setBusy(`up:${e.key}`);
     try {
       const { body, type } = await uploadBody(file);
-      const x = await fetch(`/api/receipts/upload?transaction_id=${id}`, { method: 'POST', headers: { 'Content-Type': type }, body });
+      // An invoice's paper goes on the bill (the vendor's invoice), a purchase's on its ledger entry.
+      const to = e.bill_id ? `bill_id=${e.bill_id}` : `transaction_id=${e.transaction_id}`;
+      const x = await fetch(`/api/receipts/upload?${to}`, { method: 'POST', headers: { 'Content-Type': type }, body });
       if (!x.ok) { const b = await x.json().catch(() => ({})); setErr(b.error || `Couldn't attach it (HTTP ${x.status}).`); }
     } catch { setErr(`Couldn't open ${file.name}: photos and PDFs only.`); }
     if (fileRef.current) fileRef.current.value = '';
     setBusy(null);
     load();
   };
-  const pickFile = (id) => { setUploadFor(id); setTimeout(() => fileRef.current?.click(), 0); };
+  const pickFile = (e) => { setUploadFor(e); setTimeout(() => fileRef.current?.click(), 0); };
 
   return (
     <>
@@ -162,9 +164,9 @@ function ToFix({ r, send, pickFile, busy }) {
         <thead><tr><th>Date</th><th>Supplier</th><th>Farm amount</th><th>What's wrong</th><th></th></tr></thead>
         <tbody>
           {items.map((e) => (
-            <tr key={e.transaction_id}>
+            <tr key={e.key}>
               <td>{e.date}</td>
-              <td>{e.payee || e.description || '—'}<div className="split-lines">{e.category || 'No category'}{e.paid_from ? ` · ${e.paid_from}` : ''}</div></td>
+              <td>{e.payee || e.description || '—'}<div className="split-lines">{e.category || 'No category'}{e.paid_from ? ` · ${e.paid_from}` : ''}</div><InvoiceNote e={e} /></td>
               <td>{cents(-e.farm_amount)}{e.farm_share < 100 && <div className="split-lines">{e.farm_share}% of {cents(Math.abs(e.tx_amount))}</div>}</td>
               <td>
                 {e.flags.map((f) => <div key={f} className="gst-flag">{r.flag_text[f]}</div>)}
@@ -173,14 +175,14 @@ function ToFix({ r, send, pickFile, busy }) {
               </td>
               <td className="gst-actions">
                 {(e.flags.includes('no_receipt') || e.flags.includes('no_receipt_gst_unknown')) && (
-                  <button className="small" disabled={busy === `up:${e.transaction_id}`} onClick={() => pickFile(e.transaction_id)}>{busy === `up:${e.transaction_id}` ? 'Reading…' : 'Upload receipt'}</button>
+                  <button className="small" disabled={busy === `up:${e.key}`} onClick={() => pickFile(e)}>{busy === `up:${e.key}` ? 'Reading…' : 'Upload receipt'}</button>
                 )}
                 {(e.flags.includes('gst_not_recorded') || e.flags.includes('no_receipt_gst_unknown')) && (
                   <span className="gst-inline">
-                    <input type="number" step="0.01" min="0" placeholder="GST" aria-label="GST on the receipt" value={gst[e.transaction_id] ?? ''}
-                      onChange={(ev) => setGst({ ...gst, [e.transaction_id]: ev.target.value })} />
-                    <button className="small secondary" disabled={gst[e.transaction_id] === undefined || gst[e.transaction_id] === ''}
-                      onClick={() => send('PUT', `/api/tax/gst/entry/${e.transaction_id}`, { gst_amount: Number(gst[e.transaction_id]) })}>Save GST</button>
+                    <input type="number" step="0.01" min="0" placeholder="GST" aria-label="GST on the receipt" value={gst[e.key] ?? ''}
+                      onChange={(ev) => setGst({ ...gst, [e.key]: ev.target.value })} />
+                    <button className="small secondary" disabled={gst[e.key] === undefined || gst[e.key] === ''}
+                      onClick={() => send('PUT', entryUrl(e), { gst_amount: Number(gst[e.key]) })}>Save GST</button>
                   </span>
                 )}
                 {e.flags.includes('no_gst_number') && e.payee_id && (
@@ -209,6 +211,15 @@ function ToFix({ r, send, pickFile, busy }) {
   );
 }
 
+/** Where an entry's GST is changed: a vendor invoice on its bill, anything else on its ledger entry. */
+const entryUrl = (e) => (e.bill_id ? `/api/tax/gst/bill/${e.bill_id}` : `/api/tax/gst/entry/${e.transaction_id}`);
+
+/** A vendor invoice's line under the supplier: it's the invoice that counts, paid or not. */
+function InvoiceNote({ e }) {
+  if (!e.invoice) return null;
+  return <div className="split-lines">Invoice · {e.invoice.status === 'paid' ? `paid ${e.invoice.paid_date || ''}` : `not paid yet (due ${e.invoice.due_date})`}</div>;
+}
+
 /** How GST applies to an entry, or to its category for good. */
 function TreatmentPick({ e, r, send, compact }) {
   if (e.treatment_source === 'gst') return null; // GST is on it: that settles it
@@ -217,7 +228,7 @@ function TreatmentPick({ e, r, send, compact }) {
   return (
     <span className="gst-inline">
       <select aria-label="How GST applies" value={value}
-        onChange={(ev) => send('PUT', `/api/tax/gst/entry/${e.transaction_id}`, { treatment: ev.target.value || null })}>
+        onChange={(ev) => send('PUT', entryUrl(e), { treatment: ev.target.value || null })}>
         <option value="">{compact ? 'GST applies…' : `${r.treatments[e.treatment]}${e.treatment_source === 'guess' ? ' (guessed)' : e.treatment_source === 'category' ? ' (category)' : ''}`}</option>
         {Object.entries(r.treatments).map(([k, v]) => <option key={k} value={k}>{v}: this one</option>)}
       </select>
@@ -288,7 +299,8 @@ function Purchases({ r, send, pickFile, busy }) {
         The farm's share of everything bought in the period (Grain and Cattle; a split entry counts at its farm %), capital
         purchases included. GST recorded on an entry settles it; otherwise how GST applies comes from your choice on the
         entry, then on its category, then a guess from the category's name. Confirm a guess once and it holds for the category.
-        Meals and entertainment get half the GST back.
+        Meals and entertainment get half the GST back. A vendor who bills you is counted by their invoices, in the period of each
+        invoice's date, paid or not; your payments on the account aren't on the return.
       </p>
       {GROUPS.map(([t, title]) => {
         const list = r.expenses.filter((e) => e.treatment === t);
@@ -304,9 +316,9 @@ function Purchases({ r, send, pickFile, busy }) {
                 <thead><tr><th>Date</th><th>Supplier</th><th>Category</th><th>Farm amount</th><th>GST</th><th>Credit</th><th>Receipt</th><th>GST applies</th></tr></thead>
                 <tbody>
                   {list.map((e) => (
-                    <tr key={e.transaction_id} className={e.flags.length ? 'gst-flagged' : ''}>
+                    <tr key={e.key} className={e.flags.length ? 'gst-flagged' : ''}>
                       <td>{e.date}</td>
-                      <td>{e.payee || e.description || '—'}{e.capital && <div className="split-lines">Capital purchase</div>}</td>
+                      <td>{e.payee || e.description || '—'}{e.capital && <div className="split-lines">Capital purchase</div>}<InvoiceNote e={e} /></td>
                       <td>{e.category || <span className="split-lines">None</span>}</td>
                       <td>{cents(-e.farm_amount)}{e.farm_share < 100 && <div className="split-lines">{e.farm_share}% farm</div>}</td>
                       <td>{e.gst_recorded == null ? <span className="split-lines">{t === 'taxable' ? 'not recorded' : '—'}</span> : cents(e.gst_recorded)}</td>
@@ -314,7 +326,7 @@ function Purchases({ r, send, pickFile, busy }) {
                       <td>
                         {e.receipt ? <a className="small-link" href={`/api/receipts/${e.receipt.id}/image`} target="_blank" rel="noreferrer">✓ View</a>
                           : e.farm_document ? <span className="split-lines">Your {e.farm_document.kind.replace('_', ' ')} {e.farm_document.number || ''}</span>
-                          : t === 'taxable' ? <button className="small secondary" disabled={busy === `up:${e.transaction_id}`} onClick={() => pickFile(e.transaction_id)}>Upload</button>
+                          : t === 'taxable' ? <button className="small secondary" disabled={busy === `up:${e.key}`} onClick={() => pickFile(e)}>Upload</button>
                           : <span className="split-lines">not needed for GST</span>}
                         {e.receipt?.gst_number && <div className="split-lines">GST no. {e.receipt.gst_number}</div>}
                       </td>
@@ -359,7 +371,7 @@ function Carried({ r }) {
       <p>Credits that changed after their return was filed: a receipt read later is claimed here (line 106, allowed for four years); a credit that no longer stands goes back on line 104.</p>
       <table>
         <thead><tr><th>Period</th><th>Date</th><th>Supplier</th><th>Change</th></tr></thead>
-        <tbody>{r.carried.map((c) => <tr key={`${c.period}:${c.transaction_id}`}><td>{c.period}</td><td>{c.date || '—'}</td><td>{c.payee || c.description || '—'}</td><td>{c.itc > 0 ? `+${cents(c.itc)} (106)` : `${cents(c.itc)} (104)`}</td></tr>)}</tbody>
+        <tbody>{r.carried.map((c) => <tr key={`${c.period}:${c.key || c.transaction_id}`}><td>{c.period}</td><td>{c.date || '—'}</td><td>{c.payee || c.description || '—'}</td><td>{c.itc > 0 ? `+${cents(c.itc)} (106)` : `${cents(c.itc)} (104)`}</td></tr>)}</tbody>
       </table>
     </div>
   );

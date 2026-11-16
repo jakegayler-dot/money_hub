@@ -77,6 +77,30 @@ router.put('/gst/entry/:id', ah(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// The same for a vendor invoice (a bill): how GST applies, and the GST on it.
+router.put('/gst/bill/:id', ah(async (req, res) => {
+  const { rows: [b] } = await pool.query('SELECT * FROM bills WHERE id = $1', [req.params.id]);
+  if (!b) return res.status(404).json({ error: 'Invoice not found.' });
+  const sets = [];
+  const vals = [b.id];
+  if (req.body?.treatment !== undefined) {
+    const t = treatmentOf(req.body.treatment);
+    if (t === undefined) return res.status(400).json({ error: `treatment must be one of ${TREATMENTS.join(', ')} or null` });
+    vals.push(t); sets.push(`gst_treatment = $${vals.length}`);
+  }
+  if (req.body?.gst_amount !== undefined) {
+    const g = Math.round(Number(req.body.gst_amount) * 100) / 100;
+    const total = Number(b.amount);
+    if (!Number.isFinite(g) || g < 0 || g >= total) return res.status(400).json({ error: `The GST must be between 0 and the invoice's ${total.toFixed(2)}.` });
+    const sub = Math.round((total - g) * 100) / 100;
+    vals.push(g > 0, g, sub, g > 0 && sub > 0 ? Math.round((g / sub) * 10000) / 100 : 5);
+    sets.push(`has_gst = $${vals.length - 3}`, `gst_amount = $${vals.length - 2}`, `subtotal_amount = $${vals.length - 1}`, `gst_pct = $${vals.length}`);
+  }
+  if (!sets.length) return res.status(400).json({ error: 'Nothing to change.' });
+  await pool.query(`UPDATE bills SET ${sets.join(', ')} WHERE id = $1`, vals);
+  res.json({ ok: true });
+}));
+
 // How GST applies to everything in a category (null: guessed from its name again).
 router.put('/gst/category/:id', ah(async (req, res) => {
   const t = treatmentOf(req.body?.treatment);
