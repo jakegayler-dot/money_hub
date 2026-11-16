@@ -27,7 +27,7 @@
 // in), the same rule as Income & Expenses.
 import { pool, getSetting } from '../db.js';
 import { EARNING_COLUMNS, lineValue } from './earnings.js';
-import { ownerWeights, businessShare } from './segments.js';
+import { ownerWeights } from './segments.js';
 import { toISODate, todayISO } from './dates.js';
 
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -62,11 +62,9 @@ export async function categoryBuckets(db = pool) {
 /**
  * Household spending (positive) and income from `from` to `to`
  * (exclusive), as lines { date, month 'YYYY-MM', bucket, category, amount }.
- * { farm: true }: the farm's share instead (Grain + Cattle, GST out, as Income & Expenses counts it), for the one
- * budget (Jake, Nov 15: "This is a sole prop so spending and personal are all tied together into a single budget"),
- * with `capital`, the farm's capital purchases (assets, not spending).
  */
 export async function householdLines(from, to, buckets, { farm = false } = {}) {
+  // { farm: true }: the farm's share of each line instead (Grain + Cattle, GST out, as Income & Expenses counts it).
   // Each line also says whether it paid a bill or a loan (`scheduled`): those are forecast on their
   // own dates, so the estimate of everything else leaves them out (Jake, Oct 24: an annual bill the
   // typical month never saw was being subtracted from it, dropping the month's groceries and fuel).
@@ -85,9 +83,8 @@ export async function householdLines(from, to, buckets, { farm = false } = {}) {
   const scheduled = new Set(sched.map((r) => r.id));
   const spending = [];
   let income = 0;
-  let capital = 0;
   for (const l of rows) {
-    if (l.is_capex) { if (farm && Number(l.amount) < 0) capital += -Number(l.amount) * businessShare(l); continue; }
+    if (l.is_capex) continue;
     const v = lineValue(l, farm ? 'farm' : 'household');
     if (Math.abs(v) < 0.005) continue;
     const kind = l.category_id ? kindOf.get(l.category_id) : (Number(l.amount) > 0 ? 'income' : 'expense');
@@ -97,9 +94,9 @@ export async function householdLines(from, to, buckets, { farm = false } = {}) {
     const wsum = (w.jake + w.ashley + w.unassigned) || 1;
     spending.push({ date: toISODate(l.date), month: ym(l.date), bucket: b ? b.bucket : 'essential', category: b ? b.full : 'Uncategorized',
       category_id: l.category_id || null, amount: -v, scheduled: scheduled.has(l.transaction_id), transaction_id: l.transaction_id, description: l.line_description || null,
-      jake: farm ? 0 : -v * w.jake / wsum, ashley: farm ? 0 : -v * w.ashley / wsum });
+      jake: farm ? 0 : -v * w.jake / wsum, ashley: farm ? 0 : -v * w.ashley / wsum, farm });
   }
-  return { spending, income: r2(income), capital: r2(capital) };
+  return { spending, income: r2(income) };
 }
 
 /** Whose a line is, in words: "Jake", or the split — "Grain 70% · Jake 30%" — so a farm entry with a personal share shows. */

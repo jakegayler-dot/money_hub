@@ -48,8 +48,3 @@
 
 .pb-cat td:first-child { padding-left: 36px; color: var(--text-muted); }
 .pb-cat td { font-size: 13px; }
-
-/* One budget for the farm and the household (Nov 15) */
-.pb-part td { font-weight: 600; color: var(--text); background: rgba(255, 255, 255, 0.025); border-top: 1px solid var(--border-strong); }
-.pb-split { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
-.pb-basis { margin-left: 8px; font-size: 11px; color: var(--text-muted); }

@@ -26,7 +26,7 @@ import { studyGoal, flowsFromInput } from '../lib/goalStudy.js';
 import { setTaskDone } from '../lib/calendar.js';
 import { loadCalendarDeadlines } from '../lib/sentinel.js';
 import { taskSnapshotItem } from '../lib/sentinelSnapshot.js';
-import { budgetView, setLine, LINES, FARM_LINES, WHO } from '../lib/householdBudget.js';
+import { budgetView, setLine, LINES } from '../lib/householdBudget.js';
 
 const router = Router();
 router.use(requireActionKey);
@@ -72,7 +72,7 @@ router.get('/', (req, res) => res.json({
     description: 'The household budget (what isn\'t a bill or loan payment) for a month: each line\'s budget and what was spent, and every month of the year so far. ?month=YYYY-MM (default this month), ?who=both|jake|ashley.',
   }, {
     name: 'set_budget_line', method: 'POST', path: '/api/sentinel/actions/budget',
-    description: `Sets one budget line from a month on (it stays until changed). Household lines: ${LINES.map((l) => `${l.key} (${l.label})`).join(', ')}; Cash Flow spends their total, and amount null puts one back to the standard bracket's share. Farm lines: ${FARM_LINES.map((l) => `${l.key} (${l.label})`).join(', ')}; a guide for the farm's spending, and amount null puts one back to the same month last year.`,
+    description: `Sets one household budget line from a month on (it stays until changed). Lines: ${LINES.map((l) => `${l.key} (${l.label})`).join(', ')}. amount null puts the line back to the standard bracket's share of Cash Flow's total. Cash Flow spends the lines' total.`,
     body: { key: 'the line', amount: 'dollars a month, or null', from_month: 'YYYY-MM (default this month)' },
     example: { key: 'groceries', amount: 1400, from_month: '2026-11' },
   }],
@@ -173,9 +173,9 @@ router.post('/goals/:id/study', ah(async (req, res) => {
   res.json(await studyGoal(goal, { cases }, { scope }));
 }));
 
-// The budget (farm and household, Nov 15), read and set by Sentinel (Nov 1: "editable by me or sentinel").
+// The household budget, read and set by Sentinel (Nov 1: "editable by me or sentinel").
 router.get('/budget', ah(async (req, res) => {
-  res.json(await budgetView({ month: req.query.month, who: WHO.includes(req.query.who) ? req.query.who : 'all' }));
+  res.json(await budgetView({ month: req.query.month, who: ['both', 'jake', 'ashley'].includes(req.query.who) ? req.query.who : 'both' }));
 }));
 router.post('/budget', ah(async (req, res) => {
   try { res.json(await setLine({ ...(req.body || {}), set_by: 'sentinel' })); }

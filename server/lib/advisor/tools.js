@@ -14,7 +14,7 @@ import { scenarioContext } from '../scenario.js';
 import { incomeStatement, cashFlowStatement } from '../financials.js';
 import { searchLibrary, libraryTopics } from './library.js';
 import { todayISO } from '../dates.js';
-import { budgetView, setLine, LINE_KEYS, WHO } from '../householdBudget.js';
+import { budgetView, setLine, LINES } from '../householdBudget.js';
 
 export class AdvisorToolError extends Error {}
 
@@ -87,13 +87,13 @@ Returns the plan and the scenario side by side (lowest month, tightest month aga
   },
   {
     name: 'household_budget',
-    description: 'The budget for a month, one budget for the farm and the household (a sole proprietorship): every purchase that isn\'t a bill or loan payment, the farm\'s share on the farm lines (GST out; capital purchases shown, not budgeted) and the household\'s on the household lines, each line\'s budget against what was spent, and each month of the year so far. who: all (default), farm, both (the household), jake or ashley.',
-    input_schema: { type: 'object', properties: { month: { type: 'string', description: 'YYYY-MM (default this month)' }, who: { type: 'string', enum: WHO } } },
+    description: 'The household budget (everything that isn\'t a bill or loan payment) for a month: each line\'s budget against what was spent, and each month of the year so far. One budget for the sole proprietorship: the farm share of every purchase (GST out, capital purchases left out) is on the Other line. who: both (default, everything), jake or ashley.',
+    input_schema: { type: 'object', properties: { month: { type: 'string', description: 'YYYY-MM (default this month)' }, who: { type: 'string', enum: ['both', 'jake', 'ashley'] } } },
   },
   {
     name: 'set_budget_line',
-    description: `Set one budget line from a month on, when Jake asks for it (it stays until changed). Household lines: Cash Flow spends their total. Farm lines (farm_...): the farm's spending guide, else the same month last year. Lines: ${LINE_KEYS.join(', ')}. amount null puts it back (household: the standard bracket's share; farm: last year's month).`,
-    input_schema: { type: 'object', properties: { key: { type: 'string', enum: LINE_KEYS }, amount: { type: ['number', 'null'] }, from_month: { type: 'string', description: 'YYYY-MM (default this month)' } }, required: ['key', 'amount'] },
+    description: `Set one household budget line from a month on, when Jake asks for it (it stays until changed; Cash Flow spends the lines' total). Lines: ${LINES.map((l) => l.key).join(', ')}. amount null puts it back to the standard bracket's share.`,
+    input_schema: { type: 'object', properties: { key: { type: 'string', enum: LINES.map((l) => l.key) }, amount: { type: ['number', 'null'] }, from_month: { type: 'string', description: 'YYYY-MM (default this month)' } }, required: ['key', 'amount'] },
   },
   {
     name: 'tax_library',
@@ -235,7 +235,7 @@ export async function runTool(name, input = {}, run = {}) {
       return JSON.stringify(saved);
     }
     case 'household_budget':
-      return clip(await budgetView({ month: input.month, who: WHO.includes(input.who) ? input.who : 'all' }));
+      return clip(await budgetView({ month: input.month, who: ['jake', 'ashley'].includes(input.who) ? input.who : 'both' }));
     case 'set_budget_line': {
       try { const r = await setLine({ key: input.key, amount: input.amount, from_month: input.from_month, set_by: 'advisor' }); return JSON.stringify(r); }
       catch (e) { throw new AdvisorToolError(e.message); }
