@@ -2,8 +2,10 @@ import { Fragment, useEffect, useState } from 'react';
 import { money } from '../format.js';
 import './personalBudget.css';
 
-// Spending & budget (Jake, Nov 1): the household budget month by month against what was spent, where it went by
-// category, and the transactions behind each category, editable in place. Jake, Ashley or both.
+// Spending & budget (Jake, Nov 1): the budget month by month against what was spent, where it went by category, and the
+// transactions behind each category, editable in place. Jake, Ashley or both; farm purchases count on Other (Nov 15).
+// Laid out as an infographic (Nov 15: "You have the most important information at the bottom of the page and no
+// infographics"): the month's figures first, then where it went on one scale, then the year as columns.
 // Budget lines and their totals come from lib/householdBudget.js.
 
 const WHO = [['both', 'Both'], ['jake', 'Jake'], ['ashley', 'Ashley']];
@@ -19,7 +21,6 @@ const OWNER = {
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const longMonth = (k) => `${MONTHS[Number(k.slice(5, 7)) - 1]} ${k.slice(0, 4)}`;
 const shift = (k, n) => { const d = new Date(Date.UTC(Number(k.slice(0, 4)), Number(k.slice(5, 7)) - 1 + n, 1)); return d.toISOString().slice(0, 7); };
-const over = (budget, spent) => spent - budget;
 
 async function call(method, url, body) {
   const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
@@ -27,11 +28,6 @@ async function call(method, url, body) {
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
   return d;
-}
-
-function Bar({ budget, spent }) {
-  const pct = budget > 0 ? Math.min(100, (spent / budget) * 100) : spent > 0 ? 100 : 0;
-  return <span className="pb-bar"><span className={spent > budget ? 'over' : ''} style={{ width: `${pct}%` }} /></span>;
 }
 
 /** A budget amount typed in place; saved on Enter or leaving the box. */
@@ -90,6 +86,65 @@ function Entry({ e, categories, onChanged, onError }) {
   );
 }
 
+const DAY_MS = 86400000;
+const pctOf = (v, max) => (max > 0 ? Math.max(0, Math.min(100, (v / max) * 100)) : 0);
+const overText = (budget, spent) => (spent > budget ? `${money(spent - budget)} over` : `${money(budget - spent)} left`);
+
+/** A line's bar on the page's common scale: what's spent, and a tick where its budget is. */
+function ScaleBar({ budget, spent, max, showBudget }) {
+  return (
+    <span className="pb-track" aria-hidden="true">
+      <span className={`pb-fill${showBudget && spent > budget ? ' over' : ''}`} style={{ width: `${pctOf(spent, max)}%` }} />
+      {showBudget && budget > 0 && <span className="pb-tick" style={{ left: `${pctOf(budget, max)}%` }} />}
+    </span>
+  );
+}
+
+/** The year's months as columns: home and farm stacked, a tick at each month's budget. A tap picks the month. */
+function YearChart({ months, sel, showBudget, onPick }) {
+  const [hover, setHover] = useState(null);
+  const max = Math.max(1, ...months.map((m) => Math.max(m.spent, showBudget ? m.budget : 0)));
+  const hasFarm = months.some((m) => m.farm > 0.005);
+  const tip = hover && months.find((m) => m.month === hover);
+  return (
+    <div className="pb-year">
+      {hasFarm && (
+        <div className="pb-legend">
+          <span><i className="sw home" />Home</span><span><i className="sw farm" />Farm</span>
+          {showBudget && <span><i className="sw tick" />Budget</span>}
+        </div>
+      )}
+      <div className="pb-cols" onMouseLeave={() => setHover(null)}>
+        {months.map((m) => {
+          const home = Math.max(0, m.spent - m.farm);
+          return (
+            <button key={m.month} type="button" className={`pb-col${m.month === sel ? ' on' : ''}`}
+              aria-label={`${m.label}: ${money(m.spent)} spent${showBudget ? `, budget ${money(m.budget)}` : ''}`}
+              onMouseEnter={() => setHover(m.month)} onFocus={() => setHover(m.month)} onClick={() => onPick(m.month)}>
+              <span className="pb-colplot">
+                {m.month === sel && m.spent > 0 && <span className="pb-colval" style={{ bottom: `${pctOf(m.spent, max)}%` }}>{money(m.spent)}</span>}
+                <span className="pb-stack" style={{ height: `${pctOf(m.spent, max)}%` }}>
+                  {m.farm > 0.005 && <span className="seg farm" style={{ flexGrow: m.farm }} />}
+                  {home > 0.005 && <span className="seg home" style={{ flexGrow: home }} />}
+                </span>
+                {showBudget && m.budget > 0 && <span className="pb-coltick" style={{ bottom: `${pctOf(m.budget, max)}%` }} />}
+              </span>
+              <span className="pb-collabel">{m.label.slice(0, 3)}</span>
+            </button>
+          );
+        })}
+      </div>
+      {tip && (
+        <div className="pb-tip">
+          <b>{tip.label}{tip.current ? ' (so far)' : ''}</b>
+          <span>Spent {money(tip.spent)}{tip.farm > 0.005 ? ` · farm ${money(tip.farm)} · home ${money(tip.spent - tip.farm)}` : ''}</span>
+          {showBudget && <span>Budget {money(tip.budget)} · <span className={tip.spent > tip.budget ? 'neg' : ''}>{overText(tip.budget, tip.spent)}</span></span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Personal() {
   const [who, setWho] = useState('both');
   const [month, setMonth] = useState(null);
@@ -114,67 +169,108 @@ export default function Personal() {
   const both = who === 'both';
   const t = d.total;
   const isLatest = d.month === d.today.slice(0, 7);
+  const pick = (m) => { setOpen(null); setMonth(m); };
+  const sel = d.months.find((m) => m.month === d.month) || { current: false };
+  const isOver = both && t.spent > t.budget;
+  const gaugeMax = Math.max(t.spent, both ? t.budget : 0, 1);
+  const [yy, mm] = d.month.split('-').map(Number);
+  const daysLeft = sel.current ? Math.round((Date.UTC(yy, mm, 1) - Date.UTC(yy, mm - 1, Number(d.today.slice(8, 10)))) / DAY_MS) - 1 : null;
+  const ytd = { budget: d.months.reduce((a, m) => a + m.budget, 0), spent: d.months.reduce((a, m) => a + m.spent, 0), farm: d.months.reduce((a, m) => a + m.farm, 0) };
+  const withSpend = d.months.filter((m) => m.spent > 0.005 && !m.current);
+  const home = Math.max(0, t.spent - (t.farm || 0));
+  const lines = d.lines.filter((l) => l.spent > 0.005 || (both && l.budget > 0)).sort((a, b) => b.spent - a.spent || b.budget - a.budget);
+  const lineMax = Math.max(1, ...lines.map((l) => Math.max(l.spent, both ? l.budget : 0)));
+  const cols = both ? 5 : 3;
 
   return (
     <div className="pb">
-      <div className="page-header">
+      <div className="page-header pb-head">
         <h1 className="page-title">Spending & budget</h1>
-        <span className="seg-toggle" role="group" aria-label="Whose spending" style={{ marginLeft: 'auto' }}>
+        <span className="pb-monthnav">
+          <button type="button" className="pb-arrow" aria-label="Previous month" onClick={() => pick(shift(d.month, -1))}>‹</button>
+          <span>{longMonth(d.month)}</span>
+          <button type="button" className="pb-arrow" aria-label="Next month" disabled={isLatest} onClick={() => pick(shift(d.month, 1))}>›</button>
+        </span>
+        <span className="seg-toggle" role="group" aria-label="Whose spending">
           {WHO.map(([k, l]) => <button key={k} type="button" aria-pressed={who === k} className={who === k ? 'on' : ''} onClick={() => setWho(k)}>{l}</button>)}
         </span>
       </div>
       {err && <p className="review-error" style={{ margin: '0 0 12px' }}>{err}</p>}
 
-      <section className="panel">
-        <div className="panel-header">{d.month.slice(0, 4)}, month by month</div>
-        <table className="pb-table" data-nostack="">
-          <thead><tr><th>Month</th>{both && <th className="num">Budget</th>}<th className="num">Spent</th>{both && <th className="num">Over / under</th>}{both && <th className="pb-barcol" />}</tr></thead>
-          <tbody>
-            {d.months.map((m) => {
-              const o = over(m.budget, m.spent);
-              return (
-                <tr key={m.month} className={`pb-row${m.month === d.month ? ' on' : ''}`} onClick={() => { setOpen(null); setMonth(m.month); }}>
-                  <td>{m.label}{m.current ? ' (so far)' : ''}</td>
-                  {both && <td className="num">{money(m.budget)}</td>}
-                  <td className="num">{money(m.spent)}</td>
-                  {both && <td className={`num${o > 0 ? ' neg' : ''}`}>{o > 0 ? `${money(o)} over` : `${money(-o)} under`}</td>}
-                  {both && <td className="pb-barcol"><Bar budget={m.budget} spent={m.spent} /></td>}
-                </tr>
-              );
-            })}
-          </tbody>
-          <tfoot>
-            {(() => { const b = d.months.reduce((a, m) => a + m.budget, 0); const s = d.months.reduce((a, m) => a + m.spent, 0); const o = s - b; return (
-              <tr><td>Year so far</td>{both && <td className="num">{money(b)}</td>}<td className="num">{money(s)}</td>{both && <td className={`num${o > 0 ? ' neg' : ''}`}>{o > 0 ? `${money(o)} over` : `${money(-o)} under`}</td>}{both && <td />}</tr>
-            ); })()}
-          </tfoot>
-        </table>
-      </section>
+      <div className="pb-tiles">
+        <section className="panel pb-tile pb-hero">
+          <div className="pb-tlabel">{MONTHS[mm - 1]}{sel.current ? ' so far' : ''}</div>
+          <div className="pb-big">{money(t.spent)}</div>
+          <div className="pb-tsub">{both ? <>spent of <b>{money(t.budget)}</b> budget</> : 'spent'}</div>
+          {both && (
+            <>
+              <span className="pb-gauge" aria-hidden="true">
+                <span className={`pb-fill${isOver ? ' over' : ''}`} style={{ width: `${pctOf(t.spent, gaugeMax)}%` }} />
+                {t.budget > 0 && <span className="pb-tick" style={{ left: `${pctOf(t.budget, gaugeMax)}%` }} />}
+              </span>
+              <div className="pb-status">
+                <span className={isOver ? 'neg' : 'pos'}>{isOver ? '▲' : '▼'} {overText(t.budget, t.spent)}</span>
+                {daysLeft != null && <span className="pb-muted">{daysLeft} {daysLeft === 1 ? 'day' : 'days'} to go</span>}
+              </div>
+            </>
+          )}
+        </section>
+
+        {both && (
+          <section className="panel pb-tile">
+            <div className="pb-tlabel">Farm and home</div>
+            {t.spent > 0.005 ? (
+              <>
+                <span className="pb-split" aria-hidden="true">
+                  {t.farm > 0.005 && <span className="seg farm" style={{ flexGrow: t.farm }} />}
+                  {home > 0.005 && <span className="seg home" style={{ flexGrow: home }} />}
+                </span>
+                <div className="pb-keys">
+                  <div><i className="sw farm" /><span>Farm</span><b>{money(t.farm || 0)}</b><em>{Math.round(pctOf(t.farm || 0, t.spent))}%</em></div>
+                  <div><i className="sw home" /><span>Home</span><b>{money(home)}</b><em>{Math.round(pctOf(home, t.spent))}%</em></div>
+                </div>
+                <div className="pb-muted pb-note">Farm purchases count on Other.</div>
+              </>
+            ) : <div className="pb-muted">Nothing spent yet.</div>}
+          </section>
+        )}
+
+        <section className="panel pb-tile">
+          <div className="pb-tlabel">{yy} so far</div>
+          <div className="pb-big sm">{money(ytd.spent)}</div>
+          <div className="pb-tsub">{both ? <>of <b>{money(ytd.budget)}</b> · <span className={ytd.spent > ytd.budget ? 'neg' : 'pos'}>{overText(ytd.budget, ytd.spent)}</span></> : 'spent'}</div>
+          {withSpend.length > 0 && (
+            <div className="pb-muted pb-note">
+              A full month averages {money(withSpend.reduce((a, m) => a + m.spent, 0) / withSpend.length)}
+              {both && ytd.farm > 0.005 ? ` · farm ${money(ytd.farm)} of the year` : ''}
+            </div>
+          )}
+        </section>
+      </div>
 
       <section className="panel">
-        <div className="panel-header pb-month-head">
-          <button type="button" className="pb-arrow" aria-label="Previous month" onClick={() => { setOpen(null); setMonth(shift(d.month, -1)); }}>‹</button>
-          <span>{longMonth(d.month)}</span>
-          <button type="button" className="pb-arrow" aria-label="Next month" disabled={isLatest} onClick={() => { setOpen(null); setMonth(shift(d.month, 1)); }}>›</button>
-          <span className="pb-sum">{both ? `${money(t.spent)} of ${money(t.budget)} · ${t.spent > t.budget ? `${money(t.spent - t.budget)} over` : `${money(t.budget - t.spent)} left`}` : `${money(t.spent)} spent`}</span>
+        <div className="panel-header pb-ph">
+          <span>Where it went</span>
+          <span className="pb-sum">{both ? 'Tap a line for its entries · type a budget to change it' : 'Tap a line for its entries'}</span>
         </div>
         <table className="pb-table" data-nostack="">
-          <thead><tr><th>Group</th>{both && <th className="num">Budget</th>}<th className="num">Spent</th>{both && <th className="num">Left</th>}{both && <th className="pb-barcol" />}</tr></thead>
+          <thead><tr><th>Line</th><th className="pb-barcol" /><th className="num">Spent</th>{both && <th className="num">Budget</th>}{both && <th className="num pb-left">Left</th>}</tr></thead>
           <tbody>
-            {d.lines.filter((l) => both || l.spent > 0.005).map((l) => {
+            {lines.map((l) => {
               const left = l.budget - l.spent;
               const isOpen = open === l.key;
               return (
                 <Fragment key={l.key}>
                   <tr className={`pb-row${isOpen ? ' on' : ''}`} onClick={() => { setOpenCat(null); setOpen(isOpen ? null : l.key); }}>
-                    <td><span className="pb-caret">{isOpen ? '▾' : '▸'}</span>{l.label}</td>
-                    {both && <td className="num"><BudgetCell line={l} month={d.month} onSaved={changed} onError={setErr} /></td>}
+                    <td><span className="pb-caret">{isOpen ? '▾' : '▸'}</span>{l.label}
+                      {l.key === 'other' && t.farm > 0.005 && <div className="pb-subl">farm {money(t.farm)}</div>}</td>
+                    <td className="pb-barcol"><ScaleBar budget={l.budget} spent={l.spent} max={lineMax} showBudget={both} /></td>
                     <td className="num">{money(l.spent)}</td>
-                    {both && <td className={`num${left < 0 ? ' neg' : ''}`}>{money(left)}</td>}
-                    {both && <td className="pb-barcol"><Bar budget={l.budget} spent={l.spent} /></td>}
+                    {both && <td className="num"><BudgetCell line={l} month={d.month} onSaved={changed} onError={setErr} /></td>}
+                    {both && <td className={`num pb-left${left < 0 ? ' neg' : ''}`}>{money(left)}</td>}
                   </tr>
                   {isOpen && l.categories.length === 0 && (
-                    <tr className="pb-detail"><td colSpan={both ? 5 : 2}><p className="pb-empty">Nothing spent here in {longMonth(d.month)}.</p></td></tr>
+                    <tr className="pb-detail"><td colSpan={cols}><p className="pb-empty">Nothing spent here in {longMonth(d.month)}.</p></td></tr>
                   )}
                   {isOpen && l.categories.map((c) => {
                     const catOpen = openCat === c.name;
@@ -183,12 +279,12 @@ export default function Personal() {
                       <Fragment key={c.name}>
                         <tr className={`pb-row pb-cat${catOpen ? ' on' : ''}`} onClick={() => setOpenCat(catOpen ? null : c.name)}>
                           <td><span className="pb-caret">{catOpen ? '▾' : '▸'}</span>{c.name}</td>
-                          {both && <td />}
+                          <td className="pb-barcol" />
                           <td className="num">{money(c.spent)}</td>
-                          {both && <td />}{both && <td />}
+                          {both && <td />}{both && <td className="pb-left" />}
                         </tr>
                         {catOpen && (
-                          <tr className="pb-detail"><td colSpan={both ? 5 : 2}>
+                          <tr className="pb-detail"><td colSpan={cols}>
                             {entries == null ? <p className="pb-empty">Loading…</p> : (
                               <table className="pb-entries" data-nostack="">
                                 <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Whose</th><th className="num">Amount</th><th /></tr></thead>
@@ -203,9 +299,17 @@ export default function Personal() {
                 </Fragment>
               );
             })}
+            {lines.length === 0 && <tr><td colSpan={cols}><p className="pb-empty">Nothing spent in {longMonth(d.month)}.</p></td></tr>}
           </tbody>
-          <tfoot><tr><td>Total</td>{both && <td className="num">{money(t.budget)}</td>}<td className="num">{money(t.spent)}</td>{both && <td className={`num${t.spent > t.budget ? ' neg' : ''}`}>{money(t.budget - t.spent)}</td>}{both && <td />}</tr></tfoot>
         </table>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header pb-ph">
+          <span>{yy}, month by month</span>
+          <span className="pb-sum">Tap a month to see it</span>
+        </div>
+        <YearChart months={d.months} sel={d.month} showBudget={both} onPick={pick} />
       </section>
     </div>
   );

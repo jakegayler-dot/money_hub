@@ -126,6 +126,7 @@ export async function budgetView({ month, who = 'both', today = todayISO() } = {
   const tx = await txInfo(spending);
   const share = (l) => (who === 'jake' ? l.jake : who === 'ashley' ? l.ashley : l.amount);
   const spent = new Map(); // month → line → amount
+  const farmBy = new Map(); // month → the farm's part (on Other)
   const byCat = new Map(); // the chosen month: line → category → amount
   for (const l of spending) {
     if (!discretionary(l) || coveredByBills(l, bills, tx)) continue;
@@ -135,6 +136,7 @@ export async function budgetView({ month, who = 'both', today = todayISO() } = {
     const k = lineOf(l);
     m.set(k, (m.get(k) || 0) + v);
     spent.set(l.month, m);
+    if (l.farm) farmBy.set(l.month, (farmBy.get(l.month) || 0) + v);
     if (l.month === sel) {
       const c = byCat.get(k) || new Map();
       c.set(l.category, (c.get(l.category) || 0) + v);
@@ -144,7 +146,7 @@ export async function budgetView({ month, who = 'both', today = todayISO() } = {
   const months = keys.map((k) => {
     const lines = lineBudgets(totals[k], overrides, k);
     const s = spent.get(k) || new Map();
-    return { month: k, label: monthLabel(k), current: k === cur, budget: lines.reduce((a, l) => a + l.budget, 0), spent: r2([...s.values()].reduce((a, v) => a + v, 0)) };
+    return { month: k, label: monthLabel(k), current: k === cur, budget: lines.reduce((a, l) => a + l.budget, 0), spent: r2([...s.values()].reduce((a, v) => a + v, 0)), farm: r2(farmBy.get(k) || 0) };
   });
   const s = spent.get(sel) || new Map();
   const lines = lineBudgets(totals[sel], overrides, sel).map((l) => ({
@@ -153,7 +155,7 @@ export async function budgetView({ month, who = 'both', today = todayISO() } = {
   }));
   return {
     month: sel, label: monthLabel(sel), who, today, cash_flow_total: totals[sel],
-    months, lines, total: { budget: lines.reduce((a, l) => a + l.budget, 0), spent: r2(lines.reduce((a, l) => a + l.spent, 0)) },
+    months, lines, total: { budget: lines.reduce((a, l) => a + l.budget, 0), spent: r2(lines.reduce((a, l) => a + l.spent, 0)), farm: r2(farmBy.get(sel) || 0) },
   };
 }
 

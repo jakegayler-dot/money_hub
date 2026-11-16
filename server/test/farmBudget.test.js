@@ -56,6 +56,8 @@ test('farm spending is on Other; the lines and the budget are the same as ever',
   assert.equal(v.total.budget, 3000);
   assert.equal(v.total.spent, 26190 + 830);
   assert.equal(v.months.find((m) => m.month === '2026-11').spent, 27020);
+  assert.equal(v.total.farm, 26190);
+  assert.equal(v.months.find((m) => m.month === '2026-11').farm, 26190);
 
   // Jake's view leaves the farm out.
   const jake = await budgetView({ month: '2026-11', who: 'jake', today: TODAY });
