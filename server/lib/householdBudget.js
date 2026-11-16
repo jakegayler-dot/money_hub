@@ -12,9 +12,10 @@
 //   What's in it (Jake, Nov 16: "This category must include all that which is not already in cash flow forecast!" — Randy's
 //   rent had landed on Other though the forecast already carries it, farm fuel was on Other, and the small capital buys at
 //   RB Auction were missing): every purchase, the farm's share and the household's, capital ones included, LESS what the
-//   cash flow forecast already plans (inForecast): bills (paid by a linked payment, to a recurring bill's payee or name, or
-//   lump sums on a vendor's account), loan payments, rent (projected from the landlords' rent bills) and, for the farm and
-//   capital buys, an active estimate for that category in that month. A farm purchase sits on its own line by its category
+//   cash flow forecast already plans (forecastWhy, plannedByEstimates): bills (paid by a linked payment, to a recurring
+//   bill's payee or name, or lump sums on a vendor's account), loan payments, rent (projected from the landlords' rent bills)
+//   and, for the farm and capital buys, an active estimate dated near it, up to the estimate's amount (a capital buy only by
+//   a plan about its size). What's left out is listed on the page with why. A farm purchase sits on its own line by its category
 //   (farm fuel on Fuel & vehicle), except lines that only fit a household (Household & home, Health, Kids): those, and
 //   capital buys, are Other.
 import { pool, getSetting } from '../db.js';
@@ -55,16 +56,23 @@ export const billKey = (name) => squash(String(name || '').split(/\s[-–—]\s|
 /** The recurring bills' payees and names (pure input to coveredByBills). */
 export async function billSources(db = pool) {
   const { rows } = await db.query(`SELECT name, payee_id FROM bills WHERE frequency <> 'one_time'`).catch(() => ({ rows: [] }));
-  return { payees: new Set(rows.map((r) => r.payee_id).filter(Boolean)), keys: [...new Set(rows.map((r) => billKey(r.name)).filter((k) => k.length >= 4))] };
+  const named = rows.map((r) => ({ name: r.name, key: billKey(r.name), payee_id: r.payee_id }));
+  return {
+    payees: new Set(rows.map((r) => r.payee_id).filter(Boolean)), keys: [...new Set(named.map((r) => r.key).filter((k) => k.length >= 4))],
+    names: { payee: new Map(named.filter((r) => r.payee_id).map((r) => [r.payee_id, r.name])), key: new Map(named.map((r) => [r.key, r.name])) },
+  };
 }
-/** Is a line covered by the bills system? tx: transaction id → { payee_id, text } (payee name + description, squashed). */
-export function coveredByBills(l, bills, tx = new Map()) {
-  if (l.scheduled) return true;
+/** Which bill covers a line, in words (null: none). tx: transaction id → { payee_id, text } (payee name + description, squashed). */
+export function billFor(l, bills, tx = new Map()) {
+  if (l.scheduled) return 'Paid against a bill or a loan payment';
   const t = tx.get(l.transaction_id);
-  if (!t) return false;
-  if (t.payee_id && bills.payees.has(t.payee_id)) return true;
-  return bills.keys.some((k) => t.text.includes(k));
+  if (!t) return null;
+  if (t.payee_id && bills.payees.has(t.payee_id)) return `The ${bills.names?.payee.get(t.payee_id) || 'recurring'} bill`;
+  const k = bills.keys.find((x) => t.text.includes(x));
+  return k ? `The ${bills.names?.key.get(k) || 'recurring'} bill` : null;
 }
+/** Is a line covered by the bills system? */
+export const coveredByBills = (l, bills, tx = new Map()) => !!billFor(l, bills, tx);
 async function txInfo(lines) {
   const ids = [...new Set(lines.map((l) => l.transaction_id))];
   if (!ids.length) return new Map();
@@ -73,7 +81,10 @@ async function txInfo(lines) {
       (EXISTS (SELECT 1 FROM vendor_credits vc WHERE vc.transaction_id = t.id AND vc.status <> 'kept')
        OR EXISTS (SELECT 1 FROM vendor_on_account o WHERE o.transaction_id = t.id)) AS pays_bills
     FROM transactions t LEFT JOIN payees p ON p.id = t.payee_id WHERE t.id = ANY($1)`, [ids]);
-  return new Map(rows.map((r) => [r.id, { payee_id: r.payee_id, payee: squash(r.payee), text: squash(`${r.payee} ${r.description}`), pays_bills: !!r.pays_bills }]));
+  return new Map(rows.map((r) => [r.id, {
+    payee_id: r.payee_id, payee: squash(r.payee), text: squash(`${r.payee} ${r.description}`), pays_bills: !!r.pays_bills,
+    name: r.payee || r.description || '',
+  }]));
 }
 
 /** What else the forecast plans beyond recurring bills: rent (from the rent bills) and active outflow estimates. */
@@ -81,17 +92,17 @@ export async function forecastSources(db = pool) {
   const [bills, { rows: rent }, { rows: est }] = await Promise.all([
     billSources(db),
     db.query(RENT_SQL).catch(() => ({ rows: [] })),
-    db.query(`SELECT name, category, frequency, start_date, end_date FROM cash_estimates WHERE status = 'active' AND direction = 'outflow'`)
+    db.query(`SELECT id, name, category, amount, frequency, start_date, end_date FROM cash_estimates WHERE status = 'active' AND direction = 'outflow'`)
       .catch(() => ({ rows: [] })),
   ]);
   return {
     ...bills,
     rent: {
-      payees: new Set(rent.map((b) => b.payee_id).filter(Boolean)),
-      categories: new Set(rent.map((b) => b.category_id).filter(Boolean)),
-      keys: [...new Set(rent.flatMap((b) => [billKey(b.name), squash(b.vendor)]).filter((k) => k.length >= 4))],
+      payees: new Map(rent.filter((b) => b.payee_id).map((b) => [b.payee_id, b.name])),
+      categories: new Map(rent.filter((b) => b.category_id).map((b) => [b.category_id, b.name])),
+      keys: new Map(rent.flatMap((b) => [[billKey(b.name), b.name], [squash(b.vendor), b.name]]).filter(([k]) => k.length >= 4)),
     },
-    estimates: est.map((e) => ({ ...e, key: squash(e.category), nameKey: squash(e.name) })),
+    estimates: est.map((e) => ({ ...e, amount: Number(e.amount), key: squash(e.category), nameKey: squash(e.name) })),
   };
 }
 
@@ -99,24 +110,52 @@ const RENT = /\brent\b/i;
 const shiftDays = (iso, n) => { const t = new Date(`${iso}T00:00:00Z`); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
 const EST_DAYS = 60; // an estimate covers what's paid within two months of its date (money rarely moves on the planned day)
 
-/** Does the cash flow forecast already plan this purchase? (pure; src from forecastSources, tx from txInfo) */
-export function inForecast(l, src, tx = new Map()) {
-  if (coveredByBills(l, src, tx)) return true;
+/** Why the forecast already has this purchase, besides an estimate (pure; null: it doesn't). src from forecastSources, tx from txInfo. */
+export function forecastWhy(l, src, tx = new Map()) {
+  if (!discretionary(l)) return l.scheduled ? 'Paid against a bill or a loan payment' : 'A loan, interest or tax payment';
+  const bill = billFor(l, src, tx);
+  if (bill) return bill;
   const t = tx.get(l.transaction_id);
-  if (t?.pays_bills) return true;
+  if (t?.pays_bills) return 'Paid on the vendor’s account against its invoices (bills)';
   // Rent: the forecast brings every landlord's rent round each year from the rent bills.
   if (src.rent && RENT.test(l.category || '')) {
-    if ([l.category_id, l.parent_category_id].some((c) => c && src.rent.categories.has(c))) return true;
-    if (t && ((t.payee_id && src.rent.payees.has(t.payee_id)) || src.rent.keys.some((k) => t.text.includes(k)))) return true;
+    if (t?.payee_id && src.rent.payees.has(t.payee_id)) return `Rent (the ${src.rent.payees.get(t.payee_id)} bill)`;
+    const k = t && [...src.rent.keys.keys()].find((x) => t.text.includes(x));
+    if (k) return `Rent (the ${src.rent.keys.get(k)} bill)`;
+    const c = [l.category_id, l.parent_category_id].find((x) => x && src.rent.categories.has(x));
+    if (c) return `Rent (the ${src.rent.categories.get(c)} bill)`;
   }
-  // A farm or capital purchase an active estimate plans for (its category, or the payee it names), dated near it.
-  if ((l.farm || l.capex) && src.estimates?.length && l.date) {
-    const cat = squash(l.category);
-    const fits = (e) => (e.key.length >= 4 && cat.includes(e.key)) || (t?.payee?.length >= 4 && e.nameKey.includes(t.payee));
-    const near = (e) => occurrences(e, shiftDays(l.date, -EST_DAYS), shiftDays(l.date, EST_DAYS + 1)).length > 0;
-    if (src.estimates.some((e) => fits(e) && near(e))) return true;
+  return null;
+}
+
+/**
+ * Farm and capital purchases an active estimate plans (pure): line index → the estimate's name. An estimate fits by its
+ * category or the payee it names, dated within two months, and covers only up to its own amount. A capital buy is the
+ * planned one only if it's about the plan's size (half to one and a half times): smaller buys in the same category aren't
+ * (Nov 16: the small RB Auction buys had gone under a planned $95,000 machine).
+ */
+export function plannedByEstimates(lines, src, tx = new Map()) {
+  const out = new Map();
+  if (!src.estimates?.length) return out;
+  const room = new Map(); // estimate occurrence → what's left of it
+  const order = lines.map((l, i) => i).filter((i) => (lines[i].farm || lines[i].capex) && lines[i].date)
+    .sort((a, b) => (lines[a].date < lines[b].date ? -1 : lines[a].date > lines[b].date ? 1 : lines[b].amount - lines[a].amount));
+  for (const i of order) {
+    const l = lines[i];
+    const cat = squash(l.base_category ?? l.category);
+    const payee = tx.get(l.transaction_id)?.payee || '';
+    for (const e of src.estimates) {
+      if (!((e.key.length >= 4 && cat.includes(e.key)) || (payee.length >= 4 && e.nameKey.includes(payee)))) continue;
+      if (l.capex && !(l.amount >= e.amount * 0.5 && l.amount <= e.amount * 1.5)) continue;
+      const hit = occurrences(e, shiftDays(l.date, -EST_DAYS), shiftDays(l.date, EST_DAYS + 1))
+        .map((d) => `${e.id}:${String(d).slice(0, 10)}`).find((k) => (room.has(k) ? room.get(k) : e.amount) >= l.amount - 0.005);
+      if (!hit) continue;
+      room.set(hit, (room.has(hit) ? room.get(hit) : e.amount) - l.amount);
+      out.set(i, e.name);
+      break;
+    }
   }
-  return false;
+  return out;
 }
 
 /** Every purchase, the household's and the farm's share, capital ones included. */
@@ -126,7 +165,8 @@ async function allLines(from, to, cats) {
   ]);
   const parent = new Map(cats.map((c) => [c.id, c.parent_id]));
   return [...home.spending, ...farm.spending].map((l) => ({
-    ...l, parent_category_id: parent.get(l.category_id) || null, category: l.capex ? `${l.category} (capital)` : l.category,
+    ...l, parent_category_id: parent.get(l.category_id) || null, base_category: l.category,
+    category: l.capex ? `${l.category} (capital)` : l.category,
   }));
 }
 /** The lines that only fit a household; a farm purchase there goes on Other. */
@@ -136,13 +176,20 @@ export const lineOf = (l) => {
   const k = lineFor(l.category);
   return l.farm && HOUSEHOLD_ONLY.has(k) ? 'other' : k;
 };
-/** The budget's purchases from `from` to `to` (exclusive): everything the forecast doesn't already plan. */
-async function budgetLines(from, to) {
+/** The purchases from `from` to `to` (exclusive): kept (the budget's: everything the forecast doesn't already plan) and
+ *  left (in the forecast already, each with why), so the page can show what it left out. */
+async function budgetSplit(from, to) {
   const cats = await categoryBuckets();
   const [spending, src] = await Promise.all([allLines(from, to, cats), forecastSources()]);
   const tx = await txInfo(spending);
-  return spending.filter((l) => discretionary(l) && !inForecast(l, src, tx));
+  const why = spending.map((l) => forecastWhy(l, src, tx));
+  const open = spending.map((l, i) => (why[i] ? null : l));
+  for (const [i, name] of plannedByEstimates(open.map((l) => l || {}), src, tx)) why[i] = `Planned in the forecast: ${name}`;
+  const kept = []; const left = [];
+  spending.forEach((l, i) => (why[i] ? left.push({ ...l, why: why[i], name: tx.get(l.transaction_id)?.name || l.description || '' }) : kept.push(l)));
+  return { kept, left };
 }
+const budgetLines = async (from, to) => (await budgetSplit(from, to)).kept;
 export const lineFor = (categoryName) => {
   const n = String(categoryName || '').toLowerCase();
   return (LINES.find((l) => l.match && l.match.test(n)) || LINES[LINES.length - 1]).key;
@@ -194,8 +241,17 @@ export async function budgetView({ month, who = 'both', today = todayISO() } = {
   const last = year < Number(cur.slice(0, 4)) ? 12 : Number(cur.slice(5, 7));
   const keys = monthsOfYear(year, last);
   const to = year < Number(cur.slice(0, 4)) ? `${year + 1}-01-01` : addDay(today);
-  const [overrides, totals, spending] = await Promise.all([loadOverrides(), cashTotals(keys, today), budgetLines(`${year}-01-01`, to)]);
+  const [overrides, totals, { kept: spending, left }] = await Promise.all([loadOverrides(), cashTotals(keys, today), budgetSplit(`${year}-01-01`, to)]);
   const share = (l) => (who === 'jake' ? l.jake : who === 'ashley' ? l.ashley : l.amount);
+  // What the month left out because the forecast already has it, a row per payment (Nov 16: so he can see where it went).
+  const leftOut = new Map();
+  for (const l of left) {
+    const v = share(l);
+    if (l.month !== sel || Math.abs(v) < 0.005) continue;
+    const e = leftOut.get(l.transaction_id) || { id: l.transaction_id, date: l.date, name: l.name, category: l.category, why: l.why, amount: 0 };
+    e.amount = r2(e.amount + v);
+    leftOut.set(l.transaction_id, e);
+  }
   const spent = new Map(); // month → line → amount
   const farmBy = new Map(); // month → the farm's part
   const farmLine = new Map(); // the chosen month: line → the farm's part
@@ -228,6 +284,7 @@ export async function budgetView({ month, who = 'both', today = todayISO() } = {
   return {
     month: sel, label: monthLabel(sel), who, today, cash_flow_total: totals[sel],
     months, lines, total: { budget: lines.reduce((a, l) => a + l.budget, 0), spent: r2(lines.reduce((a, l) => a + l.spent, 0)), farm: r2(farmBy.get(sel) || 0) },
+    left_out: [...leftOut.values()].sort((a, b) => b.amount - a.amount),
   };
 }
 
@@ -247,17 +304,19 @@ export async function lineEntries({ month, line, who = 'both', today = todayISO(
             t.segment_grain_pct, t.segment_livestock_pct, t.segment_jake_pct, t.segment_ashley_pct, p.name AS payee
      FROM transactions t LEFT JOIN payees p ON p.id = t.payee_id WHERE t.id = ANY($1)`, [ids]);
   const byId = new Map(txs.map((t) => [t.id, t]));
+  // One row per payment and category: a split payment shows under each category it has on this line.
   const out = new Map();
   for (const l of mine) {
     const t = byId.get(l.transaction_id);
     if (!t) continue;
-    const e = out.get(t.id) || {
-      id: t.id, date: l.date, description: t.description || l.description || '', payee: t.payee || null,
+    const key = `${t.id}|${l.category}`;
+    const e = out.get(key) || {
+      key, id: t.id, date: l.date, description: t.description || l.description || '', payee: t.payee || null,
       category_id: t.category_id, category: l.category, amount: 0, tx_amount: Number(t.amount),
       whose: whoseKey(t), split: !!t.is_split,
     };
     e.amount = r2(e.amount + share(l));
-    out.set(t.id, e);
+    out.set(key, e);
   }
   return [...out.values()].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.id - a.id));
 }

@@ -122,3 +122,15 @@
   .pb-table td:first-child { font-size: 13px; }
   .pb-table th.pb-barcol { display: table-cell; }
 }
+
+/* Entries show under each category as soon as a line opens; what the forecast already has is listed with why (Nov 16). */
+.pb-cat td { background: var(--panel-alt); }
+.pb-cat td:first-child { font-weight: 600; color: var(--text); }
+.pb-leftout > summary { cursor: pointer; list-style: none; }
+.pb-leftout > summary::-webkit-details-marker { display: none; }
+.pb-leftout > summary::before { content: '▸'; margin-right: 6px; color: var(--text-faint); }
+.pb-leftout[open] > summary::before { content: '▾'; }
+.pb .pb-leftlist { margin: 0 0 8px; }
+.pb .pb-leftlist td { font-size: 13px; padding: 6px 8px; }
+.pb .pb-leftlist th { padding: 6px 8px; }
+@media (max-width: 720px) { .pb-leftout { overflow-x: auto; } .pb-leftlist { min-width: 560px; } }

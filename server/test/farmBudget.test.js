@@ -41,6 +41,8 @@ before(async () => {
   await add('2026-11-05', -380, 'Repairs & maintenance', { split: [50, 50] }); // $190 farm on Other, $190 Jake's on Household & home
   await add('2026-11-08', -640, 'Groceries', { account: joint, segment: 'jake' });
   await add('2026-11-06', -3400, 'Machinery', { capex: true, to: 'RB Auction' }); // a small capital buy: Other
+  // A planned combine in the same category doesn't swallow the small auction buy: it isn't the combine.
+  await one(`INSERT INTO cash_estimates (name, category, direction, amount, frequency, start_date) VALUES ('Combine', 'Machinery', 'outflow', 400000, 'one_time', '2026-11-25') RETURNING id`);
   // A big capital buy the forecast already has as an estimate this month: not in the budget.
   await add('2026-11-09', -95000, 'Equipment', { capex: true });
   await one(`INSERT INTO cash_estimates (name, category, direction, amount, frequency, start_date) VALUES ('New drill', 'Equipment', 'outflow', 95000, 'one_time', '2026-11-20') RETURNING id`);
@@ -86,6 +88,17 @@ test('the budget is everything the cash flow forecast does not already plan, on 
   assert.equal(v.total.farm, farm);
   assert.equal(v.months.find((m) => m.month === '2026-11').farm, farm);
 
+  // What's left out, each with why.
+  const why = Object.fromEntries(v.left_out.map((e) => [e.amount, e.why]));
+  assert.deepEqual(v.left_out.map((e) => e.amount), [95000, 8000, 7000, 5000, 4200, 3000]);
+  assert.match(why[95000], /Planned in the forecast: New drill/);
+  assert.match(why[8000], /Pattison Liquid fall fertilizer/);
+  assert.match(why[7000], /bill/);
+  assert.match(why[5000], /vendor’s account/);
+  assert.equal(why[4200], 'Rent (the Randy rent bill)');
+  assert.equal(why[3000], 'Rent (the Dancey rent bill)');
+  assert.equal(v.left_out.find((e) => e.amount === 4200).name, 'Randy Greenfeed');
+
   // Jake's view leaves the farm out.
   const jake = await budgetView({ month: '2026-11', who: 'jake', today: TODAY });
   assert.equal(jake.lines.find((l) => l.key === 'other').spent, 0);
@@ -94,6 +107,7 @@ test('the budget is everything the cash flow forecast does not already plan, on 
   // The entries behind Other, farm ones tagged grain; the entries behind Fuel & vehicle.
   const e = await lineEntries({ month: '2026-11', line: 'other', today: TODAY });
   assert.deepEqual(e.map((x) => [x.amount, x.whose]).sort((a, b) => b[0] - a[0]), [[24000, 'grain'], [3400, 'grain'], [1500, 'grain'], [190, 'mixed']]);
+  assert.ok(e.every((x) => x.key && v.lines.find((l) => l.key === 'other').categories.some((c) => c.name === x.category)), 'each entry sits under its category');
   assert.deepEqual((await lineEntries({ month: '2026-11', line: 'fuel', today: TODAY })).map((x) => x.amount), [2000]);
   assert.equal(whoseKey({ segment: 'livestock' }), 'livestock');
 });

@@ -151,7 +151,7 @@ export default function Personal() {
   const [d, setD] = useState(null);
   const [open, setOpen] = useState(null);
   const [entries, setEntries] = useState(null);
-  const [openCat, setOpenCat] = useState(null);
+  const [entriesErr, setEntriesErr] = useState(null);
   const [err, setErr] = useState(null);
 
   const load = () => fetch(`/api/personal/budget-view?who=${who}${month ? `&month=${month}` : ''}`).then((r) => r.json())
@@ -159,10 +159,11 @@ export default function Personal() {
   const loadEntries = (line = open) => {
     if (!line || !d) return;
     fetch(`/api/personal/budget-view/entries?month=${d.month}&line=${line}&who=${who}`).then((r) => r.json())
-      .then((x) => setEntries(Array.isArray(x) ? x : [])).catch(() => setEntries([]));
+      .then((x) => { setEntriesErr(Array.isArray(x) ? null : x?.error || 'The entries didn’t load.'); setEntries(Array.isArray(x) ? x : []); })
+      .catch((e) => { setEntriesErr(`The entries didn’t load: ${e.message}`); setEntries([]); });
   };
   useEffect(() => { load(); }, [who, month]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { setEntries(null); if (open) loadEntries(open); }, [open, d?.month, who]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setEntries(null); setEntriesErr(null); if (open) loadEntries(open); }, [open, d?.month, who]); // eslint-disable-line react-hooks/exhaustive-deps
   const changed = () => { setErr(null); load(); loadEntries(); };
 
   if (!d) return err ? <div className="empty-state">{err}</div> : <div className="empty-state">Loading…</div>;
@@ -261,7 +262,7 @@ export default function Personal() {
               const isOpen = open === l.key;
               return (
                 <Fragment key={l.key}>
-                  <tr className={`pb-row${isOpen ? ' on' : ''}`} onClick={() => { setOpenCat(null); setOpen(isOpen ? null : l.key); }}>
+                  <tr className={`pb-row${isOpen ? ' on' : ''}`} onClick={() => setOpen(isOpen ? null : l.key)}>
                     <td><span className="pb-caret">{isOpen ? '▾' : '▸'}</span>{l.label}
                       {both && l.farm > 0.005 && <div className="pb-subl">farm {money(l.farm)}</div>}</td>
                     <td className="pb-barcol"><ScaleBar budget={l.budget} spent={l.spent} max={lineMax} showBudget={both} /></td>
@@ -273,26 +274,25 @@ export default function Personal() {
                     <tr className="pb-detail"><td colSpan={cols}><p className="pb-empty">Nothing spent here in {longMonth(d.month)}.</p></td></tr>
                   )}
                   {isOpen && l.categories.map((c) => {
-                    const catOpen = openCat === c.name;
                     const mine = (entries || []).filter((e) => e.category === c.name);
                     return (
                       <Fragment key={c.name}>
-                        <tr className={`pb-row pb-cat${catOpen ? ' on' : ''}`} onClick={() => setOpenCat(catOpen ? null : c.name)}>
-                          <td><span className="pb-caret">{catOpen ? '▾' : '▸'}</span>{c.name}</td>
+                        <tr className="pb-cat">
+                          <td>{c.name}</td>
                           <td className="pb-barcol" />
                           <td className="num">{money(c.spent)}</td>
                           {both && <td />}{both && <td className="pb-left" />}
                         </tr>
-                        {catOpen && (
-                          <tr className="pb-detail"><td colSpan={cols}>
-                            {entries == null ? <p className="pb-empty">Loading…</p> : (
-                              <table className="pb-entries" data-nostack="">
-                                <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Whose</th><th className="num">Amount</th><th /></tr></thead>
-                                <tbody>{mine.map((e) => <Entry key={e.id} e={e} categories={d.categories} onChanged={changed} onError={setErr} />)}</tbody>
-                              </table>
-                            )}
-                          </td></tr>
-                        )}
+                        <tr className="pb-detail"><td colSpan={cols}>
+                          {entries == null ? <p className="pb-empty">Loading…</p>
+                            : entriesErr ? <p className="pb-empty">{entriesErr}</p>
+                              : !mine.length ? <p className="pb-empty">No entries found for {c.name}.</p> : (
+                                <table className="pb-entries" data-nostack="">
+                                  <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Whose</th><th className="num">Amount</th><th /></tr></thead>
+                                  <tbody>{mine.map((e) => <Entry key={e.key || e.id} e={e} categories={d.categories} onChanged={changed} onError={setErr} />)}</tbody>
+                                </table>
+                              )}
+                        </td></tr>
                       </Fragment>
                     );
                   })}
@@ -303,6 +303,25 @@ export default function Personal() {
           </tbody>
         </table>
       </section>
+
+      {(d.left_out || []).length > 0 && (
+        <section className="panel">
+          <details className="pb-leftout">
+            <summary className="panel-header pb-ph">
+              <span>Left out: already in the cash flow forecast</span>
+              <span className="pb-sum">{d.left_out.length} {d.left_out.length === 1 ? 'entry' : 'entries'} · {money(d.left_out.reduce((a, e) => a + e.amount, 0))}</span>
+            </summary>
+            <table className="pb-entries pb-leftlist" data-nostack="">
+              <thead><tr><th>Date</th><th>Paid to</th><th>Category</th><th>Why it’s not here</th><th className="num">Amount</th></tr></thead>
+              <tbody>
+                {d.left_out.map((e) => (
+                  <tr key={e.id}><td>{e.date}</td><td>{e.name}</td><td>{e.category}</td><td>{e.why}</td><td className="num">{money(e.amount)}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        </section>
+      )}
 
       <section className="panel">
         <div className="panel-header pb-ph">
