@@ -2,13 +2,17 @@ import { Fragment, useEffect, useState } from 'react';
 import { money } from '../format.js';
 import './personalBudget.css';
 
-// Spending & budget (Jake, Nov 1): the household budget month by month against what was spent, where it went by
-// category, and the transactions behind each category, editable in place. Jake, Ashley or both.
-// Budget lines and their totals come from lib/householdBudget.js.
+// Spending & budget (Jake, Nov 1): the budget month by month against what was spent, where it went by category, and the
+// transactions behind each category, editable in place. One budget for the farm and the household (Nov 15: "This is a sole
+// prop so spending and personal are all tied together into a single budget"): Everything, the farm, the household, Jake or
+// Ashley. Budget lines and their totals come from lib/householdBudget.js.
 
-const WHO = [['both', 'Both'], ['jake', 'Jake'], ['ashley', 'Ashley']];
-const WHOSE = [['jake', 'Jake'], ['ashley', 'Ashley'], ['both', 'Jake & Ashley']];
+const WHO = [['all', 'Everything'], ['farm', 'Farm'], ['both', 'Household'], ['jake', 'Jake'], ['ashley', 'Ashley']];
+const WHOSE = [['grain', 'Grain'], ['livestock', 'Cattle'], ['jake', 'Jake'], ['ashley', 'Ashley'], ['both', 'Jake & Ashley']];
+const WHOSE_KEYS = WHOSE.map(([k]) => k);
 const OWNER = {
+  grain: { segment: 'grain', is_segment_split: false },
+  livestock: { segment: 'livestock', is_segment_split: false },
   jake: { segment: 'jake', is_segment_split: false },
   ashley: { segment: 'ashley', is_segment_split: false },
   both: { is_segment_split: true, segment_grain_pct: 0, segment_livestock_pct: 0, segment_jake_pct: 50, segment_ashley_pct: 50 },
@@ -45,7 +49,7 @@ function BudgetCell({ line, month, onSaved, onError }) {
       $<input type="number" min="0" step="10" value={v} aria-label={`${line.label} budget`}
         onChange={(e) => setV(e.target.value)} onBlur={() => v !== '' && save(Number(v))}
         onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { setV(String(line.budget)); e.currentTarget.blur(); } }} />
-      {line.set && <button type="button" className="pb-reset" title="Back to the standard share of Cash Flow's total" onClick={() => save(null)}>↺</button>}
+      {line.set && <button type="button" className="pb-reset" title={line.part === 'farm' ? 'Back to what it cost the same month last year' : "Back to the standard share of Cash Flow's total"} onClick={() => save(null)}>↺</button>}
     </span>
   );
 }
@@ -75,8 +79,8 @@ function Entry({ e, categories, onChanged, onError }) {
         </select>
       </td>
       <td>
-        <select value={['jake', 'ashley', 'both'].includes(e.whose) ? e.whose : ''} disabled={locked} onChange={(x) => x.target.value && patch(OWNER[x.target.value])}>
-          {!['jake', 'ashley', 'both'].includes(e.whose) && <option value="">{e.whose === 'mixed' ? 'Shared with the farm' : 'Not tagged'}</option>}
+        <select value={WHOSE_KEYS.includes(e.whose) ? e.whose : ''} disabled={locked} onChange={(x) => x.target.value && patch(OWNER[x.target.value])}>
+          {!WHOSE_KEYS.includes(e.whose) && <option value="">{e.whose === 'mixed' ? 'Split farm / household' : 'Not tagged'}</option>}
           {WHOSE.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
         </select>
       </td>
@@ -88,7 +92,7 @@ function Entry({ e, categories, onChanged, onError }) {
 }
 
 export default function Personal() {
-  const [who, setWho] = useState('both');
+  const [who, setWho] = useState('all');
   const [month, setMonth] = useState(null);
   const [d, setD] = useState(null);
   const [open, setOpen] = useState(null);
@@ -108,8 +112,9 @@ export default function Personal() {
   const changed = () => { setErr(null); load(); loadEntries(); };
 
   if (!d) return err ? <div className="empty-state">{err}</div> : <div className="empty-state">Loading…</div>;
-  const both = who === 'both';
+  const both = !!d.show_budget; // a budget shows for everything, the farm or the household (not one person)
   const t = d.total;
+  const parts = who === 'all';
   const isLatest = d.month === d.today.slice(0, 7);
 
   return (
@@ -133,7 +138,7 @@ export default function Personal() {
                 <tr key={m.month} className={`pb-row${m.month === d.month ? ' on' : ''}`} onClick={() => { setOpen(null); setMonth(m.month); }}>
                   <td>{m.label}{m.current ? ' (so far)' : ''}</td>
                   {both && <td className="num">{money(m.budget)}</td>}
-                  <td className="num">{money(m.spent)}</td>
+                  <td className="num">{money(m.spent)}{parts && m.spent > 0 && <div className="pb-split">farm {money(m.farm)} · home {money(m.household)}</div>}</td>
                   {both && <td className={`num${o > 0 ? ' neg' : ''}`}>{o > 0 ? `${money(o)} over` : `${money(-o)} under`}</td>}
                   {both && <td className="pb-barcol"><Bar budget={m.budget} spent={m.spent} /></td>}
                 </tr>
@@ -158,13 +163,24 @@ export default function Personal() {
         <table className="pb-table" data-nostack="">
           <thead><tr><th>Group</th>{both && <th className="num">Budget</th>}<th className="num">Spent</th>{both && <th className="num">Left</th>}{both && <th className="pb-barcol" />}</tr></thead>
           <tbody>
-            {d.lines.filter((l) => both || l.spent > 0.005).map((l) => {
+            {d.lines.filter((l) => both || l.spent > 0.005).map((l, i, shown) => {
               const left = l.budget - l.spent;
               const isOpen = open === l.key;
+              const head = parts && (i === 0 || shown[i - 1].part !== l.part) ? d[l.part] : null;
               return (
                 <Fragment key={l.key}>
+                  {head && (
+                    <tr className="pb-part">
+                      <td>{l.part === 'farm' ? 'Farm' : 'Household'}</td>
+                      <td className="num">{money(head.budget)}</td>
+                      <td className="num">{money(head.spent)}</td>
+                      <td className={`num${head.spent > head.budget ? ' neg' : ''}`}>{money(head.budget - head.spent)}</td>
+                      <td className="pb-barcol"><Bar budget={head.budget} spent={head.spent} /></td>
+                    </tr>
+                  )}
                   <tr className={`pb-row${isOpen ? ' on' : ''}`} onClick={() => { setOpenCat(null); setOpen(isOpen ? null : l.key); }}>
-                    <td><span className="pb-caret">{isOpen ? '▾' : '▸'}</span>{l.label}</td>
+                    <td><span className="pb-caret">{isOpen ? '▾' : '▸'}</span>{l.label}
+                      {l.part === 'farm' && both && !l.set && <span className="pb-basis">{l.basis === 'last_year' ? 'last year' : l.basis === 'average' ? 'average month' : ''}</span>}</td>
                     {both && <td className="num"><BudgetCell line={l} month={d.month} onSaved={changed} onError={setErr} /></td>}
                     <td className="num">{money(l.spent)}</td>
                     {both && <td className={`num${left < 0 ? ' neg' : ''}`}>{money(left)}</td>}
@@ -201,6 +217,11 @@ export default function Personal() {
               );
             })}
           </tbody>
+          {d.farm?.capital > 0 && (
+            <tbody><tr className="pb-detail"><td colSpan={both ? 5 : 2}><p className="pb-empty">
+              Farm capital purchases this month: {money(d.farm.capital)}. Assets, not spending, so not in the budget (Assets and Goals track them).
+            </p></td></tr></tbody>
+          )}
           <tfoot><tr><td>Total</td>{both && <td className="num">{money(t.budget)}</td>}<td className="num">{money(t.spent)}</td>{both && <td className={`num${t.spent > t.budget ? ' neg' : ''}`}>{money(t.budget - t.spent)}</td>}{both && <td />}</tr></tfoot>
         </table>
       </section>

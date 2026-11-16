@@ -4,7 +4,7 @@ import { ah } from '../lib/asyncHandler.js';
 import { personalPlan, spendingBreakdown, categoryEntries } from '../lib/personal.js';
 import { ownerCheck } from '../lib/ownerCheck.js';
 import { generateBudget } from '../lib/budgetPlan.js';
-import { budgetView, lineEntries, setLine, lineFor } from '../lib/householdBudget.js';
+import { budgetView, lineEntries, setLine, lineFor, farmLineFor, WHO } from '../lib/householdBudget.js';
 import { categoryBuckets } from '../lib/personal.js';
 import { todayISO } from '../lib/dates.js';
 
@@ -63,12 +63,11 @@ router.put('/budget/share', ah(async (req, res) => {
   res.json(await generateBudget());
 }));
 
-// The budget page (lib/householdBudget.js): ?month=YYYY-MM&who=both|jake|ashley.
-const WHO = ['both', 'jake', 'ashley'];
-const whoOf = (q) => (WHO.includes(q.who) ? q.who : 'both');
+// The budget page (lib/householdBudget.js): ?month=YYYY-MM&who=all|farm|both|jake|ashley (all: farm and household, one budget).
+const whoOf = (q) => (WHO.includes(q.who) ? q.who : 'all');
 router.get('/budget-view', ah(async (req, res) => {
   const [v, cats] = await Promise.all([budgetView({ month: req.query.month, who: whoOf(req.query) }), categoryBuckets()]);
-  res.json({ ...v, categories: cats.map((c) => ({ id: c.id, name: c.full, line: lineFor(c.full) })).sort((a, b) => a.name.localeCompare(b.name)) });
+  res.json({ ...v, categories: cats.map((c) => ({ id: c.id, name: c.full, line: lineFor(c.full), farm_line: farmLineFor(c.full) })).sort((a, b) => a.name.localeCompare(b.name)) });
 }));
 // The transactions behind a line in a month: ?month&line&who.
 router.get('/budget-view/entries', ah(async (req, res) => {
