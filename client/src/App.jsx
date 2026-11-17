@@ -20,6 +20,7 @@ import Review from './pages/Review.jsx';
 import Books from './pages/Books.jsx';
 import Tax from './pages/Tax.jsx';
 import GstReturn from './pages/GstReturn.jsx';
+import CoveredCalls from './pages/CoveredCalls.jsx';
 import Receipts from './pages/Receipts.jsx';
 import Groceries from './pages/Groceries.jsx';
 import Paystubs from './pages/Paystubs.jsx';
@@ -79,6 +80,7 @@ export default function App() {
           <Route path="/books" element={<Books />} />
           <Route path="/tax" element={<Tax />} />
           <Route path="/gst" element={<GstReturn />} />
+          <Route path="/covered-calls" element={<CoveredCalls />} />
           <Route path="/receipts" element={<Receipts />} />
           <Route path="/groceries" element={<Groceries />} />
           <Route path="/paystubs" element={<Paystubs />} />

@@ -1,0 +1,61 @@
+/* The covered-call desk (pages/CoveredCalls.jsx). */
+.cc-page { display: flex; flex-direction: column; gap: 16px; }
+.cc-panel { overflow: hidden; }
+.cc-pad { padding: 12px 16px; }
+.cc-faint { color: var(--text-faint); font-size: 11px; font-weight: 400; letter-spacing: 0; text-transform: none; }
+.cc-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.cc-row > input:not([type='checkbox']) { min-width: 0; flex: 1 1 220px; }
+.cc-table tbody tr { cursor: pointer; }
+.cc-table tbody tr:hover { background: var(--panel-hover); }
+.cc-table tbody tr.on { background: var(--gold-soft); }
+.cc-table tbody tr.dropped td:first-child b { color: var(--gold-bright); }
+.cc-table td.num, .cc-table th.num { text-align: right; }
+.cc-table td.neg { color: var(--negative); }
+.cc-table td.pos { color: var(--positive); }
+.cc-table tr.cc-closed { opacity: 0.55; }
+.cc-actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; white-space: nowrap; }
+.cc-alerts { display: flex; flex-wrap: wrap; gap: 8px; }
+.cc-alert { all: unset; cursor: pointer; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid rgba(201, 162, 39, 0.3);
+  background: var(--gold-soft); color: var(--text); font-size: 12px; }
+.cc-alert b { color: var(--gold-bright); margin-right: 4px; }
+.cc-pick-head { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; display: flex; gap: 12px; align-items: baseline; }
+.cc-pick-head .small-link { text-transform: none; letter-spacing: 0; color: var(--gold); }
+.cc-pick-grid, .cc-figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.cc-pick-grid > div, .cc-figs > div { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--panel-alt); min-width: 0; }
+.cc-k { font-size: 10.5px; color: var(--text-muted); letter-spacing: 0.04em; text-transform: uppercase; }
+.cc-pick-grid b, .cc-figs b { font-family: var(--font-mono); font-size: 16px; font-weight: 500; color: var(--text); font-feature-settings: 'tnum'; }
+.cc-why { margin: 10px 0 0; padding-left: 18px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.cc-alts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; font-size: 12px; color: var(--text-muted); }
+.cc-calc, .cc-mike { border-top: 1px solid var(--border); }
+.cc-leg { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; padding: 8px 0; border-bottom: 1px dashed var(--border); }
+.cc-leg select { max-width: 100%; }
+.cc-mini { display: flex; flex-direction: column; gap: 3px; font-size: 10.5px; color: var(--text-muted); }
+.cc-mini input { width: 110px; }
+.cc-check { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--text-muted); }
+.cc-rule-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+.cc-rule-grid .cc-mini input { width: 100%; }
+.cc-rules > summary { cursor: pointer; list-style: none; }
+.cc-rules > summary::-webkit-details-marker { display: none; }
+.cc-figs { margin-top: 12px; }
+.cc-chart { position: relative; margin-top: 12px; max-width: 820px; }
+.cc-chart svg { width: 100%; height: auto; display: block; }
+.cc-grid { stroke: var(--border); stroke-width: 1; }
+.cc-zero { stroke: var(--border-strong); stroke-width: 1; }
+.cc-strike { stroke: var(--border-strong); stroke-width: 1; stroke-dasharray: 3 4; }
+.cc-now { stroke: var(--text-faint); stroke-width: 1; }
+.cc-cross { stroke: var(--text-faint); stroke-width: 1; }
+.cc-line { fill: none; stroke: var(--gold); stroke-width: 2; stroke-linejoin: round; }
+.cc-dot { fill: var(--gold-bright); stroke: var(--panel); stroke-width: 2; }
+.cc-be { fill: var(--panel); stroke: var(--text-muted); stroke-width: 2; }
+.cc-axis { fill: var(--text-faint); font-family: var(--font-mono); font-size: 10px; }
+.cc-tip { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); min-height: 18px; }
+.cc-tip b { color: var(--text); font-weight: 500; }
+.cc-scen { margin-top: 8px; }
+.cc-scen tbody tr { cursor: default; }
+.cc-reply { white-space: pre-wrap; font-size: 13px; line-height: 1.55; color: var(--text); padding: 10px 12px; border-left: 2px solid var(--gold);
+  background: var(--panel-alt); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+@media (max-width: 640px) {
+  .cc-mini input { width: 88px; }
+  .cc-leg select { flex: 1 1 140px; }
+}

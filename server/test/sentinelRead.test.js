@@ -109,6 +109,12 @@ async function seed() {
   await db.query(`INSERT INTO vendor_reconciliations (payee_id, statement_date, statement_balance, status) VALUES ($1, $2, 700, 'done')`, [ids.coop, d(-15)]);
   await db.query(`INSERT INTO forecast_scenarios (name, data) VALUES ('Dry year', '{"price_pct": -20}')`);
   await db.query(`INSERT INTO settings (key, value) VALUES ('some_api_token', '"tok-should-never-leak"')`);
+  // The covered-call desk: a drop the watcher noted, and a closed position (no live quote needed).
+  await db.query(`INSERT INTO settings (key, value) VALUES ('covered_call_alerts', $1)`, [JSON.stringify([{ symbol: 'NVDA', date: '2026-11-17', at: '2026-11-17T15:30:00Z',
+    price: 153.6, day_pct: -1.6, from_high_pct: -30.8, why: ['30.8% below its 20-day high of $221.97'], expiries_this_week: 3,
+    picked: { call: { strike: 167.5, expiry: '2026-11-18', bid: 1.82, delta: 0.22 }, put: { strike: 140, expiry: '2026-12-31', ask: 6.65 }, lots: 1, income_per_day: 91, max_loss_per_lot: -1939 } }])]);
+  await db.query(`INSERT INTO options_positions (symbol, shares, cost, opened_on, legs, premium_collected, status, closed_on, closed_price)
+    VALUES ('NVDA', 100, 150, '2026-10-01', '[]', 640, 'closed', '2026-10-20', 158)`);
 }
 
 before(async () => {

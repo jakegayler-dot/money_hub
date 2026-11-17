@@ -132,6 +132,21 @@ Returns the plan and the scenario side by side (lowest month, tightest month aga
       required: ['action'],
     },
   },
+  // Nov 17 (Jake: "a covered call strategist ... have Andrew or Mike offer guidance"): the covered-call desk (lib/options).
+  {
+    name: 'covered_calls',
+    description: "Jake's covered-call desk (the Covered calls page): stocks he watches for drops, bought to write short-dated calls against, with puts bought as protection. Cboe's quotes, 15 minutes delayed. action scan: his watchlist (today's move, how far below the recent high, expiries this week, which dropped by his rule). action plan (symbol): what his own rules pick there today (the call nearest his delta in the nearest expiry, the put about his % below at the least cost a day, the lots his capital and loss limits allow) and one lot's max gain, max loss, breakeven, income a day and scenarios. action evaluate (position): any position's figures (price, shares, cost, legs [{type call|put, side short|long, strike, expiry, premium, contracts, iv}]). action positions: his recorded positions, valued now. action rules / alerts: his rules; the drops the watcher noted.",
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['scan', 'plan', 'evaluate', 'positions', 'rules', 'alerts'] },
+        symbol: { type: 'string', description: 'plan: the stock, e.g. NVDA' },
+        overrides: { type: 'object', description: 'plan: rules to try instead of his (target_delta, call_max_days, protect, put_below_pct, put_days_min, put_days_max, capital, max_position_pct, max_loss_pct)' },
+        position: { type: 'object', description: 'evaluate: { price, shares, cost, legs }' },
+      },
+      required: ['action'],
+    },
+  },
   {
     name: 'forget',
     description: 'Retire a remembered note (by its id) that is wrong or no longer true. Use when Jake corrects one, then remember the right version.',
@@ -268,6 +283,33 @@ export async function runTool(name, input = {}, run = {}) {
       const out = res ? await res.json().catch(() => null) : null;
       if (!res || !res.ok) throw new AdvisorToolError(`Andrew didn't take it${out?.error?.message ? `: ${out.error.message}` : res ? ` (${res.status})` : ''}.`);
       return clip(send ? { sent: out.job?.title, job: out.job?.id, bot: out.job?.worker || 'Data Entry', note: 'It reports back on its own schedule; check with action list.' } : out);
+    }
+    case 'covered_calls': {
+      const desk = await import('../options/desk.js');
+      try {
+        switch (input.action) {
+          case 'scan': return clip(await desk.scan());
+          case 'plan': {
+            if (!input.symbol) throw new AdvisorToolError('plan needs a symbol');
+            const { lot, ...p } = await desk.plan(String(input.symbol).toUpperCase(), input.overrides || {});
+            const { curve, ...figures } = lot;
+            return clip({ ...p, one_lot: figures });
+          }
+          case 'evaluate': {
+            const { evaluate } = await import('../options/strategy.js');
+            if (!(Number(input.position?.price) > 0)) throw new AdvisorToolError('evaluate needs position.price');
+            const { curve, ...figures } = evaluate(input.position);
+            return clip(figures);
+          }
+          case 'positions': return clip(await desk.positions());
+          case 'rules': return clip(await desk.getRules());
+          case 'alerts': return clip(await desk.alerts());
+          default: throw new AdvisorToolError('action: scan, plan, evaluate, positions, rules or alerts');
+        }
+      } catch (err) {
+        if (err instanceof AdvisorToolError) throw err;
+        return `The covered-call desk couldn't get that: ${err.message}`;
+      }
     }
     case 'forget': {
       const { rowCount } = await pool.query('UPDATE advisor_notes SET retired_at = now() WHERE id = $1 AND retired_at IS NULL', [Number(input.id)]);

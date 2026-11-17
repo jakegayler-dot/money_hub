@@ -36,6 +36,7 @@ import farmDocsRoute from './routes/farmDocs.js';
 import goalsRoute from './routes/goals.js';
 import landRoute from './routes/land.js';
 import rewardsRoute from './routes/rewards.js';
+import optionsRoute from './routes/options.js';
 import { readPending, matchPending } from './lib/receipts.js';
 import { pairTransfers } from './lib/transferPairs.js';
 import { reclassifyCardPayments } from './lib/postings.js';
@@ -124,6 +125,7 @@ app.use('/api/farm-docs', farmDocsRoute);
 app.use('/api/goals', goalsRoute);
 app.use('/api/land', landRoute);
 app.use('/api/rewards', rewardsRoute);
+app.use('/api/options', optionsRoute);
 
 // In production, this is the only Railway service — it serves the built
 // client alongside the API so there's nothing extra to deploy or wire up.
@@ -203,4 +205,13 @@ app.listen(port, () => {
     .catch((e) => console.error('Clothes sweep failed:', e.message));
   setTimeout(clothesSweep, 120000);
   setInterval(clothesSweep, 6 * 60 * 60 * 1000);
+  // The covered-call desk's watcher: his watchlist every 15 minutes while the US market is open; a drop by his rule is noted
+  // once a stock a day (lib/options/desk.js watch). Off on a local copy with no database.
+  if (process.env.DATABASE_URL) {
+    const optionsWatch = () => import('./lib/options/desk.js').then((d) => d.watch())
+      .then((a) => a.length && console.log(`Covered-call desk: ${a.map((x) => x.symbol).join(', ')} dropped by the rule.`))
+      .catch((e) => console.error('Covered-call watch failed:', e.message));
+    setTimeout(optionsWatch, 60000);
+    setInterval(optionsWatch, 15 * 60 * 1000);
+  }
 });

@@ -1310,6 +1310,28 @@ def({
   },
 });
 
+// ---------- the covered-call desk (Nov 17, lib/options) ----------
+def({
+  name: 'covered_calls', mode: 'js', idType: 'text', summary: true,
+  description: "SUMMARY. The covered-call desk's drop alerts, newest first: a stock on Jake's watchlist that fell by his rule (down a set % in a day or under its recent high), when, why, and what his own rules picked then (the call to sell, the put to buy, the lots, income a day, the most one lot could lose). Cboe quotes, 15 minutes delayed. id = symbol:date (New York).",
+  fields: ['id', 'symbol', 'date', 'at', 'price', 'day_pct', 'from_high_pct', 'why', 'expiries_this_week', 'picked'],
+  search: ['symbol'], date: 'date', filters: [],
+  load: async () => {
+    const { alerts } = await import('./options/desk.js');
+    return (await alerts()).map((a) => ({ id: `${a.symbol}:${a.date}`, ...a }));
+  },
+});
+def({
+  name: 'covered_call_positions', mode: 'js', idType: 'int', summary: true,
+  description: "SUMMARY. Jake's covered-call positions as he recorded them (Money Hub never trades): the stock, shares, cost, today's price, the stock's gain or loss, options cash so far (premium in, less puts and buy-backs), the legs he holds now and their max gain and loss to the nearest expiry. status planned, open or closed.",
+  fields: ['id', 'symbol', 'shares', 'cost', 'status', 'opened_on', 'closed_on', 'price', 'stock_pnl', 'premium_collected', 'total_pnl', 'legs', 'figures', 'notes'],
+  search: ['symbol', 'status'], date: 'opened_on', filters: [],
+  load: async () => {
+    const { positions } = await import('./options/desk.js');
+    return (await positions()).map(({ days_held, ...p }) => p);
+  },
+});
+
 // ================= Engine =================
 
 const byName = new Map(collections.map((c) => [c.name, c]));

@@ -1882,3 +1882,21 @@ ALTER TABLE payees ADD COLUMN IF NOT EXISTS gst_number TEXT;
 ALTER TABLE gst_returns ADD COLUMN IF NOT EXISTS lines JSONB;
 ALTER TABLE gst_returns ADD COLUMN IF NOT EXISTS claimed JSONB;
 ALTER TABLE gst_returns ADD COLUMN IF NOT EXISTS carried JSONB;
+
+-- The covered-call desk (Nov 17, lib/options): Jake's stock-and-option positions, his own record (Money Hub never trades).
+-- legs: [{ type call|put, side short|long, strike, expiry, premium, contracts }] as they stand now; premium_collected is
+-- every call written on it so far, net of what was paid to buy any back.
+CREATE TABLE IF NOT EXISTS options_positions (
+  id                SERIAL PRIMARY KEY,
+  symbol            TEXT NOT NULL,
+  shares            INTEGER NOT NULL DEFAULT 0,
+  cost              NUMERIC(14,4) NOT NULL,
+  opened_on         DATE NOT NULL DEFAULT CURRENT_DATE,
+  legs              JSONB NOT NULL DEFAULT '[]',
+  premium_collected NUMERIC(14,2) NOT NULL DEFAULT 0,
+  status            TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('planned', 'open', 'closed')),
+  closed_on         DATE,
+  closed_price      NUMERIC(14,4),
+  notes             TEXT,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
