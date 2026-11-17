@@ -100,6 +100,15 @@ export function evaluate(position, { now = new Date(), testPcts = [] } = {}) {
   const paidOut = legs.filter((l) => l.side === 'long').reduce((a, l) => a + l.premium * l.contracts * 100, 0);
   const call = legs.find((l) => l.type === 'call' && l.side === 'short');
   const put = legs.find((l) => l.type === 'put' && l.side === 'long');
+  // What the headline figures hide (Nov 17, his 105 NVDA with one call and one put: "Max gain is unlimited? And max loss seems
+  // too much?"): shares the calls don't cover keep the gain open, shares the puts don't cover fall all the way.
+  const longPuts = legs.filter((l) => l.type === 'put' && l.side === 'long').reduce((a, l) => a + l.contracts * 100, 0);
+  const extraShares = shortCalls > 0 && shares + longCalls > shortCalls ? shares + longCalls - shortCalls : 0;
+  const callTop = shortCalls ? Math.max(...legs.filter((l) => l.type === 'call' && l.side === 'short').map((l) => l.strike)) : null;
+  const unhedged = longPuts > 0 && shares > longPuts ? shares - longPuts : 0;
+  const putTop = longPuts ? Math.max(...legs.filter((l) => l.type === 'put' && l.side === 'long').map((l) => l.strike)) : null;
+  // Where the floor starts: below this, the loss grows by less than 2% more all the way down.
+  const floorAt = !uncovered && worst[1] < 0 ? vals.filter(([S, v]) => S <= price && v <= worst[1] * 0.98).at(-1)?.[0] ?? null : null;
   const scenarios = [...new Set([-30, -20, -10, -5, 0, 5, 10, 20, ...testPcts])].sort((x, y) => x - y).map((pct) => ({ pct, price: r2(price * (1 + pct / 100)), pnl: r2(pnl(price * (1 + pct / 100))) }));
   const curve = [];
   for (let i = 0; i <= 80; i++) { const S = price * (0.55 + (0.9 * i) / 80); curve.push({ price: r2(S), pnl: r2(pnl(S)) }); }
@@ -110,6 +119,9 @@ export function evaluate(position, { now = new Date(), testPcts = [] } = {}) {
     max_gain: uncovered || rising ? null : r2(best[1]), max_gain_at: uncovered || rising ? null : r2(best[0]),
     max_loss: uncovered ? null : r2(worst[1]), max_loss_at: uncovered ? null : r2(worst[0]),
     unlimited_gain: !uncovered && rising, uncovered,
+    floor_from: floorAt != null && floorAt > 1 ? r2(floorAt) : null,
+    shares_not_called: extraShares, gain_at_call: extraShares && callTop ? r2(pnl(callTop)) : null, call_strike: callTop,
+    shares_without_put: unhedged, put_strike: putTop, loss_at_put: putTop ? r2(pnl(putTop)) : null,
     breakevens,
     called_away_chance: call?.delta != null ? r2(Math.abs(call.delta) * 100) : null,
     put_pays_chance: put?.delta != null ? r2(Math.abs(put.delta) * 100) : null,

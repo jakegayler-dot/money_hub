@@ -86,6 +86,30 @@ test('net a day: the calls written, less the puts spread from when each was open
   assert.equal(sold.net_per_day, 72);
 });
 
+test('his 105 NVDA with one call and one put: 5 shares neither covers, said (Nov 17: "Max gain is unlimited? And max loss seems too much?")', () => {
+  const legs = [
+    { type: 'call', side: 'short', strike: 165, expiry: '2026-11-20', premium: 5.3, contracts: 1, iv: 0.6 },
+    { type: 'put', side: 'long', strike: 150, expiry: '2026-12-31', premium: 10.55, contracts: 1, iv: 0.6 },
+  ];
+  const now = new Date('2026-11-17T20:00:00Z');
+  const r = evaluate({ price: 152.86, shares: 105, cost: 159.84, legs }, { now });
+  assert.equal(r.unlimited_gain, true);
+  assert.equal(r.shares_not_called, 5);
+  assert.equal(r.call_strike, 165);
+  near(r.gain_at_call, 643.14, 1);
+  assert.equal(r.shares_without_put, 5);
+  // 100 shares from US$159.84 to the put's 150 (984), the put (1,055) less the call (530), 5 bare shares to zero (799), and the
+  // put's time left on Nov 20 (worth a little under its full payoff then).
+  near(r.max_loss, -2372.7, 1);
+  assert.ok(r.max_loss < -(984 + 1055 - 530 + 799) && r.max_loss > -(984 + 1055 - 530 + 799) - 100);
+  const round = evaluate({ price: 152.86, shares: 100, cost: 159.84, legs }, { now });
+  assert.equal(round.shares_not_called, 0);
+  assert.equal(round.shares_without_put, 0);
+  near(round.max_gain, 617.34, 1);
+  assert.equal(round.max_gain_at, 165);
+  assert.ok(round.floor_from > 90 && round.floor_from < 150, `floor from ${round.floor_from}`);
+});
+
 test('no calls: gain unlimited; more calls than shares: uncovered, no max loss', () => {
   assert.equal(evaluate({ price: 100, shares: 100, legs: [] }).unlimited_gain, true);
   const r = evaluate({ price: 100, shares: 100, legs: [{ type: 'call', side: 'short', strike: 110, expiry: '2026-11-20', premium: 1, contracts: 2 }] }, { now: NOW });
