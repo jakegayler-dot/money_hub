@@ -138,7 +138,9 @@ function LegRow({ leg, symbol, expiries, onChange, onRemove }) {
     const c = list.find((x) => x.strike === Number(k));
     onChange({ ...leg, strike: Number(k), premium: c ? (leg.side === 'short' ? c.bid : c.ask) : leg.premium, iv: c?.iv, delta: c?.delta });
   };
-  const cur = list.find((x) => x.strike === leg.strike);
+  const cur = list.find((x) => x.strike === Number(leg.strike));
+  // A leg loaded from his positions has his own price but often no IV: take the market's, so a longer put is valued right.
+  useEffect(() => { if (cur && leg.iv == null && cur.iv != null) onChange({ ...leg, iv: cur.iv, delta: leg.delta ?? cur.delta }); }, [cur?.iv]);
   return (
     <div className="cc-leg">
       <select value={`${leg.side}-${leg.type}`} onChange={(e) => { const [side, type] = e.target.value.split('-'); onChange({ ...leg, side, type }); }}>
@@ -150,6 +152,7 @@ function LegRow({ leg, symbol, expiries, onChange, onRemove }) {
       </select>
       <select value={leg.strike || ''} onChange={(e) => setStrike(e.target.value)}>
         <option value="">Strike</option>
+        {leg.strike && !cur ? <option value={leg.strike}>{leg.strike}</option> : null}
         {list.map((c) => <option key={c.strike} value={c.strike}>{c.strike} · {c.bid.toFixed(2)}/{c.ask.toFixed(2)} · Δ{c.delta == null ? '—' : Math.abs(c.delta).toFixed(2)}</option>)}
       </select>
       <label className="cc-mini">Price<input type="number" step="0.01" min="0" value={leg.premium} onChange={(e) => onChange({ ...leg, premium: e.target.value })} /></label>
@@ -161,7 +164,16 @@ function LegRow({ leg, symbol, expiries, onChange, onRemove }) {
 }
 
 // ---------------------------------------------------------------- the rules' pick, the calculator, Mike
-function Desk({ symbol, rules, onSaved }) {
+// loaded: one of his positions to put in the calculator (Nov 17: "Make it so I can load my positions into the calculator").
+const nyToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+const fromPosition = (p) => ({
+  shares: p.shares, cost: p.cost,
+  legs: (p.legs || []).filter((l) => l.expiry >= nyToday()).map((l) => ({ ...l, premium: Number(l.premium), contracts: Number(l.contracts) || 1 })),
+});
+function Desk({ symbol, rules, onSaved, loaded }) {
+  const [from, setFrom] = useState(null); // the position in the calculator, or null for the rules' pick
+  const calcRef = useRef(null);
+  const showCalc = () => setTimeout(() => calcRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
   const [plan, setPlan] = useState(null);
   const [err, setErr] = useState(null);
   const [pos, setPos] = useState(null); // { shares, cost, legs }
@@ -178,8 +190,15 @@ function Desk({ symbol, rules, onSaved }) {
   });
   useEffect(() => {
     setPlan(null); setErr(null); setFigs(null); setMike({ busy: false, reply: null, err: null, q: '' }); setSaved(null);
-    send('GET', `/api/options/plan/${symbol}`).then((p) => { setPlan(p); setPos(fromPlan(p)); }).catch((e) => setErr(e.message));
+    send('GET', `/api/options/plan/${symbol}`).then((p) => {
+      setPlan(p);
+      if (loaded?.symbol === symbol) { setPos(fromPosition(loaded)); setFrom(loaded); showCalc(); } else { setPos(fromPlan(p)); setFrom(null); }
+    }).catch((e) => setErr(e.message));
   }, [symbol, rules]);
+  useEffect(() => { // a position loaded on the stock already open
+    if (!loaded || loaded.symbol !== symbol || plan?.symbol !== symbol) return;
+    setPos(fromPosition(loaded)); setFrom(loaded); setSaved(null); showCalc();
+  }, [loaded]);
   useEffect(() => {
     if (!plan || !pos) return;
     const t = setTimeout(() => send('POST', '/api/options/evaluate', { position: { price: plan.price, ...pos } }).then(setFigs).catch((e) => setErr(e.message)), 150);
@@ -208,6 +227,9 @@ function Desk({ symbol, rules, onSaved }) {
     symbol, shares: pos.shares, cost: pos.cost, status, opened_on: localToday(),
     legs: pos.legs, premium_collected: status === 'open' ? pos.legs.reduce((a, l) => a + (l.side === 'short' ? 1 : -1) * Number(l.premium) * Number(l.contracts) * 100, 0) : 0,
   }).then(() => { setSaved(status); onSaved(); }).catch((e) => setErr(e.message));
+  // His own entry, changed in the calculator: shares, cost and the legs; options cash is left as it is.
+  const update = () => send('PATCH', `/api/options/positions/${from.id}`, { shares: Number(pos.shares), cost: Number(pos.cost), legs: pos.legs })
+    .then(() => { setSaved('updated'); onSaved(); }).catch((e) => setErr(e.message));
 
   const q = plan.quote;
   return (
@@ -238,8 +260,10 @@ function Desk({ symbol, rules, onSaved }) {
         )}
       </div>
 
-      <div className="cc-calc cc-pad">
-        <div className="cc-pick-head">Calculator <button type="button" className="small-link" onClick={() => setPos(fromPlan(plan))}>back to your rules’ pick</button></div>
+      <div className="cc-calc cc-pad" ref={calcRef}>
+        <div className="cc-pick-head">Calculator{from ? <>: your position <span className="cc-faint">({from.shares} shares at {usd(from.cost, 2)}{from.source === 'broker' ? ', from your broker' : ''})</span></> : ''}{' '}
+          {from && <button type="button" className="small-link" onClick={() => setPos(fromPosition(from))}>start over from it</button>}{' '}
+          <button type="button" className="small-link" onClick={() => { setPos(fromPlan(plan)); setFrom(null); setSaved(null); }}>{from ? 'your rules’ pick instead' : 'back to your rules’ pick'}</button></div>
         <div className="cc-row">
           <label className="cc-mini">Shares<input type="number" step="100" min="0" value={pos.shares} onChange={(e) => setPos({ ...pos, shares: e.target.value })} /></label>
           <label className="cc-mini">Cost a share<input type="number" step="0.01" min="0" value={pos.cost} onChange={(e) => setPos({ ...pos, cost: e.target.value })} /></label>
@@ -277,11 +301,20 @@ function Desk({ symbol, rules, onSaved }) {
                 </tbody>
               </table>
             </div>
-            <div className="cc-row">
-              <button type="button" className="small" onClick={() => save('open')}>I’ve put this on</button>
-              <button type="button" className="small secondary" onClick={() => save('planned')}>Save as a plan</button>
-              {saved && <span className="cc-faint">Saved to your positions{saved === 'planned' ? ' as a plan' : ''}.</span>}
-            </div>
+            {from ? (
+              <div className="cc-row">
+                {from.source !== 'broker' && <button type="button" className="small" onClick={update}>Save changes to this position</button>}
+                <button type="button" className="small secondary" onClick={() => save('planned')}>Save as a plan</button>
+                {from.source === 'broker' && <span className="cc-faint">From your broker: changes here are a what-if; the bot’s next sync keeps the record.</span>}
+                {saved && <span className="cc-faint">{saved === 'updated' ? 'Position updated.' : 'Saved to your positions as a plan.'}</span>}
+              </div>
+            ) : (
+              <div className="cc-row">
+                <button type="button" className="small" onClick={() => save('open')}>I’ve put this on</button>
+                <button type="button" className="small secondary" onClick={() => save('planned')}>Save as a plan</button>
+                {saved && <span className="cc-faint">Saved to your positions{saved === 'planned' ? ' as a plan' : ''}.</span>}
+              </div>
+            )}
           </>
         )}
       </div>
@@ -331,7 +364,7 @@ function Rules({ rules, saveRules }) {
 }
 
 // ---------------------------------------------------------------- his positions
-function Positions({ list, reload, onPick }) {
+function Positions({ list, reload, onLoad }) {
   const [log, setLog] = useState(null); // { id, amount }
   const [err, setErr] = useState(null);
   const [sync, setSync] = useState(null);
@@ -355,7 +388,7 @@ function Positions({ list, reload, onPick }) {
             <tbody>
               {list.map((p) => (
                 <tr key={p.id} className={p.status === 'closed' ? 'cc-closed' : ''}>
-                  <td><button type="button" className="small-link" onClick={() => onPick(p.symbol)}><b>{p.symbol}</b></button>{p.status !== 'open' && <span className="badge"> {p.status.toUpperCase()}</span>}{p.source === 'broker' && p.status !== 'closed' && <span className="cc-faint"> · broker</span>}</td>
+                  <td><button type="button" className="small-link" onClick={() => onLoad(p)} title="Load into the calculator"><b>{p.symbol}</b></button>{p.status !== 'open' && <span className="badge"> {p.status.toUpperCase()}</span>}{p.source === 'broker' && p.status !== 'closed' && <span className="cc-faint"> · broker</span>}</td>
                   <td className="num">{p.shares}</td><td className="num">{usd(p.cost, 2)}</td><td className="num">{usd(p.price, 2)}</td>
                   <td className={`num ${p.stock_pnl < 0 ? 'neg' : 'pos'}`}>{cad(p.stock_pnl)}</td>
                   <td className="num">{cad(p.premium_collected)}</td>
@@ -364,6 +397,7 @@ function Positions({ list, reload, onPick }) {
                   <td className={`num ${p.figures?.net_per_day < 0 ? 'neg' : ''}`} title={p.figures ? `${cad(p.figures.income_per_day)} calls − ${cad(p.figures.protection_per_day)} puts` : ''}>{cad(p.figures?.net_per_day)}</td>
                   <td className="num">{cad(p.figures?.max_loss)}</td>
                   <td className="cc-actions">
+                    {p.status !== 'closed' && <button type="button" className="small" onClick={() => onLoad(p)}>Calculator</button>}
                     {p.status !== 'closed' && (log?.id === p.id ? (
                       <span className="cc-row">
                         <input type="number" step="1" placeholder="US$ in" value={log.amount} onChange={(e) => setLog({ ...log, amount: e.target.value })} style={{ width: 80 }} />
@@ -393,6 +427,9 @@ export default function CoveredCalls() {
   const [positions, setPositions] = useState(null);
   const [alerts, setAlerts] = useState([]);
   const [fx, setFx] = useState(null);
+  const [loaded, setLoaded] = useState(null); // a position sent to the calculator (a fresh object each time, so a second tap reloads it)
+  const loadPosition = (p) => { setSelected(p.symbol); setLoaded({ ...p }); };
+  const pickStock = (s) => { setLoaded(null); setSelected(s); }; // a stock from the list or an alert: the rules' pick
   FX = fx?.rate || null;
   const loadScan = () => send('GET', '/api/options/scan').then((s) => {
     setScan(s); setScanErr(null);
@@ -421,15 +458,15 @@ export default function CoveredCalls() {
       </div>
       {today.length > 0 && (
         <div className="cc-alerts">{today.map((a) => (
-          <button key={a.symbol} type="button" className="cc-alert" onClick={() => setSelected(a.symbol)}>
+          <button key={a.symbol} type="button" className="cc-alert" onClick={() => pickStock(a.symbol)}>
             <b>{a.symbol}</b> {a.why.join('; ')}{a.picked?.call ? ` · your rules: sell the ${a.picked.call.strike} call ${short(a.picked.call.expiry).split(',')[0]} for ${a.picked.call.bid.toFixed(2)}` : ''}
           </button>
         ))}</div>
       )}
-      {rules && <Watchlist scan={scan} err={scanErr} selected={selected} onPick={setSelected} rules={rules} saveRules={saveRules} />}
-      {rules && selected && <Desk symbol={selected} rules={rules} onSaved={loadPositions} />}
+      {rules && <Watchlist scan={scan} err={scanErr} selected={selected} onPick={pickStock} rules={rules} saveRules={saveRules} />}
+      {rules && selected && <Desk symbol={selected} rules={rules} onSaved={loadPositions} loaded={loaded} />}
       {rules && <Rules rules={rules} saveRules={saveRules} />}
-      <Positions list={positions} reload={loadPositions} onPick={setSelected} />
+      <Positions list={positions} reload={loadPositions} onLoad={loadPosition} />
     </div>
   );
 }
