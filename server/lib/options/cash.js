@@ -175,16 +175,23 @@ export async function insurance({ now = new Date(), list: given = null, fx: give
     const puts = legs.filter((l) => l.type === 'put' && l.side === 'long');
     const calls = legs.filter((l) => l.type === 'call' && l.side === 'short');
     const heldCost = puts.reduce((a, l) => a + Number(l.premium) * Number(l.contracts) * 100, 0);
-    const paid = c ? Math.max(0, -toUsd(c.puts)) : heldCost;
+    // What the puts cost (Nov 17, "why does it say the puts have been paid off?"): his entries' net when they account for the
+    // puts he holds; when they show well under what those cost (put trades not sorted yet), the cost of the puts held, said.
+    // With no entries for the stock, what the calls have paid back isn't known, so the whole cost stands: never "paid off"
+    // on a guess (the positions record's option cash can be the bot's own total, not calls less puts).
+    const entryPaid = c ? Math.max(0, -toUsd(c.puts)) : 0;
+    const basis = !c ? 'positions' : heldCost > 0 && entryPaid < heldCost * 0.6 ? 'held' : 'entries';
+    const paid = basis === 'entries' ? entryPaid : heldCost;
     if (!(paid > 0)) return null;
-    const collected = c ? toUsd(c.calls) : Math.max(0, ps.reduce((a, p) => a + p.premium_collected, 0) + heldCost);
+    const collected = c ? Math.max(0, toUsd(c.calls)) : null;
     const expiry = puts.map((l) => l.expiry).filter((e) => daysTo(e, now) > 0).sort().at(-1) || null;
     const daysLeft = expiry ? incomeDays(expiry, now) : null;
-    const left = Math.max(0, paid - collected);
+    const left = collected == null ? paid : Math.max(0, paid - collected);
     const callNow = calls.reduce((a, l) => a + l.per_day, 0);
     const daysToEven = left <= 0 ? 0 : callNow > 0 ? Math.ceil(left / callNow) : null;
     return {
-      symbol, from: c ? 'entries' : 'positions', puts_paid: r2(paid), calls_collected: r2(collected), left: r2(left),
+      symbol, from: basis, puts_paid: r2(paid), calls_collected: collected == null ? null : r2(collected), left: r2(left),
+      puts_in_entries: c ? r2(entryPaid) : null, puts_held_cost: r2(heldCost), call_entries: c ? c.call_entries : 0, put_entries: c ? c.put_entries : 0,
       put_expiry: expiry, trading_days_left: daysLeft, needed_per_day: daysLeft ? r2(left / daysLeft) : null,
       call_now_per_day: r2(callNow), days_to_even: daysToEven, even_on: daysToEven ? sessionDate(daysToEven, now) : null,
       in_time: daysToEven == null || daysLeft == null ? null : daysToEven <= daysLeft,
@@ -198,6 +205,9 @@ export async function insurance({ now = new Date(), list: given = null, fx: give
     stocks: rows,
     total: rows.length ? {
       puts_paid: sum('puts_paid'), calls_collected: sum('calls_collected'), left, put_expiry: expiry,
+      from: rows.every((r) => r.from === 'entries') ? 'entries' : 'mixed', calls_unknown: rows.filter((r) => r.calls_collected == null).map((r) => r.symbol),
+      puts_from_held: rows.filter((r) => r.from === 'held').map((r) => r.symbol),
+      call_entries: rows.reduce((a, r) => a + r.call_entries, 0), put_entries: rows.reduce((a, r) => a + r.put_entries, 0),
       trading_days_left: expiry ? incomeDays(expiry, now) : null, needed_per_day: sum('needed_per_day'), call_now_per_day: callNow,
       days_to_even: daysToEven, even_on: daysToEven ? sessionDate(daysToEven, now) : null,
     } : null,

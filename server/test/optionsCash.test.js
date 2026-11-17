@@ -120,10 +120,12 @@ test('the puts as insurance (Nov 17: "a fixed cost that needs to be extracted ov
   assert.equal(nv.even_on, '2026-11-20');
   assert.equal(nv.in_time, true);
   const amd = r.stocks.find((x) => x.symbol === 'AMD');
+  // Nov 17 ("why does it say the puts have been paid off?"): with no entries the calls aren't known, so the whole cost stands.
   assert.equal(amd.from, 'positions');
   assert.equal(amd.puts_paid, 600);
-  assert.equal(amd.calls_collected, 250);
-  assert.equal(amd.left, 350);
+  assert.equal(amd.calls_collected, null);
+  assert.equal(amd.left, 600);
+  assert.equal(amd.needed_per_day, 26.09);
   assert.equal(amd.trading_days_left, 23);
   assert.equal(amd.call_now_per_day, 0);
   assert.equal(amd.days_to_even, null, 'no call open: nothing coming in to pay it off');
@@ -133,6 +135,18 @@ test('the puts as insurance (Nov 17: "a fixed cost that needs to be extracted ov
   assert.equal(sp.puts_paid, 585);
   assert.equal(sp.trading_days_left, null);
   assert.equal(r.total.puts_paid, 966 + 600 + 585);
-  assert.equal(r.total.left, 408 + 350 + sp.left);
+  assert.equal(r.total.left, 408 + 600 + sp.left);
+  assert.deepEqual(r.total.calls_unknown, ['AMD']);
+  assert.equal(nv.put_entries, 4);
+  assert.equal(nv.call_entries, 2);
+  // His entries show far less in puts than the puts he holds cost (their trades aren't sorted): the held cost counts, and it
+  // says so, instead of calling a $2,400 put paid off by $558 of calls.
+  const big = await insurance({ now, fx: null, list: [{ symbol: 'NVDA', status: 'open', premium_collected: 0, open_legs: [leg('put', 'long', 150, '2026-12-31', 24, 33)] }] });
+  const b = big.stocks.find((x) => x.symbol === 'NVDA');
+  assert.equal(b.from, 'held');
+  assert.equal(b.puts_paid, 2400);
+  assert.equal(b.puts_in_entries, 966);
+  assert.equal(b.left, 2400 - 558);
+  assert.deepEqual(big.total.puts_from_held, ['NVDA']);
   assert.equal(r.total.put_expiry, '2026-12-31');
 });

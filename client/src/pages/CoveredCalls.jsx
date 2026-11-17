@@ -485,19 +485,24 @@ function EntryRow({ e, money, onSaved, withWord }) {
 // total, from /api/options/insurance (US$).
 function Insurance({ x }) {
   if (!x) return null;
-  const even = x.left <= 0;
+  const known = x.calls_collected != null && !(x.calls_unknown?.length);
+  const even = known && x.left <= 0;
+  const n = (k, word) => `${k} ${word} entr${k === 1 ? 'y' : 'ies'}`;
   return (
     <div className="cc-meter-text">
       <span>
-        The puts cost {cad(x.puts_paid)}{x.put_expiry ? ` and cover you to ${day(x.put_expiry)}` : ''}. The calls have paid back {cad(x.calls_collected)}
-        {even ? `: paid off, with ${cad(x.calls_collected - x.puts_paid)} over.` : `, leaving ${cad(x.left)}.`}
+        {x.from === 'entries' ? `The puts cost ${cad(x.puts_paid)} net (${n(x.put_entries, 'put')})` : `The puts you hold cost ${cad(x.puts_paid)}`}{x.put_expiry ? ` and cover you to ${day(x.put_expiry)}` : ''}.
+        {x.calls_collected == null ? ' What the calls have paid back isn’t known: none of this stock’s trades are in your Money Hub entries, so the whole cost is still counted.'
+          : ` The calls have paid back ${cad(x.calls_collected)} (${n(x.call_entries, 'call')})${even ? `: that covers the puts, with ${cad(x.calls_collected - x.puts_paid)} over.` : `, leaving ${cad(x.left)}.`}`}
         {!even && x.trading_days_left ? ` Over the ${x.trading_days_left} trading day${x.trading_days_left === 1 ? '' : 's'} left that is ${cad(x.needed_per_day, 2)} a trading day to break even by then.` : ''}
       </span>
-      {!even && (
-        <span className="cc-faint">{x.call_now_per_day > 0
-          ? `The calls open now bring ${cad(x.call_now_per_day)} a trading day: at that rate the puts are paid off in ${x.days_to_even} trading day${x.days_to_even === 1 ? '' : 's'}, on ${day(x.even_on)}${x.in_time === false ? ', after the puts expire' : ''}.`
-          : 'No call is open now, so nothing is paying the puts down.'}</span>
-      )}
+      {x.from === 'held' && <span className="review-error">Your Money Hub entries show only {cad(x.puts_in_entries)} of puts, less than the puts you hold cost: some put trades aren’t sorted yet (see the entries below), so the cost of the puts you hold is used.</span>}
+      {x.puts_from_held?.length > 0 && <span className="review-error">For {x.puts_from_held.join(', ')} the entries show less in puts than the puts you hold cost, so the held cost is used: some put trades aren’t sorted yet.</span>}
+      {x.calls_unknown?.length > 0 && <span className="cc-faint">Calls aren’t known for {x.calls_unknown.join(', ')} (no trade entries), so their puts count in full.</span>}
+      {!even && x.call_now_per_day > 0 && x.days_to_even ? (
+        <span className="cc-faint">If the next calls pay what the one open now does ({cad(x.call_now_per_day)} a trading day), the rest is covered in {x.days_to_even} trading day{x.days_to_even === 1 ? '' : 's'}, by {day(x.even_on)}{x.in_time === false ? ', after the puts expire' : ''}. The open call’s own premium is already counted above.</span>
+      ) : null}
+      {!even && !(x.call_now_per_day > 0) && <span className="cc-faint">No call is open now.</span>}
     </div>
   );
 }
