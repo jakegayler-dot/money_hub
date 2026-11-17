@@ -12,7 +12,7 @@ import { ah } from '../lib/asyncHandler.js';
 import { SYMBOL } from '../lib/options/market.js';
 import { evaluate } from '../lib/options/strategy.js';
 import { toISODate } from '../lib/dates.js';
-import { getRules, saveRules, scan, plan, strikes, alerts, positions, positionFields } from '../lib/options/desk.js';
+import { getRules, saveRules, scan, plan, strikes, alerts, positions, positionFields, lastSync } from '../lib/options/desk.js';
 
 const router = Router();
 const sym = (s) => {
@@ -42,6 +42,7 @@ router.post('/evaluate', ah(async (req, res) => {
   res.json(evaluate(p));
 }));
 
+router.get('/sync', ah(async (req, res) => res.json(await lastSync())));
 router.get('/positions', ah(async (req, res) => { try { res.json(await positions()); } catch (e) { fail(res, e); } }));
 router.post('/positions', ah(async (req, res) => {
   try {

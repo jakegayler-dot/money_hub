@@ -324,6 +324,8 @@ function Rules({ rules, saveRules }) {
 function Positions({ list, reload, onPick }) {
   const [log, setLog] = useState(null); // { id, amount }
   const [err, setErr] = useState(null);
+  const [sync, setSync] = useState(null);
+  useEffect(() => { send('GET', '/api/options/sync').then(setSync).catch(() => {}); }, [list]);
   if (!list) return null;
   const patch = (id, body) => send('PATCH', `/api/options/positions/${id}`, body).then(reload).catch((e) => setErr(e.message));
   const open = list.filter((p) => p.status !== 'closed');
@@ -331,6 +333,10 @@ function Positions({ list, reload, onPick }) {
     <div className="panel cc-panel">
       <div className="panel-header spend-header"><span>Your positions</span>
         <span className="cc-faint">{open.length ? `options cash so far ${usd(open.reduce((a, p) => a + p.premium_collected, 0))}` : 'none yet'}</span></div>
+      <p className="cc-faint cc-pad" style={{ margin: 0 }}>
+        {sync ? `From your broker${sync.account ? ` (${sync.account})` : ''}${sync.by ? ` by ${sync.by}` : ''}: ${new Date(sync.at).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/Regina' })}`
+          : 'Nothing from your broker yet: your Grok bot sends the account with submit_positions.'}
+      </p>
       {err && <p className="review-error">{err}</p>}
       {list.length > 0 && (
         <div className="table-scroll">
@@ -339,7 +345,7 @@ function Positions({ list, reload, onPick }) {
             <tbody>
               {list.map((p) => (
                 <tr key={p.id} className={p.status === 'closed' ? 'cc-closed' : ''}>
-                  <td><button type="button" className="small-link" onClick={() => onPick(p.symbol)}><b>{p.symbol}</b></button>{p.status !== 'open' && <span className="badge"> {p.status.toUpperCase()}</span>}</td>
+                  <td><button type="button" className="small-link" onClick={() => onPick(p.symbol)}><b>{p.symbol}</b></button>{p.status !== 'open' && <span className="badge"> {p.status.toUpperCase()}</span>}{p.source === 'broker' && p.status !== 'closed' && <span className="cc-faint"> · broker</span>}</td>
                   <td className="num">{p.shares}</td><td className="num">{usd(p.cost, 2)}</td><td className="num">{usd(p.price, 2)}</td>
                   <td className={`num ${p.stock_pnl < 0 ? 'neg' : 'pos'}`}>{usd(p.stock_pnl)}</td>
                   <td className="num">{usd(p.premium_collected)}</td>

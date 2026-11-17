@@ -14,6 +14,8 @@
 //                                         task off (or reopen it); answers { source_id, item } as Sentinel stores it
 //   POST /api/sentinel/actions/goals/:id/study  the money side of a goal study
 //                                         (lib/goalStudy.js); not saved
+//   POST /api/sentinel/actions/positions  his brokerage account as it stands, from a Grok bot through Andrew
+//                                         (submit_positions): the covered-call desk's positions (lib/options/desk.js)
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
@@ -216,6 +218,16 @@ router.post('/purchase', ah(async (req, res) => {
     answer.saved = { id: row.id, name: row.name, replaced: !!old, open: `/cash-flow?whatif=${row.id}` };
   }
   res.json(answer);
+}));
+
+router.post('/positions', ah(async (req, res) => {
+  const { syncPositions } = await import('../lib/options/desk.js');
+  try {
+    res.json(await syncPositions(req.body || {}, { by: req.body?.by ? String(req.body.by).slice(0, 80) : null }));
+  } catch (e) {
+    if (!e.status) throw e;
+    res.status(e.status).json({ error: e.message });
+  }
 }));
 
 export default router;

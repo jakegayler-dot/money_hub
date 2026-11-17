@@ -1324,7 +1324,7 @@ def({
 def({
   name: 'covered_call_positions', mode: 'js', idType: 'int', summary: true,
   description: "SUMMARY. Jake's covered-call positions as he recorded them (Money Hub never trades): the stock, shares, cost, today's price, the stock's gain or loss, options cash so far (premium in, less puts and buy-backs), the legs he holds now and their max gain and loss to the nearest expiry. status planned, open or closed.",
-  fields: ['id', 'symbol', 'shares', 'cost', 'status', 'opened_on', 'closed_on', 'price', 'stock_pnl', 'premium_collected', 'total_pnl', 'legs', 'figures', 'notes'],
+  fields: ['id', 'symbol', 'shares', 'cost', 'status', 'opened_on', 'closed_on', 'price', 'stock_pnl', 'premium_collected', 'total_pnl', 'legs', 'figures', 'notes', 'source', 'synced_at'],
   search: ['symbol', 'status'], date: 'opened_on', filters: [],
   load: async () => {
     const { positions } = await import('./options/desk.js');

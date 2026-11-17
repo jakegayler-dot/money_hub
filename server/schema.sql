@@ -1900,3 +1900,9 @@ CREATE TABLE IF NOT EXISTS options_positions (
   notes             TEXT,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Positions from his broker (Nov 17: "build a way to enter my position ... and I'll have grok bot enter them properly"):
+-- a bot sends the whole account as it stands (POST /api/sentinel/actions/positions, through Andrew's submit_positions);
+-- source 'broker' rows follow each snapshot, 'manual' ones (entered on the page) are left alone.
+ALTER TABLE options_positions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual';
+ALTER TABLE options_positions ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ;

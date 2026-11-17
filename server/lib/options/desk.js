@@ -1,7 +1,7 @@
 // The covered-call desk (Jake, Nov 17): his rules, the watchlist scan for drops, the watcher that notes a drop once a day
 // during US market hours, and his positions. Money Hub only reads the market and keeps his records; it never places a trade.
 import { pool, getSetting } from '../../db.js';
-import { quote, history, chain } from './market.js';
+import { quote, history, chain, parseOcc } from './market.js';
 import { cleanRules, dropCheck, soonExpiries, pick, evaluate, daysTo } from './strategy.js';
 import { toISODate } from '../dates.js';
 
@@ -142,7 +142,7 @@ export async function positions(now = new Date()) {
     const figures = price ? evaluate({ price, shares, cost, legs }, { now }) : null;
     const stockPnl = price ? r2((price - cost) * shares) : null;
     return {
-      id: r.id, symbol: r.symbol, shares, cost, status: r.status, opened_on: toISODate(r.opened_on), closed_on: toISODate(r.closed_on), notes: r.notes,
+      id: r.id, symbol: r.symbol, shares, cost, status: r.status, source: r.source || 'manual', synced_at: r.synced_at || null, opened_on: toISODate(r.opened_on), closed_on: toISODate(r.closed_on), notes: r.notes,
       legs: r.legs || [], premium_collected: Number(r.premium_collected), price: price == null ? null : r2(price),
       stock_pnl: stockPnl, total_pnl: stockPnl == null ? null : r2(stockPnl + Number(r.premium_collected)),
       days_held: Math.max(1, Math.round((now - new Date(`${toISODate(r.opened_on)}T12:00:00Z`)) / 86400e3)),
@@ -150,3 +150,106 @@ export async function positions(now = new Date()) {
     };
   });
 }
+
+// ---------- from his broker ----------
+// A bot sends his brokerage account as it stands now (Nov 17: "build a way to enter my position ... and I'll have grok bot
+// enter them properly"): every stock and option line. Each stock becomes one position with the options on it; a stock no
+// longer held is closed. Option cash runs on by itself: an option that wasn't there last time was opened, so a sold one's
+// premium is added and a bought one's cost taken off, unless the bot sends the total itself (premium_collected). Positions
+// he entered on the page are left alone.
+const SYNC_KEY = 'covered_call_sync';
+const ISO = /^\d{4}-\d{2}-\d{2}$/;
+const legKey = (l) => `${l.type}|${l.side}|${Number(l.strike)}|${l.expiry}`;
+const lower = (v) => String(v || '').trim().toLowerCase();
+
+/** Check and shape a snapshot (pure): { as_of, account, groups: Map symbol → { shares, cost, legs }, collected, errors }. */
+export function readSnapshot(body = {}) {
+  const errors = [];
+  const rows = Array.isArray(body.positions) ? body.positions : null;
+  if (!rows) return { errors: ['positions: a list of every stock and option line in the account'] };
+  const groups = new Map();
+  const group = (sym) => { if (!groups.has(sym)) groups.set(sym, { shares: 0, costTotal: 0, legs: [] }); return groups.get(sym); };
+  rows.forEach((r, i) => {
+    const at = `positions[${i}]`;
+    const occ = parseOcc(String(r.occ || r.option_symbol || '').replace(/\s+/g, '')) || parseOcc(String(r.symbol || '').replace(/\s+/g, ''));
+    const t = lower(r.type || r.right);
+    const kind = lower(r.kind) === 'option' || occ || t.startsWith('c') || t.startsWith('p') ? 'option' : 'stock';
+    const qty = Number(r.quantity);
+    if (!Number.isFinite(qty) || qty === 0) { errors.push(`${at}: quantity (shares; or contracts, negative = sold)`); return; }
+    if (kind === 'stock') {
+      const sym = String(r.symbol || '').trim().toUpperCase();
+      const cost = Number(r.avg_cost);
+      if (!/^[A-Z]{1,6}$/.test(sym)) { errors.push(`${at}: symbol, like NVDA`); return; }
+      if (!(cost > 0)) { errors.push(`${at}: avg_cost, the average price paid a share`); return; }
+      if (qty < 0) { errors.push(`${at}: a short stock position isn't a covered call`); return; }
+      const g = group(sym); g.shares += qty; g.costTotal += qty * cost;
+      return;
+    }
+    const sym = String(r.underlying || occ?.root || r.symbol || '').trim().toUpperCase();
+    const type = occ?.type || (t.startsWith('p') ? 'put' : t.startsWith('c') ? 'call' : null);
+    const strike = occ?.strike ?? Number(r.strike);
+    const expiry = occ?.expiry ?? String(r.expiry || '').slice(0, 10);
+    const price = Number(r.avg_price ?? r.avg_cost);
+    if (!/^[A-Z]{1,6}$/.test(sym)) { errors.push(`${at}: underlying, the stock the option is on`); return; }
+    if (!type) { errors.push(`${at}: type, call or put`); return; }
+    if (!(strike > 0)) { errors.push(`${at}: strike`); return; }
+    if (!ISO.test(expiry)) { errors.push(`${at}: expiry, YYYY-MM-DD`); return; }
+    if (!(price >= 0)) { errors.push(`${at}: avg_price, the premium a share (e.g. 1.82)`); return; }
+    group(sym).legs.push({ type, side: qty < 0 ? 'short' : 'long', strike, expiry, premium: price, contracts: Math.abs(Math.round(qty)) });
+  });
+  for (const g of groups.values()) g.cost = g.shares ? g.costTotal / g.shares : 0;
+  const collected = body.premium_collected && typeof body.premium_collected === 'object' ? body.premium_collected : {};
+  return { as_of: ISO.test(String(body.as_of || '')) ? body.as_of : null, account: body.account ? String(body.account).slice(0, 80) : null, groups, collected, errors };
+}
+
+/** The cash from options opened since the last snapshot on one stock: + premium for ones sold, − for ones bought. Pure. */
+export function newOptionCash(oldLegs = [], newLegs = []) {
+  const before = new Map();
+  for (const l of oldLegs) before.set(legKey(l), (before.get(legKey(l)) || 0) + Number(l.contracts || 0));
+  let cash = 0;
+  for (const l of newLegs) {
+    const had = before.get(legKey(l)) || 0;
+    const added = Math.max(0, l.contracts - had);
+    before.set(legKey(l), Math.max(0, had - l.contracts));
+    if (added) cash += (l.side === 'short' ? 1 : -1) * l.premium * added * 100;
+  }
+  return r2(cash);
+}
+
+export async function syncPositions(body = {}, { by = null, now = new Date(), priceOf = (s) => quote(s).then((q) => q.price) } = {}) {
+  const snap = readSnapshot(body);
+  if (snap.errors.length) throw Object.assign(new Error(`Nothing saved. Fix these and send the whole account again: ${snap.errors.join('; ')}`), { status: 422 });
+  if (!snap.groups.size && body.confirm_empty !== true) {
+    throw Object.assign(new Error('An empty account would close every position. Send confirm_empty: true if he really holds nothing.'), { status: 422 });
+  }
+  const today = snap.as_of || new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(now);
+  const { rows: open } = await pool.query(`SELECT * FROM options_positions WHERE source = 'broker' AND status <> 'closed'`);
+  const out = { added: [], updated: [], closed: [] };
+  const cost4 = (v) => Math.round(v * 10000) / 10000;
+  for (const [symbol, g] of snap.groups) {
+    const cur = open.find((r) => r.symbol === symbol);
+    const given = snap.collected[symbol];
+    const told = given != null && given !== '' && Number.isFinite(Number(given));
+    if (cur) {
+      const collected = told ? Number(given) : Number(cur.premium_collected) + newOptionCash(cur.legs || [], g.legs);
+      await pool.query(`UPDATE options_positions SET shares = $2, cost = $3, legs = $4, premium_collected = $5, synced_at = $6 WHERE id = $1`,
+        [cur.id, g.shares, cost4(g.cost), JSON.stringify(g.legs), r2(collected), now]);
+      out.updated.push(symbol);
+    } else {
+      const collected = told ? Number(given) : newOptionCash([], g.legs);
+      await pool.query(`INSERT INTO options_positions (symbol, shares, cost, opened_on, legs, premium_collected, status, source, synced_at, notes)
+        VALUES ($1, $2, $3, $4, $5, $6, 'open', 'broker', $7, $8)`,
+        [symbol, g.shares, cost4(g.cost), today, JSON.stringify(g.legs), r2(collected), now, snap.account ? `From ${snap.account}` : null]);
+      out.added.push(symbol);
+    }
+  }
+  for (const r of open.filter((x) => !snap.groups.has(x.symbol))) {
+    const price = await Promise.resolve().then(() => priceOf(r.symbol)).catch(() => null);
+    await pool.query(`UPDATE options_positions SET status = 'closed', closed_on = $2, closed_price = $3, legs = '[]', synced_at = $4 WHERE id = $1`, [r.id, today, price, now]);
+    out.closed.push(r.symbol);
+  }
+  const info = { at: now.toISOString(), as_of: today, account: snap.account, by, holdings: snap.groups.size, ...out };
+  await pool.query(`INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`, [SYNC_KEY, JSON.stringify(info)]);
+  return info;
+}
+export async function lastSync() { return getSetting(SYNC_KEY, null); }
