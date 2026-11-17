@@ -65,6 +65,11 @@ test('the account follows each snapshot; what he entered by hand is left alone; 
   assert.equal(Number(nv.premium_collected), 182);
   assert.equal(nv.legs[0].side, 'short');
 
+  // When each option was opened: the bot's date, else the first day it was seen, kept on later syncs.
+  assert.equal(nv.legs[0].since, '2026-11-17');
+  const s = readSnapshot({ positions: [{ occ: 'NVDA261231P00140000', quantity: 2, avg_price: 15.47, opened: '2026-10-01' }] });
+  assert.equal(s.groups.get('NVDA').legs[0].since, '2026-10-01');
+
   // Next day: Wednesday's call expired, Friday's sold.
   await syncPositions({ as_of: '2026-11-19', positions: [{ symbol: 'NVDA', quantity: 100, avg_cost: 153.9 }, { ...call, expiry: '2026-11-20', avg_price: 1.6 }] }, { now, priceOf });
   r = await rows();

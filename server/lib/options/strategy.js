@@ -28,6 +28,13 @@ export function expiryClose(expiry) {
 export const daysTo = (expiry, now = new Date()) => (expiryClose(expiry) - now) / 86400e3;
 /** Calendar days the premium is earned over: a 0DTE call is one day's income. */
 export const incomeDays = (expiry, now = new Date()) => Math.max(1, Math.ceil(daysTo(expiry, now) - 1e-9));
+/**
+ * The days a leg's premium is spread over (Nov 17: his long puts "average about $17/day"): from the day it was opened
+ * (leg.since, YYYY-MM-DD) to its expiry, or from now when it's being planned. A 0DTE leg is one day.
+ */
+export const legDays = (l, now = new Date()) => (/^\d{4}-\d{2}-\d{2}$/.test(String(l.since || ''))
+  ? Math.max(1, Math.round((Date.parse(`${l.expiry}T12:00:00Z`) - Date.parse(`${l.since}T12:00:00Z`)) / 86400e3))
+  : incomeDays(l.expiry, now));
 
 // ---------- pricing ----------
 function erf(x) {
@@ -87,7 +94,8 @@ export function evaluate(position, { now = new Date(), testPcts = [] } = {}) {
   const rising = vals[vals.length - 1][1] - vals[vals.length - 2][1] > 1e-6;
   const credit = legs.reduce((a, l) => a - legSign(l) * l.premium * l.contracts * 100, 0);
   const premiumIn = legs.filter((l) => l.side === 'short').reduce((a, l) => a + l.premium * l.contracts * 100, 0);
-  const perDay = legs.filter((l) => l.side === 'short').reduce((a, l) => a + (l.premium * l.contracts * 100) / incomeDays(l.expiry, now), 0);
+  const perDay = legs.filter((l) => l.side === 'short').reduce((a, l) => a + (l.premium * l.contracts * 100) / legDays(l, now), 0);
+  const costPerDay = legs.filter((l) => l.side === 'long').reduce((a, l) => a + (l.premium * l.contracts * 100) / legDays(l, now), 0);
   const stockIn = cost * shares;
   const paidOut = legs.filter((l) => l.side === 'long').reduce((a, l) => a + l.premium * l.contracts * 100, 0);
   const call = legs.find((l) => l.type === 'call' && l.side === 'short');
@@ -98,7 +106,7 @@ export function evaluate(position, { now = new Date(), testPcts = [] } = {}) {
   return {
     horizon, shares, cost: r2(cost), price: r2(price),
     money_in: r2(stockIn + paidOut), stock_in: r2(stockIn), premium_in: r2(premiumIn), put_cost: r2(paidOut), net_credit: r2(credit),
-    income_per_day: r2(perDay),
+    income_per_day: r2(perDay), protection_per_day: r2(costPerDay), net_per_day: r2(perDay - costPerDay),
     max_gain: uncovered || rising ? null : r2(best[1]), max_gain_at: uncovered || rising ? null : r2(best[0]),
     max_loss: uncovered ? null : r2(worst[1]), max_loss_at: uncovered ? null : r2(worst[0]),
     unlimited_gain: !uncovered && rising, uncovered,

@@ -59,3 +59,4 @@
   .cc-mini input { width: 88px; }
   .cc-leg select { flex: 1 1 140px; }
 }
+.cc-figs b.cc-neg { color: var(--negative); }

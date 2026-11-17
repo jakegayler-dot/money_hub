@@ -70,6 +70,22 @@ test('a longer put is valued at its time left when the call expires', () => {
   near(at150, (1.5 - 4 + putLeft) * 100, 0.05);
 });
 
+test('net a day: the calls written, less the puts spread from when each was opened (Nov 17: puts "average about $17/day")', () => {
+  // A put bought Oct 1 for $26.35 that expires Dec 31: 91 days, about $29 a day a contract; two contracts. A call sold today.
+  const legs = [
+    { type: 'call', side: 'short', strike: 170, expiry: '2026-11-18', premium: 1.44, contracts: 2 },
+    { type: 'put', side: 'long', strike: 140, expiry: '2026-12-31', premium: 15.47, contracts: 2, since: '2026-10-01', iv: 0.6 },
+  ];
+  const r = evaluate({ price: 153.6, shares: 200, cost: 150, legs }, { now: NOW });
+  assert.equal(r.income_per_day, 144); // $288 over the two days to Wednesday's close
+  near(r.protection_per_day, (15.47 * 200) / 91, 0.01);
+  near(r.net_per_day, 144 - (15.47 * 200) / 91, 0.01);
+  // A call sold Monday for Wednesday is spread over its two days, whenever it's looked at.
+  const sold = evaluate({ price: 153.6, shares: 100, legs: [{ ...legs[0], contracts: 1, since: '2026-11-16' }] }, { now: NOW });
+  assert.equal(sold.income_per_day, 72);
+  assert.equal(sold.net_per_day, 72);
+});
+
 test('no calls: gain unlimited; more calls than shares: uncovered, no max loss', () => {
   assert.equal(evaluate({ price: 100, shares: 100, legs: [] }).unlimited_gain, true);
   const r = evaluate({ price: 100, shares: 100, legs: [{ type: 'call', side: 'short', strike: 110, expiry: '2026-11-20', premium: 1, contracts: 2 }] }, { now: NOW });

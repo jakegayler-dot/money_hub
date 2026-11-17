@@ -92,7 +92,7 @@ export async function watch(now = new Date()) {
       picked = {
         call: p.call && { strike: p.call.strike, expiry: p.call.expiry, bid: p.call.bid, delta: r2(p.call.delta) },
         put: p.put && { strike: p.put.strike, expiry: p.put.expiry, ask: p.put.ask },
-        lots: p.sizing.lots, income_per_day: p.lot.income_per_day, max_loss_per_lot: p.lot.max_loss,
+        lots: p.sizing.lots, income_per_day: p.lot.income_per_day, net_per_day: p.lot.net_per_day, max_loss_per_lot: p.lot.max_loss,
       };
     } catch { /* the alert stands without the picks */ }
     fresh.push({ symbol: st.symbol, date: today, at: now.toISOString(), price: st.price, day_pct: st.day_pct, from_high_pct: st.from_high_pct,
@@ -109,6 +109,7 @@ export async function watch(now = new Date()) {
 const cleanLegs = (legs) => (Array.isArray(legs) ? legs : []).map((l) => ({
   type: l.type === 'put' ? 'put' : 'call', side: l.side === 'long' ? 'long' : 'short', strike: Number(l.strike), expiry: String(l.expiry || '').slice(0, 10),
   premium: Number(l.premium) || 0, contracts: Math.max(1, Math.round(Number(l.contracts) || 1)),
+  ...(/^\d{4}-\d{2}-\d{2}$/.test(String(l.since || '')) ? { since: String(l.since) } : {}),
   ...(Number(l.iv) > 0 ? { iv: Number(l.iv) } : {}), ...(Number.isFinite(Number(l.delta)) && l.delta !== null && l.delta !== '' ? { delta: Number(l.delta) } : {}),
 })).filter((l) => l.strike > 0 && /^\d{4}-\d{2}-\d{2}$/.test(l.expiry)).slice(0, 8);
 
@@ -146,7 +147,8 @@ export async function positions(now = new Date()) {
       legs: r.legs || [], premium_collected: Number(r.premium_collected), price: price == null ? null : r2(price),
       stock_pnl: stockPnl, total_pnl: stockPnl == null ? null : r2(stockPnl + Number(r.premium_collected)),
       days_held: Math.max(1, Math.round((now - new Date(`${toISODate(r.opened_on)}T12:00:00Z`)) / 86400e3)),
-      figures: figures && { max_gain: figures.max_gain, max_loss: figures.max_loss, breakevens: figures.breakevens, horizon: figures.horizon, income_per_day: figures.income_per_day },
+      figures: figures && { max_gain: figures.max_gain, max_loss: figures.max_loss, breakevens: figures.breakevens, horizon: figures.horizon, income_per_day: figures.income_per_day,
+        protection_per_day: figures.protection_per_day, net_per_day: figures.net_per_day },
     };
   });
 }
@@ -195,7 +197,8 @@ export function readSnapshot(body = {}) {
     if (!(strike > 0)) { errors.push(`${at}: strike`); return; }
     if (!ISO.test(expiry)) { errors.push(`${at}: expiry, YYYY-MM-DD`); return; }
     if (!(price >= 0)) { errors.push(`${at}: avg_price, the premium a share (e.g. 1.82)`); return; }
-    group(sym).legs.push({ type, side: qty < 0 ? 'short' : 'long', strike, expiry, premium: price, contracts: Math.abs(Math.round(qty)) });
+    const opened = String(r.opened || r.opened_on || '').slice(0, 10);
+    group(sym).legs.push({ type, side: qty < 0 ? 'short' : 'long', strike, expiry, premium: price, contracts: Math.abs(Math.round(qty)), ...(ISO.test(opened) ? { since: opened } : {}) });
   });
   for (const g of groups.values()) g.cost = g.shares ? g.costTotal / g.shares : 0;
   const collected = body.premium_collected && typeof body.premium_collected === 'object' ? body.premium_collected : {};
@@ -228,6 +231,8 @@ export async function syncPositions(body = {}, { by = null, now = new Date(), pr
   const cost4 = (v) => Math.round(v * 10000) / 10000;
   for (const [symbol, g] of snap.groups) {
     const cur = open.find((r) => r.symbol === symbol);
+    // When each option was opened: the bot's date, else the day it was first seen here (kept from sync to sync).
+    for (const l of g.legs) if (!l.since) l.since = (cur?.legs || []).find((o) => legKey(o) === legKey(l))?.since || today;
     const given = snap.collected[symbol];
     const told = given != null && given !== '' && Number.isFinite(Number(given));
     if (cur) {

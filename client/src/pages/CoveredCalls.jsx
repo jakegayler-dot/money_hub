@@ -252,6 +252,8 @@ function Desk({ symbol, rules, onSaved }) {
             {figs.uncovered && <p className="review-error">More calls sold than shares cover: the loss has no limit if the stock runs.</p>}
             <div className="cc-figs">
               <div><span className="cc-k">Premium in</span><b>{usd(figs.premium_in)}</b><span className="cc-faint">{usd(figs.income_per_day)} a day</span></div>
+              <div><span className="cc-k">Net a day</span><b className={figs.net_per_day < 0 ? 'cc-neg' : ''}>{usd(figs.net_per_day)}</b>
+                <span className="cc-faint">{figs.protection_per_day ? `after ${usd(figs.protection_per_day)} a day of puts` : 'no puts held'}</span></div>
               <div><span className="cc-k">Max gain</span><b>{figs.unlimited_gain ? 'no cap' : usd(figs.max_gain)}</b><span className="cc-faint">{figs.max_gain_at != null ? `at ${usd(figs.max_gain_at, 2)} or above` : ''}</span></div>
               <div><span className="cc-k">Max loss</span><b>{figs.max_loss == null ? 'no limit' : usd(figs.max_loss)}</b><span className="cc-faint">{figs.max_loss_at != null ? (figs.max_loss_at < 1 ? 'if it went to zero' : `at ${usd(figs.max_loss_at, 2)} or below`) : ''}</span></div>
               <div><span className="cc-k">Breakeven</span><b>{figs.breakevens.length ? figs.breakevens.map((b) => usd(b, 2)).join(', ') : '—'}</b><span className="cc-faint">at the call’s expiry</span></div>
@@ -332,7 +334,7 @@ function Positions({ list, reload, onPick }) {
   return (
     <div className="panel cc-panel">
       <div className="panel-header spend-header"><span>Your positions</span>
-        <span className="cc-faint">{open.length ? `options cash so far ${usd(open.reduce((a, p) => a + p.premium_collected, 0))}` : 'none yet'}</span></div>
+        <span className="cc-faint">{open.length ? `net ${usd(open.reduce((a, p) => a + (p.figures?.net_per_day || 0), 0))} a day · options cash so far ${usd(open.reduce((a, p) => a + p.premium_collected, 0))}` : 'none yet'}</span></div>
       <p className="cc-faint cc-pad" style={{ margin: 0 }}>
         {sync ? `From your broker${sync.account ? ` (${sync.account})` : ''}${sync.by ? ` by ${sync.by}` : ''}: ${new Date(sync.at).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/Regina' })}`
           : 'Nothing from your broker yet: your Grok bot sends the account with submit_positions.'}
@@ -341,7 +343,7 @@ function Positions({ list, reload, onPick }) {
       {list.length > 0 && (
         <div className="table-scroll">
           <table className="cc-table">
-            <thead><tr><th>Stock</th><th className="num">Shares</th><th className="num">Cost</th><th className="num">Now</th><th className="num">Stock</th><th className="num" title="Premium from calls written, less what puts and buy-backs cost">Options cash</th><th className="num">Total</th><th>Legs now</th><th className="num">Max loss</th><th /></tr></thead>
+            <thead><tr><th>Stock</th><th className="num">Shares</th><th className="num">Cost</th><th className="num">Now</th><th className="num">Stock</th><th className="num" title="Premium from calls written, less what puts and buy-backs cost">Options cash</th><th className="num">Total</th><th>Legs now</th><th className="num" title="Calls written a day, less what the puts cost a day (each spread from when it was opened to its expiry)">Net a day</th><th className="num">Max loss</th><th /></tr></thead>
             <tbody>
               {list.map((p) => (
                 <tr key={p.id} className={p.status === 'closed' ? 'cc-closed' : ''}>
@@ -351,6 +353,7 @@ function Positions({ list, reload, onPick }) {
                   <td className="num">{usd(p.premium_collected)}</td>
                   <td className={`num ${p.total_pnl < 0 ? 'neg' : 'pos'}`}>{usd(p.total_pnl)}</td>
                   <td>{p.legs.length ? p.legs.map((l) => `${l.side === 'short' ? '−' : '+'}${l.contracts} ${l.strike}${l.type === 'call' ? 'C' : 'P'} ${short(l.expiry).split(',')[0]}`).join(' · ') : <span className="cc-faint">none</span>}</td>
+                  <td className={`num ${p.figures?.net_per_day < 0 ? 'neg' : ''}`} title={p.figures ? `${usd(p.figures.income_per_day)} calls − ${usd(p.figures.protection_per_day)} puts` : ''}>{usd(p.figures?.net_per_day)}</td>
                   <td className="num">{usd(p.figures?.max_loss)}</td>
                   <td className="cc-actions">
                     {p.status !== 'closed' && (log?.id === p.id ? (
