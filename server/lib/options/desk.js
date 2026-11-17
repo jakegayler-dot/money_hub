@@ -2,7 +2,7 @@
 // during US market hours, and his positions. Money Hub only reads the market and keeps his records; it never places a trade.
 import { pool, getSetting } from '../../db.js';
 import { quote, history, chain, parseOcc, cboeBusy } from './market.js';
-import { cleanRules, dropCheck, soonExpiries, pick, evaluate, daysTo, calendarDays } from './strategy.js';
+import { cleanRules, dropCheck, soonExpiries, pick, evaluate, daysTo, expiryCadence } from './strategy.js';
 import { toISODate } from '../dates.js';
 import { usdCad } from './fx.js';
 
@@ -36,7 +36,7 @@ async function inTurn(items, n, fn) {
 
 /** Every stock on his watchlist: today's move, how far below its recent high, the expiries in the next week, and his drop rule. */
 // The wider list (Nov 17, his pick: "the stock watcher needs to look for stocks that have 3 day options or less"): large US
-// stocks and ETFs; only those with an option expiring within his call days, whose call pays more a day than the put costs, show.
+// stocks and ETFs; only those whose options expire at least every expiry_every_days (Mon/Wed/Fri or daily), whose call pays more a day than the put costs, show.
 export const WIDE = ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA', 'AVGO', 'AMD', 'NFLX', 'PLTR', 'COIN', 'MSTR', 'ORCL',
   'CRM', 'ADBE', 'INTC', 'MU', 'QCOM', 'SMCI', 'ARM', 'UBER', 'SHOP', 'JPM', 'BAC', 'WFC', 'GS', 'C', 'XOM', 'CVX', 'BA', 'DIS',
   'WMT', 'COST', 'HD', 'UNH', 'LLY', 'JNJ', 'PFE', 'MRK', 'KO', 'PEP', 'NKE', 'HOOD', 'SOFI', 'RIVN', 'BABA', 'PYPL', 'SPY', 'QQQ', 'IWM'];
@@ -44,19 +44,21 @@ const SCAN_CHAIN_TTL = 15 * 60e3; // ~1 MB a chain: his watchlist's read at most
 const WIDE_EVERY = 30 * 60e3;      // the wider list: one stock at a time, a pause between, at most every 30 minutes
 const WIDE_PAUSE = 1500;
 
-/** One stock: today's move, the drop rule, the expiries within his call days, and the gap between what his rules' call brings
- *  in a day and what the put costs a day (US$ a lot). qualifies = an expiry within his call days and a gap above 0 and at least
- *  his min_carry (CAD). */
+/** One stock: today's move, the drop rule, how often its options expire, and the gap between what his rules' call brings in a
+ *  day and what the put costs a day (US$ a lot). qualifies = options at least every expiry_every_days, a gap above 0 and at
+ *  least his min_carry (CAD). */
 async function readStock(symbol, rules, fx, now, watched) {
   const [q, hist, ch] = await Promise.all([quote(symbol), history(symbol, rules.high_days + 10), chain(symbol, { ttl: SCAN_CHAIN_TTL })]);
   expiryCache.set(symbol, { at: Date.now(), expiries: ch.expiries });
-  const short = ch.expiries.filter((e) => daysTo(e, now) > 0 && calendarDays(e, now) <= rules.call_max_days);
+  // How often its options expire (Nov 17: "options expiring at most every 3 days, not an option expiring within 3 days").
+  const cadence = expiryCadence(ch.expiries, now);
+  const often = !!cadence && cadence.max <= rules.expiry_every_days;
   const soon = soonExpiries(ch.expiries, 7, now);
-  const p = short.length ? pick(ch, rules, { now, fx: fx?.rate }) : null;
+  const p = watched || often ? pick(ch, rules, { now, fx: fx?.rate }) : null;
   const carry = p?.carry || null;
   return { symbol, watched, price: r2(q.price), iv30: q.iv30 == null ? null : r2(q.iv30 * 100), as_of: q.as_of, ...dropCheck(hist, q, rules),
-    expiries_this_week: soon, short_expiries: short, next_expiry: soon[0] || ch.expiries.find((e) => daysTo(e, now) > 0) || null,
-    carry, qualifies: !!(short.length && carry && carry.gap > 0 && carry.gap * (fx?.rate || 1) >= rules.min_carry) };
+    expiries_this_week: soon, cadence, often, next_expiry: soon[0] || ch.expiries.find((e) => daysTo(e, now) > 0) || null,
+    carry, qualifies: !!(often && carry && carry.gap > 0 && carry.gap * (fx?.rate || 1) >= rules.min_carry) };
 }
 
 // The wider list, swept in the background (Cboe's free feed refuses a burst of 50 chains: 429s, Nov 17).
@@ -139,7 +141,7 @@ export async function watch(now = new Date()) {
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(now);
   const list = await alerts();
   const fresh = [];
-  // A drop counts only on a stock with an option within his call days whose call pays more than the put costs (Nov 17).
+  // A drop counts only on a stock whose options expire often enough and whose call pays more than the put costs (Nov 17).
   for (const st of [...s.stocks, ...s.wide]) {
     if (!st.triggered || !st.qualifies || list.some((a) => a.symbol === st.symbol && a.date === today)) continue;
     let picked = null;

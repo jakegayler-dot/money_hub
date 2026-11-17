@@ -74,17 +74,20 @@ function Payoff({ curve, price, breakevens, strikes }) {
   );
 }
 
-// ---------------------------------------------------------------- the watchlist
-// The wider list's heading (Nov 17: "the stock watcher needs to look for stocks that have 3 day options or less"): swept in the
-// background, one stock at a time, so it says how fresh it is.
+// ---------------------------------------------------------------- stocks to write calls on
+// How often a stock's options expire (Nov 17: "options expiring at most every 3 days, not an option expiring within 3 days").
+const cadenceLabel = (c) => (!c ? 'too few listed' : c.max <= 3 && c.min === 1 ? 'every day' : c.min === 7 && c.max === 7 ? 'weekly'
+  : c.min === c.max ? `every ${c.max} days` : `every ${c.min}–${c.max} days`);
+
+// The wider list's heading: swept in the background, one stock at a time, so it says how fresh it is.
 function WideHead({ scan, rules }) {
   const n = scan.wide?.length || 0;
   const unread = scan.wide_unread?.length || 0;
   const when = scan.wide_as_of ? asOf(scan.wide_as_of) : null;
   return (
-    <tr className="cc-sub"><td colSpan={10}>
-      {!when ? 'Searching about 50 large stocks for options within ' + rules.call_max_days + ' days (one at a time, a minute or two)…'
-        : `Also with options within ${rules.call_max_days} days, the call beating the put: ${n} of ${scan.wide_checked} large stocks, most first · searched ${when}${scan.wide_running ? ', searching again' : ''}${unread ? ` · ${unread} couldn’t be read` : ''}`}
+    <tr className="cc-sub"><td colSpan={8}>
+      {!when ? 'Searching about 50 large stocks, one at a time (a minute or two)…'
+        : `From about 50 large stocks: ${n} with options at least every ${rules.expiry_every_days} days where the call pays more than the put, most first · searched ${when}${scan.wide_running ? ', searching again' : ''}${unread ? ` · ${unread} couldn’t be read` : ''}`}
     </td></tr>
   );
 }
@@ -99,38 +102,35 @@ function Watchlist({ scan, err, selected, onPick, rules, saveRules }) {
   return (
     <div className="panel cc-panel">
       <div className="panel-header spend-header">
-        <span>Watching for drops</span>
-        <span className="cc-faint">down {rules?.drop_day_pct}% in a day, or {rules?.drop_from_high_pct}% under the {rules?.high_days}-day high; options within {rules?.call_max_days} days; the call beats the put{rules?.min_carry > 0 ? ` by ${plain(rules.min_carry)}` : ''}</span>
+        <span>Stocks to write calls on</span>
+        <span className="cc-faint">options at least every {rules.expiry_every_days} days · the call pays more a day than the put{rules.min_carry > 0 ? ` by ${plain(rules.min_carry)}` : ''} · flagged when down {rules.drop_day_pct}% in a day or {rules.drop_from_high_pct}% under the {rules.high_days}-day high</span>
       </div>
       {err && <p className="review-error">{err}</p>}
       {!scan && !err && <p className="cc-faint cc-pad">Reading the market…</p>}
       {scan && (
         <div className="table-scroll">
           <table className="cc-table">
-            <thead><tr><th>Stock</th><th className="num">Price</th><th className="num">Today</th><th className="num">From high</th><th className="num">5 days</th><th className="num">IV</th>
-              <th>Within {rules?.call_max_days} days</th><th className="num" title="What your rules' call brings in a day, less what the put costs a day, for one lot (100 shares)">Call − put a day</th><th /><th /></tr></thead>
+            <thead><tr><th>Stock</th><th className="num">Price</th><th className="num">Today</th><th className="num">From high</th>
+              <th>Options expire</th><th className="num" title="What your rules' call brings in a day, less what the put costs a day, for 100 shares">Call − put a day</th><th /><th /></tr></thead>
             <tbody>
               {[...scan.stocks, ...(scan.wide || [])].map((s, i) => (<Fragment key={s.symbol}>
                 {i === scan.stocks.length && <WideHead scan={scan} rules={rules} />}
-                <tr className={`${selected === s.symbol ? 'on' : ''} ${s.triggered && s.qualifies ? 'dropped' : ''}`} onClick={() => !s.error && onPick(s.symbol)}>
+                <tr className={`${selected === s.symbol ? 'on' : ''} ${s.triggered && s.qualifies ? 'dropped' : ''} ${!s.error && !s.qualifies ? 'cc-dim' : ''}`} onClick={() => !s.error && onPick(s.symbol)}>
                   <td><b>{s.symbol}</b></td>
-                  {s.error ? <td colSpan={6} className="cc-faint">{s.error}</td> : <>
+                  {s.error ? <td colSpan={5} className="cc-faint">{s.error}</td> : <>
                     <td className="num">{usd(s.price, 2)}</td>
                     <td className="num">{pctS(s.day_pct)}</td>
                     <td className="num">{pctS(s.from_high_pct)}</td>
-                    <td className="num">{pctS(s.five_day_pct)}</td>
-                    <td className="num">{s.iv30 == null ? '—' : `${Math.round(s.iv30)}%`}</td>
-                    <td>{s.short_expiries?.length ? s.short_expiries.map((e) => short(e).split(',')[0]).join(' · ') : <span className="cc-faint">none</span>}</td>
+                    <td>{cadenceLabel(s.cadence)}{!s.often && <span className="cc-faint"> · not often enough</span>}</td>
                     <td className={`num ${s.carry && s.carry.gap <= 0 ? 'neg' : ''}`} title={s.carry ? `call ${cad(s.carry.call_per_day)} − put ${cad(s.carry.put_per_day)}; ${cad(s.carry.after_interest)} after ${cad(s.carry.interest_per_day, 2)} margin interest` : ''}>{s.carry ? cad(s.carry.gap) : '—'}</td>
                   </>}
-                  <td>{s.triggered && s.qualifies && <span className="badge warn" title={s.why.join('; ')}>DROPPED</span>}
-                    {s.triggered && !s.qualifies && !s.error && <span className="cc-faint" title={s.why.join('; ')}>dropped</span>}</td>
+                  <td>{s.triggered && s.qualifies && <span className="badge warn" title={s.why.join('; ')}>DROPPED</span>}</td>
                   <td>{s.watched
                     ? <button type="button" className="small-link" title="Stop watching" onClick={(e) => { e.stopPropagation(); saveRules({ watchlist: rules.watchlist.filter((x) => x !== s.symbol) }); }}>×</button>
                     : <button type="button" className="small-link" title="Add to your watchlist" onClick={(e) => { e.stopPropagation(); saveRules({ watchlist: [...rules.watchlist, s.symbol] }); }}>+</button>}</td>
                 </tr>
               </Fragment>))}
-              {rules?.wide && !scan.wide?.length && <WideHead scan={scan} rules={rules} />}
+              {rules.wide && !scan.wide?.length && <WideHead scan={scan} rules={rules} />}
             </tbody>
           </table>
         </div>
@@ -138,7 +138,7 @@ function Watchlist({ scan, err, selected, onPick, rules, saveRules }) {
       <div className="cc-row cc-pad">
         <input value={add} onChange={(e) => setAdd(e.target.value)} placeholder="Add a stock (e.g. TSLA)" onKeyDown={(e) => e.key === 'Enter' && addOne()} />
         <button type="button" className="small secondary" onClick={addOne}>Watch</button>
-        {scan && <span className="cc-faint">Cboe, 15 minutes delayed · {asOf(scan.stocks.find((s) => s.as_of)?.as_of)}</span>}
+        {scan && <span className="cc-faint">Tap a stock to work out a trade · Cboe, 15 minutes delayed · {asOf(scan.stocks.find((s) => s.as_of)?.as_of)}</span>}
       </div>
     </div>
   );
@@ -190,9 +190,10 @@ const fromPosition = (p) => ({
   shares: p.shares, cost: p.cost,
   legs: (p.legs || []).filter((l) => l.expiry >= nyToday()).map((l) => ({ ...l, premium: Number(l.premium), contracts: Number(l.contracts) || 1 })),
 });
-function Desk({ symbol, rules, onSaved, loaded }) {
+function Desk({ symbol, rules, onSaved, loaded, onClose }) {
   const [from, setFrom] = useState(null); // the position in the calculator, or null for the rules' pick
   const calcRef = useRef(null);
+  const rootRef = useRef(null);
   const showCalc = () => setTimeout(() => calcRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
   const [plan, setPlan] = useState(null);
   const [err, setErr] = useState(null);
@@ -212,7 +213,8 @@ function Desk({ symbol, rules, onSaved, loaded }) {
     setPlan(null); setErr(null); setFigs(null); setMike({ busy: false, reply: null, err: null, q: '' }); setSaved(null);
     send('GET', `/api/options/plan/${symbol}`).then((p) => {
       setPlan(p);
-      if (loaded?.symbol === symbol) { setPos(fromPosition(loaded)); setFrom(loaded); showCalc(); } else { setPos(fromPlan(p)); setFrom(null); }
+      if (loaded?.symbol === symbol) { setPos(fromPosition(loaded)); setFrom(loaded); showCalc(); }
+      else { setPos(fromPlan(p)); setFrom(null); setTimeout(() => rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80); }
     }).catch((e) => setErr(e.message));
   }, [symbol, rules]);
   useEffect(() => { // a position loaded on the stock already open
@@ -253,10 +255,11 @@ function Desk({ symbol, rules, onSaved, loaded }) {
 
   const q = plan.quote;
   return (
-    <div className="panel cc-panel">
+    <div className="panel cc-panel cc-desk" ref={rootRef}>
       <div className="panel-header spend-header">
-        <span>{symbol} · {usd(q.price, 2)} <span className="cc-faint">{pctS(q.change_pct)} today{q.iv30 ? ` · IV ${Math.round(q.iv30 * 100)}%` : ''}</span></span>
-        {plan.drop?.triggered && <span className="badge warn">{plan.drop.why.join('; ')}</span>}
+        <span>Work out a trade: {symbol} · {usd(q.price, 2)} <span className="cc-faint">{pctS(q.change_pct)} today{q.iv30 ? ` · IV ${Math.round(q.iv30 * 100)}%` : ''}</span></span>
+        <span className="cc-actions">{plan.drop?.triggered && <span className="badge warn">{plan.drop.why.join('; ')}</span>}
+          <button type="button" className="small-link" onClick={onClose} title="Close the calculator">close ×</button></span>
       </div>
 
       <div className="cc-pick cc-pad">
@@ -364,30 +367,35 @@ function Desk({ symbol, rules, onSaved, loaded }) {
 }
 
 // ---------------------------------------------------------------- his rules
-const RULE_FIELDS = [
-  ['capital', 'Capital for this', 1000], ['max_position_pct', 'Most in one stock (%)', 1], ['max_loss_pct', 'Most to lose on one position (% of capital)', 0.5],
-  ['drop_day_pct', 'A drop: down in a day (%)', 0.5], ['drop_from_high_pct', 'or under the recent high (%)', 1], ['high_days', 'Recent high: last N days', 1],
-  ['target_delta', 'Call: target delta', 0.01], ['delta_min', 'Call: delta at least', 0.01], ['delta_max', 'Call: delta at most', 0.01], ['call_max_days', 'Call: expiring within (days)', 1],
-  ['put_below_pct', 'Put: below today’s price (%)', 1], ['put_days_min', 'Put: at least (days)', 1], ['put_days_max', 'Put: at most (days)', 1], ['drop_test_pct', 'No put: size against a fall of (%)', 1],
-  ['margin_pct', 'Margin: your share of the stock (%; 100 = cash)', 5], ['margin_rate', 'Margin interest (% a year)', 0.05],
-  ['min_carry', 'A stock counts when its call beats the put by ($ a day a lot)', 5],
+const RULE_GROUPS = [
+  ['Your money', [['capital', 'Capital for this', 1000], ['margin_pct', 'Your share of the stock on margin (%; 100 = cash)', 5], ['margin_rate', 'Margin interest (% a year)', 0.05],
+    ['max_position_pct', 'Most in one stock (% of capital)', 1], ['max_loss_pct', 'Most to lose on one position (% of capital)', 0.5]]],
+  ['Which stocks count', [['expiry_every_days', 'Options expire at least every (days)', 1], ['min_carry', 'The call beats the put by at least ($ a day, 100 shares)', 5],
+    ['drop_day_pct', 'A drop: down in a day (%)', 0.5], ['drop_from_high_pct', 'or under the recent high (%)', 1], ['high_days', 'Recent high: last N days', 1]]],
+  ['The call you sell', [['target_delta', 'Target delta', 0.01], ['delta_min', 'Delta at least', 0.01], ['delta_max', 'Delta at most', 0.01], ['call_max_days', 'Expiring within (days)', 1]]],
+  ['The put you buy', [['put_below_pct', 'Below today’s price (%)', 1], ['put_days_min', 'At least (days out)', 1], ['put_days_max', 'At most (days out)', 1], ['drop_test_pct', 'With no put, size against a fall of (%)', 1]]],
 ];
 function Rules({ rules, saveRules }) {
   const [f, setF] = useState(rules);
   useEffect(() => setF(rules), [rules]);
   const dirty = JSON.stringify(f) !== JSON.stringify(rules);
   return (
-    <details className="panel cc-panel cc-rules" open={!rules.capital}>
-      <summary className="panel-header spend-header"><span>Your rules</span><span className="cc-faint">{rules.capital ? `${rules.capital_currency === 'USD' ? usd(rules.capital) : plain(rules.capital)} · call Δ${rules.target_delta} within ${rules.call_max_days} days · ${rules.protect ? `put ${rules.put_below_pct}% below` : 'no put'}` : 'set your capital to size positions'}</span></summary>
-      <div className="cc-rule-grid cc-pad">
-        {RULE_FIELDS.map(([k, label, step]) => (
-          <label key={k} className="cc-mini">{label}<input type="number" step={step} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></label>
-        ))}
-        <label className="cc-mini">Capital is in<select value={f.capital_currency || 'CAD'} onChange={(e) => setF({ ...f, capital_currency: e.target.value })}>
-          <option value="CAD">Canadian dollars</option><option value="USD">US dollars</option></select></label>
-        <label className="cc-check"><input type="checkbox" checked={!!f.protect} onChange={(e) => setF({ ...f, protect: e.target.checked })} /> Buy a put for protection</label>
-        <label className="cc-check"><input type="checkbox" checked={!!f.wide} onChange={(e) => setF({ ...f, wide: e.target.checked })} /> Also search about 50 large stocks</label>
-      </div>
+    <details className="panel cc-panel cc-rules">
+      <summary className="panel-header spend-header"><span>Your rules</span><span className="cc-faint">{rules.capital ? `${rules.capital_currency === 'USD' ? usd(rules.capital) : plain(rules.capital)} capital` : 'no capital set'} · {rules.margin_pct < 100 ? `${rules.margin_pct}% margin at ${rules.margin_rate}%` : 'cash'} · call Δ{rules.target_delta} within {rules.call_max_days} days · {rules.protect ? `put ${rules.put_below_pct}% below` : 'no put'} · change</span></summary>
+      {RULE_GROUPS.map(([title, fields]) => (
+        <div key={title} className="cc-pad cc-rule-group">
+          <div className="cc-pick-head">{title}</div>
+          <div className="cc-rule-grid">
+            {fields.map(([k, label, step]) => (
+              <label key={k} className="cc-mini">{label}<input type="number" step={step} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></label>
+            ))}
+            {title === 'Your money' && <label className="cc-mini">Capital is in<select value={f.capital_currency || 'CAD'} onChange={(e) => setF({ ...f, capital_currency: e.target.value })}>
+              <option value="CAD">Canadian dollars</option><option value="USD">US dollars</option></select></label>}
+            {title === 'Which stocks count' && <label className="cc-check"><input type="checkbox" checked={!!f.wide} onChange={(e) => setF({ ...f, wide: e.target.checked })} /> Also search about 50 large stocks</label>}
+            {title === 'The put you buy' && <label className="cc-check"><input type="checkbox" checked={!!f.protect} onChange={(e) => setF({ ...f, protect: e.target.checked })} /> Buy a put for protection</label>}
+          </div>
+        </div>
+      ))}
       <div className="cc-row cc-pad">
         <button type="button" className="small" disabled={!dirty} onClick={() => saveRules(f)}>Save rules</button>
         {dirty && <button type="button" className="small secondary" onClick={() => setF(rules)}>Undo</button>}
@@ -396,56 +404,224 @@ function Rules({ rules, saveRules }) {
   );
 }
 
-// ---------------------------------------------------------------- his positions
-function Positions({ list, reload, onLoad }) {
-  const [log, setLog] = useState(null); // { id, amount }
-  const [err, setErr] = useState(null);
-  const [sync, setSync] = useState(null);
-  useEffect(() => { send('GET', '/api/options/sync').then(setSync).catch(() => {}); }, [list]);
-  if (!list) return null;
-  const patch = (id, body) => send('PATCH', `/api/options/positions/${id}`, body).then(reload).catch((e) => setErr(e.message));
-  const open = list.filter((p) => p.status !== 'closed');
+// ---------------------------------------------------------------- what it has earned
+// Nov 17 (Jake): "it doesnt show my option profit and loss. it should look like any asset that produces cash." The cash is his
+// brokerage entries in Money Hub, sorted into calls, puts and shares by stock (server lib/options/cash.js).
+const sign = (n) => (n > 0 ? 'pos' : n < 0 ? 'neg' : '');
+const signed = (n, f = cad) => (n == null ? '—' : `${n > 0 ? '+' : ''}${f(n)}`);
+const day = (iso) => (iso ? new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) : '—');
+function Tile({ k, v, cls = '', sub }) {
+  return <div className="cc-tile"><span className="cc-k">{k}</span><b className={cls}>{v}</b>{sub && <span className="cc-faint">{sub}</span>}</div>;
+}
+
+function Earnings({ positions, cash }) {
+  const open = (positions || []).filter((p) => p.status === 'open');
+  const toUsd = (n) => (cash?.currency === 'CAD' && FX ? n / FX : n); // the entries' amounts, in US$ like the desk's figures
+  const hasCash = !!cash?.stocks.some((s) => s.call_entries || s.put_entries);
+  const calls = hasCash ? toUsd(cash.totals.calls) : null;
+  const puts = hasCash ? toUsd(cash.totals.puts) : null;
+  const optNet = hasCash ? calls + puts : open.reduce((a, p) => a + p.premium_collected, 0);
+  const sum = (f) => open.reduce((a, p) => a + (f(p) || 0), 0);
+  const sharesValue = sum((p) => (p.price || 0) * p.shares);
+  const sharesPnl = sum((p) => p.stock_pnl);
+  const callsDay = sum((p) => p.figures?.income_per_day); const putsDay = sum((p) => p.figures?.protection_per_day);
+  const interestDay = sum((p) => p.figures?.interest_per_day); const netDay = sum((p) => p.figures?.net_after_interest_per_day ?? p.figures?.net_per_day);
+  const putTo = open.flatMap((p) => p.legs.filter((l) => l.type === 'put' && l.side === 'long').map((l) => l.expiry)).sort().at(-1);
+  const sales = hasCash ? cash.stocks.reduce((a, s) => a + s.call_entries, 0) : 0;
+  const paidBack = hasCash && puts < 0 ? Math.min(1, Math.max(0, calls / -puts)) : null;
+  const rate = callsDay - interestDay;
+  const catchUp = hasCash && optNet < 0 && rate > 0 ? Math.ceil(-optNet / rate) : null;
+  if (!positions || (!open.length && !hasCash)) return null;
   return (
-    <div className="panel cc-panel">
-      <div className="panel-header spend-header"><span>Your positions</span>
-        <span className="cc-faint">{open.length ? `net ${cad(open.reduce((a, p) => a + (p.figures?.net_after_interest_per_day ?? p.figures?.net_per_day ?? 0), 0))} a day after puts and interest · options cash so far ${cad(open.reduce((a, p) => a + p.premium_collected, 0))}` : 'none yet'}</span></div>
-      <p className="cc-faint cc-pad" style={{ margin: 0 }}>
-        {sync ? `From your broker${sync.account ? ` (${sync.account})` : ''}${sync.by ? ` by ${sync.by}` : ''}: ${new Date(sync.at).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/Regina' })}`
-          : 'Nothing from your broker yet: your Grok bot sends the account with submit_positions.'}
-      </p>
-      {err && <p className="review-error">{err}</p>}
-      {list.length > 0 && (
-        <div className="table-scroll">
-          <table className="cc-table">
-            <thead><tr><th>Stock</th><th className="num">Shares</th><th className="num">Cost</th><th className="num">Now</th><th className="num">Stock</th><th className="num" title="Premium from calls written, less what puts and buy-backs cost">Options cash</th><th className="num">Total</th><th>Legs now</th><th className="num" title="Calls written a day, less what the puts cost a day (each spread from when it was opened to its expiry), less the margin interest a day by your margin rule">Net a day</th><th className="num">Max loss</th><th /></tr></thead>
-            <tbody>
-              {list.map((p) => (
-                <tr key={p.id} className={p.status === 'closed' ? 'cc-closed' : ''}>
-                  <td><button type="button" className="small-link" onClick={() => onLoad(p)} title="Load into the calculator"><b>{p.symbol}</b></button>{p.status !== 'open' && <span className="badge"> {p.status.toUpperCase()}</span>}{p.source === 'broker' && p.status !== 'closed' && <span className="cc-faint"> · broker</span>}</td>
-                  <td className="num">{p.shares}</td><td className="num">{usd(p.cost, 2)}</td><td className="num">{usd(p.price, 2)}</td>
-                  <td className={`num ${p.stock_pnl < 0 ? 'neg' : 'pos'}`}>{cad(p.stock_pnl)}</td>
-                  <td className="num">{cad(p.premium_collected)}</td>
-                  <td className={`num ${p.total_pnl < 0 ? 'neg' : 'pos'}`}>{cad(p.total_pnl)}</td>
-                  <td>{p.legs.length ? p.legs.map((l) => `${l.side === 'short' ? '−' : '+'}${l.contracts} ${l.strike}${l.type === 'call' ? 'C' : 'P'} ${short(l.expiry).split(',')[0]}`).join(' · ') : <span className="cc-faint">none</span>}</td>
-                  <td className={`num ${p.figures?.net_per_day < 0 ? 'neg' : ''}`} title={p.figures ? `${cad(p.figures.income_per_day)} calls − ${cad(p.figures.protection_per_day)} puts − ${cad(p.figures.interest_per_day, 2)} margin interest` : ''}>{cad(p.figures?.net_after_interest_per_day ?? p.figures?.net_per_day)}</td>
-                  <td className="num">{cad(p.figures?.max_loss)}</td>
-                  <td className="cc-actions">
-                    {p.status !== 'closed' && <button type="button" className="small" onClick={() => onLoad(p)}>Calculator</button>}
-                    {p.status !== 'closed' && (log?.id === p.id ? (
-                      <span className="cc-row">
-                        <input type="number" step="1" placeholder="US$ in" value={log.amount} onChange={(e) => setLog({ ...log, amount: e.target.value })} style={{ width: 80 }} />
-                        <button type="button" className="small" onClick={() => { patch(p.id, { premium_collected: p.premium_collected + Number(log.amount || 0) }); setLog(null); }}>Add</button>
-                      </span>
-                    ) : <button type="button" className="small secondary" onClick={() => setLog({ id: p.id, amount: '' })} title="Premium from a call written; negative for a call bought back or a put bought">+ Option cash</button>)}
-                    {p.status === 'planned' && <button type="button" className="small secondary" onClick={() => patch(p.id, { status: 'open' })}>Opened</button>}
-                    {p.status !== 'closed' && <button type="button" className="small secondary" onClick={() => { const v = window.prompt(`Sold ${p.symbol} at (per share)?`, p.price ?? ''); if (v) patch(p.id, { status: 'closed', closed_price: Number(v), legs: [] }); }}>Close</button>}
-                    <button type="button" className="small-link" onClick={() => window.confirm(`Delete the ${p.symbol} record?`) && send('DELETE', `/api/options/positions/${p.id}`).then(reload)}>×</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+    <div className="panel cc-panel cc-earn">
+      <div className="panel-header spend-header"><span>What it has earned</span>
+        <span className="cc-faint">{hasCash && cash.totals.first ? `since ${day(cash.totals.first)}` : ''}</span></div>
+      <div className="cc-tiles cc-pad">
+        {hasCash
+          ? <>
+              <Tile k="Call premium collected" v={signed(calls)} cls={sign(calls)} sub={`from ${sales} trade${sales === 1 ? '' : 's'}`} />
+              <Tile k="Puts, net of what you sold back" v={signed(puts)} cls={sign(puts)} sub={putTo ? `cover you to ${day(putTo)}` : 'none held now'} />
+              <Tile k="Options so far" v={signed(optNet)} cls={sign(optNet)} sub="calls less puts" />
+            </>
+          : <Tile k="Options cash so far" v={signed(optNet)} cls={sign(optNet)} sub="premiums in, less puts and buy-backs" />}
+        <Tile k="Coming in now" v={`${cad(netDay)} a day`} cls={sign(netDay)}
+          sub={`calls ${cad(callsDay)}${putsDay ? ` − puts ${cad(putsDay)}` : ''}${interestDay ? ` − interest ${cad(interestDay, 2)}` : ''}`} />
+        <Tile k="Shares" v={cad(sharesValue)} sub={<span className={sign(sharesPnl)}>{signed(sharesPnl)} since you bought</span>} />
+      </div>
+      {paidBack != null && (
+        <div className="cc-pad cc-meter-wrap">
+          <div className="cc-meter" role="img" aria-label={`Calls have paid back ${Math.round(paidBack * 100)}% of the puts`}><span style={{ width: `${paidBack * 100}%` }} /></div>
+          <div className="cc-meter-text">
+            <span>{optNet >= 0 ? `The calls have paid for the puts, with ${cad(optNet)} over.` : `The calls have paid back ${Math.round(paidBack * 100)}% of the puts: ${cad(-optNet)} to go.`}
+              {catchUp ? ` At today’s ${cad(rate)} a day from calls${interestDay ? ' after interest' : ''}, that is about ${catchUp} day${catchUp === 1 ? '' : 's'}.` : ''}</span>
+            <span className="cc-faint">The puts are paid once and cover you to their expiry; the calls pay again each time you write one.</span>
+          </div>
         </div>
+      )}
+      <div className="cc-pad cc-allin">All in: shares <b className={sign(sharesPnl)}>{signed(sharesPnl)}</b> and options <b className={sign(optNet)}>{signed(optNet)}</b> make <b className={sign(sharesPnl + optNet)}>{signed(sharesPnl + optNet)}</b></div>
+    </div>
+  );
+}
+
+// One entry's sorting, changed by him: call, put, the shares or other, and which stock.
+function EntryRow({ e, money, onSaved, withWord }) {
+  const [kind, setKind] = useState(e.kind || '');
+  const [symbol, setSymbol] = useState(e.symbol || '');
+  const [word, setWord] = useState('');
+  const [err, setErr] = useState(null);
+  const dirty = kind !== (e.kind || '') || symbol.toUpperCase() !== (e.symbol || '') || word;
+  const save = () => send('PUT', `/api/options/cash/${e.id}`, { kind, symbol, word }).then(() => { setErr(null); onSaved(); }).catch((x) => setErr(x.message));
+  return (
+    <tr>
+      <td className="cc-nowrap">{day(e.date)}</td>
+      <td className="cc-words">{e.words}{err && <span className="review-error"> {err}</span>}</td>
+      <td><select value={kind} onChange={(x) => setKind(x.target.value)} aria-label="What it is">
+        <option value="">What is it?</option><option value="call">Call</option><option value="put">Put</option><option value="stock">Shares</option><option value="other">Other</option></select></td>
+      <td><input className="cc-sym-in" value={symbol} onChange={(x) => setSymbol(x.target.value.toUpperCase())} placeholder="Symbol" aria-label="Stock symbol" disabled={kind === 'other'} /></td>
+      {withWord && <td><input className="cc-word-in" value={word} onChange={(x) => setWord(x.target.value)} placeholder="every entry that says…" title="A word in these entries, like a company's name: every entry that mentions it is filed under this stock" /></td>}
+      <td className={`num ${sign(e.amount)}`}>{signed(e.amount, money)}</td>
+      <td>{dirty && kind ? <button type="button" className="small" onClick={save}>Save</button> : null}</td>
+    </tr>
+  );
+}
+
+const legDaysOf = (l) => {
+  const end = Date.parse(`${l.expiry}T12:00:00Z`);
+  const start = /^\d{4}-\d{2}-\d{2}$/.test(l.since || '') ? Date.parse(`${l.since}T12:00:00Z`) : Date.parse(`${nyToday()}T12:00:00Z`);
+  return Math.max(1, Math.round((end - start) / 86400e3));
+};
+
+// One stock he holds (or has traded options on): what the shares have done, what the calls and puts have paid, what is open now.
+function Holding({ symbol, p, c, entries, money, toUsd, onLoad, reload, reloadCash }) {
+  const [err, setErr] = useState(null);
+  const patch = (body) => send('PATCH', `/api/options/positions/${p.id}`, body).then(reload).catch((e) => setErr(e.message));
+  const hasCash = !!c && (c.call_entries > 0 || c.put_entries > 0);
+  const calls = hasCash ? toUsd(c.calls) : null; const puts = hasCash ? toUsd(c.puts) : null;
+  const optNet = hasCash ? calls + puts : p ? p.premium_collected : 0;
+  const legs = p ? p.legs.filter((l) => l.expiry >= nyToday()) : [];
+  const netDay = p?.figures ? p.figures.net_after_interest_per_day ?? p.figures.net_per_day : null;
+  return (
+    <div className="cc-hold">
+      <div className="cc-hold-head">
+        <div>
+          <span className="cc-sym">{symbol}</span>
+          {p ? <span className="cc-faint">{p.shares} shares · {usd(p.price, 2)} now · cost {usd(p.cost, 2)}{p.source === 'broker' ? ' · from your broker' : ''}{p.status === 'planned' ? ' · a plan, not opened' : ''}</span>
+            : <span className="cc-faint">no shares on record: option cash only</span>}
+        </div>
+        <div className="cc-actions">
+          {p && <button type="button" className="small" onClick={() => onLoad(p)}>Work out the next call</button>}
+          {p && (
+            <details className="cc-more"><summary title="More">⋯</summary>
+              <div>
+                {p.status === 'planned' && <button type="button" className="small-link" onClick={() => patch({ status: 'open' })}>I’ve opened it</button>}
+                <button type="button" className="small-link" onClick={() => { const v = window.prompt(`Sold ${p.symbol} at (US$ a share)?`, p.price ?? ''); if (v) patch({ status: 'closed', closed_price: Number(v), legs: [] }); }}>Sold the shares</button>
+                <button type="button" className="small-link" onClick={() => window.confirm(`Delete the ${p.symbol} record? Your Money Hub entries stay.`) && send('DELETE', `/api/options/positions/${p.id}`).then(reload)}>Delete this record</button>
+              </div>
+            </details>
+          )}
+        </div>
+      </div>
+      {err && <p className="review-error">{err}</p>}
+      <div className="cc-tiles cc-tiles-sm">
+        {p && <Tile k="Shares" v={signed(p.stock_pnl)} cls={sign(p.stock_pnl)} sub={`worth ${cad((p.price || 0) * p.shares)}`} />}
+        {hasCash
+          ? <>
+              <Tile k="Calls collected" v={signed(calls)} cls={sign(calls)} sub={`${c.call_entries} entr${c.call_entries === 1 ? 'y' : 'ies'}`} />
+              <Tile k="Puts, net" v={signed(puts)} cls={sign(puts)} sub={`${c.put_entries} entr${c.put_entries === 1 ? 'y' : 'ies'}`} />
+              <Tile k="Options" v={signed(optNet)} cls={sign(optNet)} sub="calls less puts" />
+            </>
+          : <Tile k="Options cash" v={signed(optNet)} cls={sign(optNet)} sub="from your positions record" />}
+        {p && <Tile k="All in" v={signed((p.stock_pnl || 0) + optNet)} cls={sign((p.stock_pnl || 0) + optNet)} sub="shares and options" />}
+        {netDay != null && <Tile k="Coming in now" v={`${cad(netDay)} a day`} cls={sign(netDay)} sub={p.figures.interest_per_day ? `after ${cad(p.figures.interest_per_day, 2)} margin interest` : 'calls less puts'} />}
+      </div>
+      {p && (
+        <div className="cc-open">
+          <span className="cc-k">Open now</span>
+          {legs.length ? legs.map((l, i) => {
+            const perDay = (l.premium * l.contracts * 100) / legDaysOf(l);
+            return (
+              <span key={i} className={`cc-chip ${l.side === 'short' ? 'sold' : 'own'}`}>
+                <b>{l.side === 'short' ? 'Sold' : 'Own'} {l.contracts} × {l.strike} {l.type}</b> {short(l.expiry)} · {l.side === 'short' ? 'for' : 'paid'} {Number(l.premium).toFixed(2)} · {l.side === 'short' ? '+' : '−'}{cad(perDay)} a day
+              </span>
+            );
+          }) : <span className="cc-faint">no options on it: nothing coming in</span>}
+        </div>
+      )}
+      {entries.length > 0 && (
+        <details className="cc-trades">
+          <summary>Trades in Money Hub ({entries.length})</summary>
+          <div className="table-scroll">
+            <table className="cc-table cc-entries"><tbody>
+              {entries.map((e) => <EntryRow key={e.id} e={e} money={money} onSaved={reloadCash} />)}
+            </tbody></table>
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function Holdings({ positions, cash, onLoad, reload, reloadCash }) {
+  const [sync, setSync] = useState(null);
+  const [showSource, setShowSource] = useState(false);
+  useEffect(() => { send('GET', '/api/options/sync').then(setSync).catch(() => {}); }, [positions]);
+  if (!positions) return null;
+  const toUsd = (n) => (cash?.currency === 'CAD' && FX ? n / FX : n);
+  const money = (n, d = 0) => (cash?.currency === 'CAD' ? plain(n, d) : cad(n, d));
+  const live = positions.filter((p) => p.status !== 'closed');
+  const closed = positions.filter((p) => p.status === 'closed');
+  const cashOf = (s) => cash?.stocks.find((x) => x.symbol === s) || null;
+  const entriesOf = (s) => (cash?.entries || []).filter((e) => e.symbol === s && e.kind && e.kind !== 'other');
+  const seen = new Set();
+  const cards = live.map((p) => { const first = !seen.has(p.symbol); seen.add(p.symbol); return { symbol: p.symbol, p, c: first ? cashOf(p.symbol) : null, entries: first ? entriesOf(p.symbol) : [] }; });
+  for (const s of cash?.stocks || []) if (!seen.has(s.symbol) && (s.call_entries || s.put_entries)) cards.push({ symbol: s.symbol, p: null, c: s, entries: entriesOf(s.symbol) });
+  const setSource = (body) => send('PUT', '/api/options/cash/source', body).then(reloadCash);
+  return (
+    <div className="panel cc-panel cc-stocks">
+      <div className="panel-header spend-header"><span>Your stocks</span>
+        <span className="cc-faint">{sync ? `positions from your broker${sync.account ? ` (${sync.account})` : ''}${sync.by ? ` by ${sync.by}` : ''}: ${new Date(sync.at).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/Regina' })}` : 'no positions from your broker yet'}</span></div>
+      {!cards.length && <p className="cc-faint cc-pad">Nothing here yet. Your Grok bot sends your broker’s positions with submit_positions, or work out a trade below and save it.</p>}
+      <div className="cc-holds">
+        {cards.map((x) => <Holding key={x.p ? x.p.id : x.symbol} {...x} money={money} toUsd={toUsd} onLoad={onLoad} reload={reload} reloadCash={reloadCash} />)}
+      </div>
+      {cash?.unsorted.length > 0 && (
+        <div className="cc-pad cc-unsorted">
+          <div className="cc-pick-head">{cash.unsorted.length} entr{cash.unsorted.length === 1 ? 'y' : 'ies'} I couldn’t sort: say what {cash.unsorted.length === 1 ? 'it is' : 'they are'}, once</div>
+          <div className="table-scroll">
+            <table className="cc-table cc-entries"><tbody>
+              {cash.unsorted.map((e) => <EntryRow key={e.id} e={e} money={money} onSaved={reloadCash} withWord />)}
+            </tbody></table>
+          </div>
+        </div>
+      )}
+      {cash && (
+        <div className="cc-pad cc-source">
+          <span className="cc-faint">
+            {cash.read.entries
+              ? `Option cash is read from ${cash.read.entries} Money Hub entr${cash.read.entries === 1 ? 'y' : 'ies'}${cash.read.categories.length ? ` under ${cash.read.categories.join(', ')}` : ''}${cash.read.accounts.length ? ` (${cash.read.accounts.join(', ')})` : ''}, in ${cash.currency === 'CAD' ? 'Canadian dollars' : 'US$'}.`
+              : 'No brokerage entries found in Money Hub: none are under a category named “Investment”. Pick the account your trades are in.'}
+          </span>{' '}
+          <button type="button" className="small-link" onClick={() => setShowSource(!showSource)}>{showSource ? 'done' : 'change'}</button>
+          {(showSource || !cash.read.entries) && (
+            <div className="cc-row">
+              <label className="cc-mini">Also read every entry in<select value={cash.account_ids[0] || ''} onChange={(e) => setSource({ account_ids: e.target.value ? [Number(e.target.value)] : [] })}>
+                <option value="">no other account</option>{cash.accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+              <label className="cc-mini">The amounts are in<select value={cash.currency} onChange={(e) => setSource({ currency: e.target.value })}>
+                <option value="USD">US dollars</option><option value="CAD">Canadian dollars</option></select></label>
+            </div>
+          )}
+        </div>
+      )}
+      {closed.length > 0 && (
+        <details className="cc-pad cc-closedlist">
+          <summary className="cc-faint">Sold ({closed.length})</summary>
+          {closed.map((p) => (
+            <div key={p.id} className="cc-row cc-faint">
+              <b>{p.symbol}</b> {p.shares} shares, cost {usd(p.cost, 2)}, sold {usd(p.price, 2)}{p.closed_on ? ` on ${day(p.closed_on)}` : ''}: shares <span className={sign(p.stock_pnl)}>{signed(p.stock_pnl)}</span>, options cash {signed(p.premium_collected)}
+              <button type="button" className="small-link" onClick={() => window.confirm(`Delete the ${p.symbol} record?`) && send('DELETE', `/api/options/positions/${p.id}`).then(reload)}>×</button>
+            </div>
+          ))}
+        </details>
       )}
     </div>
   );
@@ -458,22 +634,21 @@ export default function CoveredCalls() {
   const [scanErr, setScanErr] = useState(null);
   const [selected, setSelected] = useState(null);
   const [positions, setPositions] = useState(null);
+  const [cash, setCash] = useState(null);
   const [alerts, setAlerts] = useState([]);
   const [fx, setFx] = useState(null);
   const [loaded, setLoaded] = useState(null); // a position sent to the calculator (a fresh object each time, so a second tap reloads it)
   const loadPosition = (p) => { setSelected(p.symbol); setLoaded({ ...p }); };
   const pickStock = (s) => { setLoaded(null); setSelected(s); }; // a stock from the list or an alert: the rules' pick
   FX = fx?.rate || null;
-  const loadScan = () => send('GET', '/api/options/scan').then((s) => {
-    setScan(s); setScanErr(null);
-    setSelected((cur) => cur || s.stocks.find((x) => x.triggered && !x.error)?.symbol || s.stocks.find((x) => !x.error)?.symbol || null);
-  }).catch((e) => setScanErr(e.message));
+  const loadScan = () => send('GET', '/api/options/scan').then((s) => { setScan(s); setScanErr(null); }).catch((e) => setScanErr(e.message));
   const loadPositions = () => send('GET', '/api/options/positions').then(setPositions).catch(() => setPositions([]));
+  const loadCash = () => send('GET', '/api/options/cash').then(setCash).catch(() => setCash(null));
   useEffect(() => {
     send('GET', '/api/options/rules').then(setRules);
     send('GET', '/api/options/fx').then(setFx).catch(() => {});
     send('GET', '/api/options/alerts').then(setAlerts).catch(() => {});
-    loadScan(); loadPositions();
+    loadScan(); loadPositions(); loadCash();
     const t = setInterval(loadScan, 5 * 60e3);
     return () => clearInterval(t);
   }, []);
@@ -482,18 +657,19 @@ export default function CoveredCalls() {
     const t = setTimeout(loadScan, 30e3);
     return () => clearTimeout(t);
   }, [scan]);
-  const saveRules = (r) => send('PUT', '/api/options/rules', r).then((x) => { setRules(x); loadScan(); });
-  const today = useMemo(() => alerts.filter((a) => a.date === new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date())), [alerts]);
+  const saveRules = (r) => send('PUT', '/api/options/rules', r).then((x) => { setRules(x); loadScan(); loadPositions(); });
+  const today = useMemo(() => alerts.filter((a) => a.date === nyToday()), [alerts]);
 
   return (
     <div className="cc-page">
       <div className="page-header">
         <div><h1 className="page-title">Covered calls</h1>
-          <div className="page-meta">Buy the drop, write short-dated calls for income, buy a put against a big fall. Money Hub reads the market and keeps your records; it never places a trade.</div>
           <div className="page-meta">{fx?.rate
-            ? `Money in Canadian dollars at the Bank of Canada’s ${fx.rate.toFixed(4)} (${short(fx.date)}); share prices, strikes and premiums a share in US$, as your broker shows them.`
-            : 'Exchange rate unavailable: money shown in US$.'}</div></div>
+            ? `Money in Canadian dollars at the Bank of Canada’s ${fx.rate.toFixed(4)} (${short(fx.date)}). Share prices, strikes and premiums a share in US$, as your broker shows them.`
+            : 'Exchange rate unavailable: money shown in US$.'} Money Hub never places a trade.</div></div>
       </div>
+      <Earnings positions={positions} cash={cash} />
+      <Holdings positions={positions} cash={cash} onLoad={loadPosition} reload={loadPositions} reloadCash={loadCash} />
       {today.length > 0 && (
         <div className="cc-alerts">{today.map((a) => (
           <button key={a.symbol} type="button" className="cc-alert" onClick={() => pickStock(a.symbol)}>
@@ -502,9 +678,8 @@ export default function CoveredCalls() {
         ))}</div>
       )}
       {rules && <Watchlist scan={scan} err={scanErr} selected={selected} onPick={pickStock} rules={rules} saveRules={saveRules} />}
-      {rules && selected && <Desk symbol={selected} rules={rules} onSaved={loadPositions} loaded={loaded} />}
+      {rules && selected && <Desk symbol={selected} rules={rules} onSaved={loadPositions} loaded={loaded} onClose={() => { setSelected(null); setLoaded(null); }} />}
       {rules && <Rules rules={rules} saveRules={saveRules} />}
-      <Positions list={positions} reload={loadPositions} onLoad={loadPosition} />
     </div>
   );
 }

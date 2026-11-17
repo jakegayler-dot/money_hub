@@ -62,3 +62,47 @@
   .cc-leg select { flex: 1 1 140px; }
 }
 .cc-figs b.cc-neg { color: var(--negative); }
+
+/* What it has earned, and each stock as an asset that produces cash (Nov 17: "it should look like any asset that produces cash"). */
+.cc-page .pos { color: var(--positive); }
+.cc-page .neg { color: var(--negative); }
+.cc-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.cc-tile { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--panel-alt); min-width: 0; }
+.cc-tile b { font-family: var(--font-mono); font-size: 22px; font-weight: 500; color: var(--text); font-feature-settings: 'tnum'; line-height: 1.15; }
+.cc-tile b.pos { color: var(--positive); }
+.cc-tile b.neg { color: var(--negative); }
+.cc-tiles-sm { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.cc-tiles-sm .cc-tile { padding: 9px 11px; gap: 3px; }
+.cc-tiles-sm .cc-tile b { font-size: 16px; }
+.cc-meter-wrap { padding-top: 0; }
+.cc-meter { height: 10px; border-radius: 5px; background: var(--panel-alt); border: 1px solid var(--border); overflow: hidden; }
+.cc-meter span { display: block; height: 100%; background: var(--gold); }
+.cc-meter-text { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; font-size: 13px; line-height: 1.45; color: var(--text); }
+.cc-allin { border-top: 1px solid var(--border); font-size: 13px; color: var(--text-muted); }
+.cc-allin b { font-family: var(--font-mono); font-weight: 500; }
+.cc-stocks { overflow: visible; }
+.cc-hold { padding: 14px 16px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; }
+.cc-hold-head { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; justify-content: space-between; }
+.cc-sym { font-family: var(--font-mono); font-size: 18px; font-weight: 600; color: var(--gold-bright); margin-right: 10px; }
+.cc-open { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+.cc-chip { font-size: 12px; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel-alt); color: var(--text-muted); }
+.cc-chip b { color: var(--text); font-weight: 500; }
+.cc-chip.sold { border-color: rgba(201, 162, 39, 0.4); }
+.cc-more { position: relative; }
+.cc-more > summary { list-style: none; cursor: pointer; padding: 2px 8px; color: var(--text-muted); font-size: 18px; line-height: 1; }
+.cc-more > summary::-webkit-details-marker { display: none; }
+.cc-more > div { position: absolute; right: 0; top: 100%; z-index: 5; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px;
+  background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); white-space: nowrap; }
+.cc-trades > summary, .cc-closedlist > summary { cursor: pointer; font-size: 12px; color: var(--text-muted); }
+.cc-entries td { font-size: 12px; vertical-align: middle; }
+.cc-entries tbody tr { cursor: default; }
+.cc-entries select, .cc-entries input { font-size: 12px; padding: 3px 6px; }
+.cc-words { color: var(--text-muted); max-width: 520px; }
+.cc-nowrap { white-space: nowrap; }
+.cc-sym-in { width: 76px; }
+.cc-word-in { width: 190px; }
+.cc-unsorted, .cc-source, .cc-closedlist { border-top: 1px solid var(--border); }
+.cc-table tbody tr.cc-dim td, .cc-table tbody tr.cc-dim td b { color: var(--text-faint); }
+.cc-rule-group + .cc-rule-group { border-top: 1px solid var(--border); }
+.cc-desk { scroll-margin-top: 72px; }

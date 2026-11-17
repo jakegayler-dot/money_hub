@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseOcc, chainFrom } from '../lib/options/market.js';
-import { evaluate, bsPrice, dropCheck, cleanRules, pick, expiryClose, incomeDays, soonExpiries, calendarDays, daysTo } from '../lib/options/strategy.js';
+import { evaluate, bsPrice, dropCheck, cleanRules, pick, expiryClose, incomeDays, soonExpiries, calendarDays, daysTo, expiryCadence } from '../lib/options/strategy.js';
 import { positionFields } from '../lib/options/desk.js';
 
 const NOW = new Date('2026-11-17T15:30:00Z'); // a Tuesday, 10:30 in New York
@@ -30,7 +30,13 @@ test('expiry is 4 p.m. in New York; a 0DTE call earns over one day', () => {
   assert.equal(expiryClose('2026-07-17').toISOString(), '2026-07-17T20:00:00.000Z'); // EDT
   assert.equal(incomeDays('2026-11-17', NOW), 1);
   assert.equal(incomeDays('2026-11-18', NOW), 2);
-  // "3 day options or less" by the calendar: Tuesday afternoon to Friday is 3, though Friday's close is 3.02 days off.
+  // Nov 17: "options expiring at most every 3 days, not an option expiring within 3 days": how often they come.
+  const mwf = ['2026-11-18', '2026-11-20', '2026-11-23', '2026-11-25', '2026-11-27', '2026-12-18'];
+  assert.deepEqual(expiryCadence(mwf, NOW), { min: 2, max: 3 });
+  assert.deepEqual(expiryCadence(['2026-11-17', '2026-11-18', '2026-11-19', '2026-11-20', '2026-11-23'], NOW), { min: 1, max: 1 });
+  assert.deepEqual(expiryCadence(['2026-11-20', '2026-11-27', '2026-12-04', '2026-12-11'], NOW), { min: 7, max: 7 });
+  assert.equal(expiryCadence(['2026-11-20', '2026-12-18'], NOW), null);
+  // A call "within 3 days" goes by the calendar: Tuesday afternoon to Friday is 3, though Friday's close is 3.02 days off.
   const tueAfternoon = new Date('2026-11-17T20:30:00Z');
   assert.equal(calendarDays('2026-11-20', tueAfternoon), 3);
   assert.ok(daysTo('2026-11-20', tueAfternoon) > 3);

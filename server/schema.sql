@@ -1906,3 +1906,14 @@ CREATE TABLE IF NOT EXISTS options_positions (
 -- source 'broker' rows follow each snapshot, 'manual' ones (entered on the page) are left alone.
 ALTER TABLE options_positions ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual';
 ALTER TABLE options_positions ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ;
+
+-- His option profit and loss (Jake, Nov 17: "it doesnt show my option profit and loss. it should look like any asset that
+-- produces cash"): the brokerage trades are ordinary transactions under one "Investment buy/sell" category. Each is sorted
+-- into call, put, stock or other with its stock (lib/options/cash.js, by the words in it); a row here is his own correction,
+-- which wins. The transaction itself is never changed.
+CREATE TABLE IF NOT EXISTS options_cash_tags (
+  transaction_id INTEGER PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE,
+  kind           TEXT NOT NULL,          -- call | put | stock | other
+  symbol         TEXT,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);

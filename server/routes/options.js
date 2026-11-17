@@ -13,7 +13,8 @@ import { SYMBOL } from '../lib/options/market.js';
 import { evaluate } from '../lib/options/strategy.js';
 import { toISODate } from '../lib/dates.js';
 import { usdCad } from '../lib/options/fx.js';
-import { getRules, saveRules, scan, plan, strikes, alerts, positions, positionFields, lastSync } from '../lib/options/desk.js';
+import { getRules, saveRules, scan, plan, strikes, alerts, positions, positionFields, lastSync, WIDE } from '../lib/options/desk.js';
+import { optionCash, saveSource, tagEntry, untagEntry } from '../lib/options/cash.js';
 
 const router = Router();
 const sym = (s) => {
@@ -44,6 +45,12 @@ router.post('/evaluate', ah(async (req, res) => {
   const r = await getRules(); // his margin rule unless the position names its own
   res.json(evaluate(p, { margin: { pct: p.margin_pct ?? r.margin_pct, rate: p.margin_rate ?? r.margin_rate } }));
 }));
+
+// His option cash, from the brokerage entries already in Money Hub (lib/options/cash.js).
+router.get('/cash', ah(async (req, res) => { const r = await getRules(); res.json(await optionCash({ symbols: [...r.watchlist, ...WIDE] })); }));
+router.put('/cash/source', ah(async (req, res) => { await saveSource(req.body || {}); res.json({ ok: true }); }));
+router.put('/cash/:id', ah(async (req, res) => { try { res.json(await tagEntry(req.params.id, req.body || {})); } catch (e) { fail(res, e); } }));
+router.delete('/cash/:id', ah(async (req, res) => res.json(await untagEntry(req.params.id))));
 
 router.get('/sync', ah(async (req, res) => res.json(await lastSync())));
 router.get('/positions', ah(async (req, res) => { try { res.json(await positions()); } catch (e) { fail(res, e); } }));

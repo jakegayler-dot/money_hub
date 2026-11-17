@@ -26,7 +26,18 @@ export function expiryClose(expiry) {
 }
 /** Days from `now` to the close on `expiry` (fractional; negative once it has expired). */
 export const daysTo = (expiry, now = new Date()) => (expiryClose(expiry) - now) / 86400e3;
-/** Calendar days to the expiry in New York (Tuesday to Friday is 3): "options of 3 days or less" (Nov 17). */
+/**
+ * How often a stock's options expire (Jake, Nov 17: "i said options expiring at most every 3 days, not an option expiring
+ * within 3 days"): the shortest and longest gap, in calendar days, between its next four expiries. Monday/Wednesday/Friday
+ * is 2 to 3, daily is 1 to 3 (over the weekend), weekly is 7. Null with fewer than three expiries ahead.
+ */
+export function expiryCadence(expiries, now = new Date()) {
+  const up = [...expiries].filter((e) => daysTo(e, now) > 0).sort().slice(0, 4);
+  if (up.length < 3) return null;
+  const gaps = up.slice(1).map((e, i) => Math.round((Date.parse(`${e}T12:00:00Z`) - Date.parse(`${up[i]}T12:00:00Z`)) / 86400e3));
+  return { min: Math.min(...gaps), max: Math.max(...gaps) };
+}
+/** Calendar days to the expiry in New York (Tuesday to Friday is 3). */
 export const calendarDays = (expiry, now = new Date()) => {
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(now);
   return Math.round((Date.parse(`${expiry}T12:00:00Z`) - Date.parse(`${today}T12:00:00Z`)) / 86400e3);
@@ -166,7 +177,8 @@ export const DEFAULT_RULES = {
   margin_pct: 30,           // his share of the stock on margin (Nov 17: "required capital at 30% margin"); 100 = cash
   margin_rate: 5.85,        // his broker's yearly rate on what's borrowed (his answer, Nov 17)
   wide: true,               // also look through about 50 large stocks, not only the watchlist (his pick, Nov 17)
-  min_carry: 0,             // a stock counts only when its ≤3-day call pays more a day than the put costs, by at least this (CAD a lot)
+  min_carry: 0,             // a stock counts only when its call pays more a day than the put costs, by at least this (CAD a lot)
+  expiry_every_days: 3,     // and only when its options expire at least this often (Mon/Wed/Fri or daily), not weekly
 };
 const num = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
 export function cleanRules(r = {}) {
@@ -194,6 +206,7 @@ export function cleanRules(r = {}) {
     margin_rate: num(r.margin_rate, 0, 30, d.margin_rate),
     wide: r.wide == null ? d.wide : !!r.wide,
     min_carry: num(r.min_carry, -1e5, 1e5, d.min_carry),
+    expiry_every_days: Math.round(num(r.expiry_every_days, 1, 31, d.expiry_every_days)),
   };
 }
 
