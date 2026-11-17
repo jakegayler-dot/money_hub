@@ -149,3 +149,57 @@ export async function untagEntry(id) {
   await pool.query(`DELETE FROM options_cash_tags WHERE transaction_id = $1`, [Number(id)]);
   return { ok: true };
 }
+
+/**
+ * The puts as insurance (Jake, Nov 17: "show me my breakeven on the puts which are essentially an insurance policy of this
+ * system and therefore a fixed cost that needs to be extracted over the remaining trading days"). By stock, in US$: what the
+ * puts have cost net, what the calls have paid back, what's left, the trading days to the put's expiry, what the calls must
+ * bring a trading day to be even by then, what the calls open now bring, and the day that makes it even at that rate.
+ * From his Money Hub entries when the stock has any; else from the positions record.
+ */
+export async function insurance({ now = new Date(), list: given = null, fx: givenFx } = {}) {
+  const { positions, getRules, WIDE } = await import('./desk.js');
+  const { usdCad } = await import('./fx.js');
+  const { incomeDays, sessionDate, daysTo } = await import('./strategy.js');
+  // (list and fx can be handed in: the positions need the market's prices, the rate the Bank of Canada.)
+  const [list, rules, fx] = await Promise.all([given || positions(now), getRules(), givenFx === undefined ? usdCad() : givenFx]);
+  const cash = await optionCash({ symbols: [...rules.watchlist, ...WIDE] });
+  const toUsd = (n) => (cash.currency === 'CAD' && fx?.rate ? n / fx.rate : n);
+  const open = list.filter((p) => p.status === 'open');
+  const traded = cash.stocks.filter((x) => x.call_entries || x.put_entries);
+  const symbols = [...new Set([...open.map((p) => p.symbol), ...traded.map((x) => x.symbol)])];
+  const rows = symbols.map((symbol) => {
+    const ps = open.filter((p) => p.symbol === symbol);
+    const c = traded.find((x) => x.symbol === symbol) || null;
+    const legs = ps.flatMap((p) => p.open_legs || []);
+    const puts = legs.filter((l) => l.type === 'put' && l.side === 'long');
+    const calls = legs.filter((l) => l.type === 'call' && l.side === 'short');
+    const heldCost = puts.reduce((a, l) => a + Number(l.premium) * Number(l.contracts) * 100, 0);
+    const paid = c ? Math.max(0, -toUsd(c.puts)) : heldCost;
+    if (!(paid > 0)) return null;
+    const collected = c ? toUsd(c.calls) : Math.max(0, ps.reduce((a, p) => a + p.premium_collected, 0) + heldCost);
+    const expiry = puts.map((l) => l.expiry).filter((e) => daysTo(e, now) > 0).sort().at(-1) || null;
+    const daysLeft = expiry ? incomeDays(expiry, now) : null;
+    const left = Math.max(0, paid - collected);
+    const callNow = calls.reduce((a, l) => a + l.per_day, 0);
+    const daysToEven = left <= 0 ? 0 : callNow > 0 ? Math.ceil(left / callNow) : null;
+    return {
+      symbol, from: c ? 'entries' : 'positions', puts_paid: r2(paid), calls_collected: r2(collected), left: r2(left),
+      put_expiry: expiry, trading_days_left: daysLeft, needed_per_day: daysLeft ? r2(left / daysLeft) : null,
+      call_now_per_day: r2(callNow), days_to_even: daysToEven, even_on: daysToEven ? sessionDate(daysToEven, now) : null,
+      in_time: daysToEven == null || daysLeft == null ? null : daysToEven <= daysLeft,
+    };
+  }).filter(Boolean);
+  const sum = (k) => r2(rows.reduce((a, r) => a + (r[k] || 0), 0));
+  const left = sum('left'); const callNow = sum('call_now_per_day');
+  const expiry = rows.map((r) => r.put_expiry).filter(Boolean).sort().at(-1) || null;
+  const daysToEven = left <= 0 ? 0 : callNow > 0 ? Math.ceil(left / callNow) : null;
+  return {
+    stocks: rows,
+    total: rows.length ? {
+      puts_paid: sum('puts_paid'), calls_collected: sum('calls_collected'), left, put_expiry: expiry,
+      trading_days_left: expiry ? incomeDays(expiry, now) : null, needed_per_day: sum('needed_per_day'), call_now_per_day: callNow,
+      days_to_even: daysToEven, even_on: daysToEven ? sessionDate(daysToEven, now) : null,
+    } : null,
+  };
+}

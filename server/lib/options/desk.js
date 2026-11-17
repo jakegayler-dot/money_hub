@@ -2,7 +2,7 @@
 // during US market hours, and his positions. Money Hub only reads the market and keeps his records; it never places a trade.
 import { pool, getSetting } from '../../db.js';
 import { quote, history, chain, parseOcc, cboeBusy } from './market.js';
-import { cleanRules, dropCheck, soonExpiries, pick, evaluate, daysTo, expiryCadence } from './strategy.js';
+import { cleanRules, dropCheck, soonExpiries, pick, evaluate, daysTo, expiryCadence, legDays } from './strategy.js';
 import { toISODate } from '../dates.js';
 import { usdCad } from './fx.js';
 
@@ -58,7 +58,7 @@ async function readStock(symbol, rules, fx, now, watched) {
   const carry = p?.carry || null;
   return { symbol, watched, price: r2(q.price), iv30: q.iv30 == null ? null : r2(q.iv30 * 100), as_of: q.as_of, ...dropCheck(hist, q, rules),
     expiries_this_week: soon, cadence, often, next_expiry: soon[0] || ch.expiries.find((e) => daysTo(e, now) > 0) || null,
-    carry, qualifies: !!(often && carry && carry.gap > 0 && carry.gap * (fx?.rate || 1) >= rules.min_carry) };
+    carry, qualifies: !!(often && carry && carry.gap != null && carry.gap > 0 && carry.gap * (fx?.rate || 1) >= rules.min_carry) };
 }
 
 // The wider list, swept in the background (Cboe's free feed refuses a burst of 50 chains: 429s, Nov 17).
@@ -95,6 +95,7 @@ export async function scan(rulesIn = null, now = new Date()) {
     rules, as_of: now.toISOString(), fx,
     stocks,
     wide: wide.filter((r) => r.qualifies).sort((a, b) => b.carry.gap - a.carry.gap),
+    call_otm: rules.call_otm, put_otm: rules.put_otm,
     wide_checked: wide.length + (rules.wide ? wideState.unread.length : 0),
     wide_unread: rules.wide ? wideState.unread : [],
     wide_as_of: rules.wide && wideState.at ? new Date(wideState.at).toISOString() : null,
@@ -207,6 +208,7 @@ export async function positions(now = new Date()) {
     return {
       id: r.id, symbol: r.symbol, shares, cost, status: r.status, source: r.source || 'manual', synced_at: r.synced_at || null, opened_on: toISODate(r.opened_on), closed_on: toISODate(r.closed_on), notes: r.notes,
       legs: r.legs || [], premium_collected: Number(r.premium_collected), price: price == null ? null : r2(price),
+      open_legs: r.status === 'closed' ? [] : legs.filter((l) => daysTo(l.expiry, now) > 0).map((l) => ({ ...l, days: legDays(l, now), per_day: r2((Number(l.premium) * Number(l.contracts) * 100) / legDays(l, now)) })),
       stock_pnl: stockPnl, total_pnl: stockPnl == null ? null : r2(stockPnl + Number(r.premium_collected)),
       days_held: Math.max(1, Math.round((now - new Date(`${toISODate(r.opened_on)}T12:00:00Z`)) / 86400e3)),
       figures: figures && { max_gain: figures.max_gain, max_loss: figures.max_loss, breakevens: figures.breakevens, horizon: figures.horizon, income_per_day: figures.income_per_day,

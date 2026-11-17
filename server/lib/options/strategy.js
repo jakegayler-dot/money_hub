@@ -6,9 +6,11 @@
 // legs expiring then are worth what they're in the money; a longer leg (a put bought for a month) is priced by Black-Scholes
 // at its own IV for the time it has left. Max gain and loss come from that curve over every price from 0 to three times today's.
 //
-// "Recommend" is Jake's own rules applied, not a call on the market: the call nearest his target delta in the nearest
-// expiry, the put about his chosen % below at the cheapest cost a day, and the lots his limits allow (share of his capital in
-// one name, the most he'll lose on one position). Each pick says which rule chose it.
+// "Recommend" is Jake's own rules applied, not a call on the market (Nov 17: "avg put daily cost (on trading days) on long
+// horizon puts that are $10 otm, and avg short term daily calls $5 otm ... advise me on the next call that maximizes my daily
+// return"): the call at least his dollars above the price that pays the most a trading day among the short expiries, the put
+// at least his dollars below at the least cost a trading day among the long ones, and the lots his limits allow (share of his
+// capital in one name, the most he'll lose on one position). Each pick says which rule chose it. Every "a day" is a trading day.
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const RATE = 0.04; // risk-free rate for pricing a longer leg (roughly the US T-bill)
 
@@ -42,14 +44,43 @@ export const calendarDays = (expiry, now = new Date()) => {
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(now);
   return Math.round((Date.parse(`${expiry}T12:00:00Z`) - Date.parse(`${today}T12:00:00Z`)) / 86400e3);
 };
-/** Calendar days the premium is earned over: a 0DTE call is one day's income. */
-export const incomeDays = (expiry, now = new Date()) => Math.max(1, Math.ceil(daysTo(expiry, now) - 1e-9));
+// Trading days (Jake, Nov 17: "avg put daily cost (on trading days)"; the puts are "a fixed cost that needs to be extracted
+// over the remaining trading days"): weekdays the US market is open. Full-day closures from the NYSE's published calendar
+// for 2026 and 2027 (its December 2025 release); beyond that, weekdays.
+const HOLIDAYS = new Set(['2026-01-01', '2026-01-19', '2026-02-16', '2026-04-03', '2026-05-25', '2026-06-19', '2026-07-03', '2026-09-07', '2026-11-26', '2026-12-25',
+  '2027-01-01', '2027-01-18', '2027-02-15', '2027-03-26', '2027-05-31', '2027-06-18', '2027-07-05', '2027-09-06', '2027-11-25', '2027-12-24']);
+const nyDate = (now) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(now);
+const nextDate = (iso) => new Date(Date.parse(`${iso}T12:00:00Z`) + 86400e3).toISOString().slice(0, 10);
+export const isTradingDay = (iso) => { const d = new Date(`${iso}T12:00:00Z`).getUTCDay(); return d !== 0 && d !== 6 && !HOLIDAYS.has(iso); };
+/** Trading days from one date to another, both counted. */
+export function tradingDaysBetween(from, to) {
+  let n = 0;
+  for (let d = from, i = 0; d <= to && i < 4000; d = nextDate(d), i++) if (isTradingDay(d)) n += 1;
+  return n;
+}
+/** The first session still to come: today while it's open, else the next trading day. */
+const firstSession = (now) => {
+  let d = nyDate(now);
+  if (!(isTradingDay(d) && now < expiryClose(d))) d = nextDate(d);
+  for (let i = 0; i < 10 && !isTradingDay(d); i++) d = nextDate(d);
+  return d;
+};
+/** Trading days the premium is earned over, from now to the expiry (today counts while its session is open): a 0DTE call is one. */
+export const incomeDays = (expiry, now = new Date()) => Math.max(1, tradingDaysBetween(firstSession(now), expiry));
+/** The date `n` trading days from now (1 = the first session still to come). */
+export function sessionDate(n, now = new Date()) {
+  let d = firstSession(now);
+  for (let k = 1; k < n; k++) { d = nextDate(d); for (let i = 0; i < 10 && !isTradingDay(d); i++) d = nextDate(d); }
+  return d;
+}
+/** Calendar days to the expiry, rounded up (what margin interest runs over). */
+export const calendarSpan = (expiry, now = new Date()) => Math.max(1, Math.ceil(daysTo(expiry, now) - 1e-9));
 /**
- * The days a leg's premium is spread over (Nov 17: his long puts "average about $17/day"): from the day it was opened
- * (leg.since, YYYY-MM-DD) to its expiry, or from now when it's being planned. A 0DTE leg is one day.
+ * The trading days a leg's premium is spread over (Nov 17: his long puts "average about $17/day"): from the day it was
+ * opened (leg.since, YYYY-MM-DD) to its expiry, or from now when it's being planned. A 0DTE leg is one day.
  */
 export const legDays = (l, now = new Date()) => (/^\d{4}-\d{2}-\d{2}$/.test(String(l.since || ''))
-  ? Math.max(1, Math.round((Date.parse(`${l.expiry}T12:00:00Z`) - Date.parse(`${l.since}T12:00:00Z`)) / 86400e3))
+  ? Math.max(1, tradingDaysBetween(l.since, l.expiry))
   : incomeDays(l.expiry, now));
 
 // ---------- pricing ----------
@@ -97,7 +128,9 @@ export function evaluate(position, { now = new Date(), testPcts = [], margin = n
     const T = Math.max(0, (expiryClose(l.expiry) - expiryClose(horizon)) / (365 * 86400e3));
     return bsPrice(l.type, S, l.strike, T, l.iv || 0.5);
   };
-  const interestToHorizon = horizon ? interestPerDay * incomeDays(horizon, now) : 0;
+  const interestToHorizon = horizon ? interestPerDay * calendarSpan(horizon, now) : 0;
+  // A trading day's share of the interest (it runs through weekends too), to set beside the calls and puts a trading day.
+  const interestPerSession = horizon ? interestToHorizon / incomeDays(horizon, now) : (interestPerDay * 7) / 5;
   const pnl = (S) => (S - cost) * shares - interestToHorizon + legs.reduce((a, l) => a + legSign(l) * (valueAt(l, S) - l.premium) * l.contracts * 100, 0);
 
   const top = Math.max(price, cost, ...legs.map((l) => l.strike)) * 3;
@@ -141,7 +174,8 @@ export function evaluate(position, { now = new Date(), testPcts = [], margin = n
     money_in: r2(stockIn + paidOut), stock_in: r2(stockIn), premium_in: r2(premiumIn), put_cost: r2(paidOut), net_credit: r2(credit),
     income_per_day: r2(perDay), protection_per_day: r2(costPerDay), net_per_day: r2(perDay - costPerDay),
     margin_pct: m.pct, margin_rate: m.rate, capital_needed: r2(stockIn * m.pct / 100 + paidOut), borrowed: r2(borrowed),
-    interest_per_day: r2(interestPerDay), interest_to_horizon: r2(interestToHorizon), net_after_interest_per_day: r2(perDay - costPerDay - interestPerDay),
+    interest_per_day: r2(interestPerSession), interest_per_calendar_day: r2(interestPerDay), interest_to_horizon: r2(interestToHorizon),
+    net_after_interest_per_day: r2(perDay - costPerDay - interestPerSession),
     max_gain: uncovered || rising ? null : r2(best[1]), max_gain_at: uncovered || rising ? null : r2(best[0]),
     max_loss: uncovered ? null : r2(worst[1]), max_loss_at: uncovered ? null : r2(worst[0]),
     unlimited_gain: !uncovered && rising, uncovered,
@@ -152,7 +186,7 @@ export function evaluate(position, { now = new Date(), testPcts = [], margin = n
     called_away_chance: call?.delta != null ? r2(Math.abs(call.delta) * 100) : null,
     put_pays_chance: put?.delta != null ? r2(Math.abs(put.delta) * 100) : null,
     call_yield_pct: call && stockIn ? r2(((call.premium * call.contracts * 100) / stockIn) * 100) : null,
-    call_yield_annual_pct: call && stockIn ? r2(((call.premium * call.contracts * 100) / stockIn) * (365 / incomeDays(call.expiry, now)) * 100) : null,
+    call_yield_annual_pct: call && stockIn ? r2(((call.premium * call.contracts * 100) / stockIn) * (252 / incomeDays(call.expiry, now)) * 100) : null,
     scenarios, curve,
   };
 }
@@ -167,17 +201,16 @@ export const DEFAULT_RULES = {
   capital_currency: 'CAD',  // what capital is in (Nov 17: "I want to see outputs in cad"); a capital saved before then was US$
   max_position_pct: 25,     // most of it in one name
   max_loss_pct: 5,          // most he'll lose on one position, as % of the capital
-  target_delta: 0.2,        // the call: about a 1-in-5 chance of being called away
-  delta_min: 0.1, delta_max: 0.35,
-  call_max_days: 3,         // 0DTE to 3 days
+  call_otm: 5,              // the call: at least this many US dollars above the price (Nov 17: "short term daily calls $5 otm")
+  call_max_days: 3,         // short term: expiring within this many days
   protect: true,            // buy a put
-  put_below_pct: 10,        // about this far below today's price
-  put_days_min: 7, put_days_max: 45,
+  put_otm: 10,              // the put: at least this many US dollars below the price ("long horizon puts that are $10 otm")
+  put_days_min: 7, put_days_max: 45, // long horizon: this many days out
   drop_test_pct: 20,        // without a put, the fall the loss limit is checked against
   margin_pct: 30,           // his share of the stock on margin (Nov 17: "required capital at 30% margin"); 100 = cash
   margin_rate: 5.85,        // his broker's yearly rate on what's borrowed (his answer, Nov 17)
   wide: true,               // also look through about 50 large stocks, not only the watchlist (his pick, Nov 17)
-  min_carry: 0,             // a stock counts only when its call pays more a day than the put costs, by at least this (CAD a lot)
+  min_carry: 0,             // a stock counts only when its calls pay more a trading day than the puts cost, by at least this (CAD, 100 shares)
   expiry_every_days: 3,     // and only when its options expire at least this often (Mon/Wed/Fri or daily), not weekly
 };
 const num = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
@@ -193,12 +226,10 @@ export function cleanRules(r = {}) {
     capital_currency: ['CAD', 'USD'].includes(r.capital_currency) ? r.capital_currency : (Number(r.capital) > 0 ? 'USD' : d.capital_currency),
     max_position_pct: num(r.max_position_pct, 1, 100, d.max_position_pct),
     max_loss_pct: num(r.max_loss_pct, 0.1, 100, d.max_loss_pct),
-    target_delta: num(r.target_delta, 0.02, 0.6, d.target_delta),
-    delta_min: num(r.delta_min, 0.01, 0.6, d.delta_min),
-    delta_max: num(r.delta_max, 0.02, 0.9, d.delta_max),
+    call_otm: num(r.call_otm, 0, 1000, d.call_otm),
     call_max_days: Math.round(num(r.call_max_days, 0, 60, d.call_max_days)),
     protect: r.protect == null ? d.protect : !!r.protect,
-    put_below_pct: num(r.put_below_pct, 0, 50, d.put_below_pct),
+    put_otm: num(r.put_otm, 0, 1000, d.put_otm),
     put_days_min: Math.round(num(r.put_days_min, 0, 365, d.put_days_min)),
     put_days_max: Math.round(num(r.put_days_max, 1, 730, d.put_days_max)),
     drop_test_pct: num(r.drop_test_pct, 1, 90, d.drop_test_pct),
@@ -240,33 +271,26 @@ export function pick(ch, rulesIn, { now = new Date(), fx = null } = {}) {
   const money = (usdAmt) => (rate ? `$${Math.round(usdAmt * rate).toLocaleString('en-US')}` : `US$${Math.round(usdAmt).toLocaleString('en-US')}`);
   const price = ch.quote.price;
   const open = ch.contracts.filter((c) => daysTo(c.expiry, now) > 0);
-  // The call: out of the money, a bid, delta in his band; per expiry the one nearest his target.
-  const calls = open.filter((c) => c.type === 'call' && c.strike > price && c.bid >= 0.05 && c.delta != null
-    && c.delta >= rules.delta_min && c.delta <= rules.delta_max && calendarDays(c.expiry, now) <= rules.call_max_days);
-  const byExp = new Map();
-  for (const c of calls) {
-    const cur = byExp.get(c.expiry);
-    if (!cur || Math.abs(c.delta - rules.target_delta) < Math.abs(cur.delta - rules.target_delta)) byExp.set(c.expiry, c);
-  }
-  const callChoices = [...byExp.values()].sort((a, b) => (a.expiry < b.expiry ? -1 : 1)).slice(0, 4)
-    .map((c) => ({ ...c, days: incomeDays(c.expiry, now), per_day: r2((c.bid * 100) / incomeDays(c.expiry, now)) }));
+  const avg = (xs) => (xs.length ? xs.reduce((x, y) => x + y, 0) / xs.length : null);
+  // Short-term calls: in each expiry within his call days, the first strike at least call_otm dollars above the price, at the
+  // bid, a trading day. Their average is what the stock's calls pay; the one that pays the most a trading day is the pick.
+  const shortExp = [...new Set(open.filter((c) => c.type === 'call' && calendarDays(c.expiry, now) <= rules.call_max_days).map((c) => c.expiry))].sort();
+  const callRows = shortExp.map((e) => {
+    const c = open.filter((x) => x.type === 'call' && x.expiry === e && x.strike >= price + rules.call_otm - 1e-9 && x.bid >= 0.01).sort((x, y) => x.strike - y.strike)[0];
+    return c ? { ...c, days: incomeDays(e, now), per_day: r2((c.bid * 100) / incomeDays(e, now)) } : null;
+  }).filter(Boolean);
+  const callChoices = [...callRows].sort((x, y) => y.per_day - x.per_day || (x.expiry < y.expiry ? -1 : 1)).slice(0, 6);
   const call = callChoices[0] || null;
 
-  // The put: about put_below_pct under today's price, cheapest a day among the expiries in his window.
-  let put = null; let putChoices = [];
-  if (rules.protect) {
-    const want = price * (1 - rules.put_below_pct / 100);
-    const puts = open.filter((c) => c.type === 'put' && c.ask > 0 && c.strike <= price
-      && daysTo(c.expiry, now) >= rules.put_days_min && daysTo(c.expiry, now) <= rules.put_days_max + 1);
-    const best = new Map();
-    for (const p of puts) {
-      const cur = best.get(p.expiry);
-      if (!cur || Math.abs(p.strike - want) < Math.abs(cur.strike - want)) best.set(p.expiry, p);
-    }
-    putChoices = [...best.values()].map((p) => ({ ...p, days: incomeDays(p.expiry, now), cost_per_day: r2((p.ask * 100) / incomeDays(p.expiry, now)) }))
-      .sort((a, b) => a.cost_per_day - b.cost_per_day).slice(0, 4);
-    put = putChoices[0] || null;
-  }
+  // Long-horizon puts: in each expiry in his put window, the first strike at least put_otm dollars below the price, at the
+  // ask, a trading day. Their average is what the stock's insurance costs; the cheapest a trading day is the pick.
+  const longExp = [...new Set(open.filter((c) => c.type === 'put' && daysTo(c.expiry, now) >= rules.put_days_min && daysTo(c.expiry, now) <= rules.put_days_max + 1).map((c) => c.expiry))].sort();
+  const putRows = longExp.map((e) => {
+    const p = open.filter((x) => x.type === 'put' && x.expiry === e && x.strike <= price - rules.put_otm + 1e-9 && x.ask > 0).sort((x, y) => y.strike - x.strike)[0];
+    return p ? { ...p, days: incomeDays(e, now), cost_per_day: r2((p.ask * 100) / incomeDays(e, now)) } : null;
+  }).filter(Boolean);
+  const putChoices = [...putRows].sort((x, y) => x.cost_per_day - y.cost_per_day).slice(0, 6);
+  const put = rules.protect ? putChoices[0] || null : null;
 
   // One lot (100 shares) bought today with these legs, at the prices you'd likely trade: sell the call at the bid, buy the put at the ask.
   const legs = [];
@@ -292,17 +316,20 @@ export function pick(ch, rulesIn, { now = new Date(), fx = null } = {}) {
     if (!sizing.lots) sizing.limits.push('Not one lot fits these limits.');
   }
   const reasons = [];
-  if (call) reasons.push(`Call: the ${call.expiry} expiry, nearest your ${rules.target_delta} delta target (delta ${r2(call.delta)}: about a ${Math.round(call.delta * 100)}% chance it ends in the money).`);
-  else reasons.push(`No call fits: none within ${rules.call_max_days} days with a delta of ${rules.delta_min} to ${rules.delta_max} and a bid.`);
+  if (call) reasons.push(`Call: the ${call.strike} for ${call.expiry}, the first strike at least US$${rules.call_otm} above the price. Of the ${callRows.length} expir${callRows.length === 1 ? 'y' : 'ies'} within ${rules.call_max_days} days it pays the most a trading day (US$${call.per_day} over ${call.days}).${call.delta != null ? ` Delta ${r2(call.delta)}: about a ${Math.round(call.delta * 100)}% chance it ends in the money.` : ''}`);
+  else reasons.push(`No call fits: none within ${rules.call_max_days} days at least US$${rules.call_otm} above the price with a bid.`);
   if (rules.protect) {
-    if (put) reasons.push(`Put: about ${rules.put_below_pct}% below today’s price, the cheapest a day of the expiries ${rules.put_days_min} to ${rules.put_days_max} days out.`);
-    else reasons.push(`No put fits: none ${rules.put_days_min} to ${rules.put_days_max} days out near ${rules.put_below_pct}% below.`);
+    if (put) reasons.push(`Put: the ${put.strike} for ${put.expiry}, the first strike at least US$${rules.put_otm} below the price; the cheapest a trading day (US$${put.cost_per_day} over ${put.days}) of the ${putRows.length} expir${putRows.length === 1 ? 'y' : 'ies'} ${rules.put_days_min} to ${rules.put_days_max} days out.`);
+    else reasons.push(`No put fits: none ${rules.put_days_min} to ${rules.put_days_max} days out at least US$${rules.put_otm} below the price.`);
   }
-  // The gap (Nov 17: "a delta between short term calls and long term puts"; his answer: calls pay more than puts cost), a lot
-  // a day in US$: the call his rules pick, less the put; and after the margin interest on one lot.
-  const carry = call ? {
-    call_per_day: call.per_day, put_per_day: put ? put.cost_per_day : 0, interest_per_day: lot.interest_per_day,
-    gap: r2(call.per_day - (put ? put.cost_per_day : 0)), after_interest: r2(call.per_day - (put ? put.cost_per_day : 0) - lot.interest_per_day),
+  // The difference (Nov 17: "the difference between avg put daily cost (on trading days) on long horizon puts that are $10
+  // otm, and avg short term daily calls $5 otm"), for 100 shares a trading day in US$: the average of the short-term calls
+  // less the average of the long-horizon puts; and after the margin interest on one lot.
+  const callAvg = avg(callRows.map((c) => c.per_day)); const putAvg = avg(putRows.map((p) => p.cost_per_day));
+  const carry = callAvg != null ? {
+    call_per_day: r2(callAvg), calls: callRows.length, put_per_day: putAvg == null ? null : r2(putAvg), puts: putRows.length,
+    interest_per_day: lot.interest_per_day,
+    gap: putAvg == null ? null : r2(callAvg - putAvg), after_interest: putAvg == null ? null : r2(callAvg - putAvg - lot.interest_per_day),
   } : null;
   return { rules, price, call, put, call_choices: callChoices, put_choices: putChoices, lot, sizing, reasons, carry, usd_cad: rate };
 }

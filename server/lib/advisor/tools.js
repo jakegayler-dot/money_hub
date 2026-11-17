@@ -135,13 +135,13 @@ Returns the plan and the scenario side by side (lowest month, tightest month aga
   // Nov 17 (Jake: "a covered call strategist ... have Andrew or Mike offer guidance"): the covered-call desk (lib/options).
   {
     name: 'covered_calls',
-    description: "Jake's covered-call desk (the Covered calls page): stocks he watches for drops, bought to write short-dated calls against, with puts bought as protection. Cboe's quotes, 15 minutes delayed. action scan: his watchlist and a wider list of large stocks (today's move, how far below the recent high, how often its options expire (cadence, days between expiries), the gap: what his rules' call brings in a day less what the put costs a day, US$ a lot; which dropped by his rule; the wider list shows only stocks whose options expire at least every expiry_every_days (Mon/Wed/Fri or daily) and whose call pays more than the put costs). Every figure counts his margin rule (margin_pct of the shares put up, the rest borrowed at margin_rate a year): capital_needed, interest_per_day, net_after_interest_per_day. action plan (symbol): what his own rules pick there today (the call nearest his delta in the nearest expiry, the put about his % below at the least cost a day, the lots his capital and loss limits allow) and one lot's max gain, max loss, breakeven, income a day and scenarios. action evaluate (position): any position's figures (price, shares, cost, legs [{type call|put, side short|long, strike, expiry, premium, contracts, iv}]). action positions: his recorded positions, valued now. action cash: his option profit and loss from the brokerage entries in Money Hub, by stock: call premium collected, puts net of what he sold back, the two together, and entries the desk couldn't sort (he sorts those on the page). action rules / alerts: his rules; the drops the watcher noted.",
+    description: "Jake's covered-call desk (the Covered calls page): large stocks whose options expire at least every few days, bought to write short-dated calls against, with long-dated puts bought as insurance. Cboe's quotes, 15 minutes delayed. Every 'a day' is a TRADING day. action scan: his watchlist and a wider list of large stocks: today's move, how far below the recent high, how often the options expire (cadence), and carry: call_per_day (the average, over the expiries within call_max_days, of the first call at least call_otm US dollars above the price, at the bid, a trading day), put_per_day (the average, over the expiries put_days_min to put_days_max days out, of the first put at least put_otm below, at the ask, a trading day), gap (calls less puts, 100 shares) and after_interest; qualifies = options often enough and a gap above his minimum. action plan (symbol): his rules on that stock today: call_choices (each short expiry's call at least call_otm out, most a trading day first: the first is the one that pays the most), put_choices (cheapest a trading day first), the lots his capital and loss limits allow, and one lot's max gain, max loss, breakeven, income a trading day and scenarios, with his margin rule (capital_needed, interest). action evaluate (position): any position's figures (price, shares, cost, legs [{type call|put, side short|long, strike, expiry, premium, contracts, iv}]). action positions: his recorded positions, valued now, with each open leg's trading days and per_day. action cash: his option profit and loss from the brokerage entries in Money Hub, by stock: call premium collected, puts net of what he sold back, and entries the desk couldn't sort. action insurance: the puts as a fixed cost, by stock and in total (US$): puts_paid, calls_collected, left, trading_days_left to the put's expiry, needed_per_day to break even by then, call_now_per_day from the calls open, days_to_even and even_on. action rules / alerts: his rules; the drops the watcher noted.",
     input_schema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['scan', 'plan', 'evaluate', 'positions', 'cash', 'rules', 'alerts'] },
+        action: { type: 'string', enum: ['scan', 'plan', 'evaluate', 'positions', 'cash', 'insurance', 'rules', 'alerts'] },
         symbol: { type: 'string', description: 'plan: the stock, e.g. NVDA' },
-        overrides: { type: 'object', description: 'plan: rules to try instead of his (target_delta, call_max_days, protect, put_below_pct, put_days_min, put_days_max, capital, max_position_pct, max_loss_pct)' },
+        overrides: { type: 'object', description: 'plan: rules to try instead of his (call_otm, call_max_days, protect, put_otm, put_days_min, put_days_max, capital, max_position_pct, max_loss_pct, margin_pct, margin_rate)' },
         position: { type: 'object', description: 'evaluate: { price, shares, cost, legs }' },
       },
       required: ['action'],
@@ -313,9 +313,13 @@ export async function runTool(name, input = {}, run = {}) {
             const { entries, accounts, aliases, account_ids, unsorted, ...c } = await optionCash({ symbols: [...r.watchlist, ...desk.WIDE] });
             return clip({ note: 'Amounts are in ' + c.currency + ' as entered; calls positive is premium collected, puts negative is paid net.', ...c, unsorted: unsorted.map((e) => ({ date: e.date, amount: e.amount, words: e.words })) });
           }
+          case 'insurance': {
+            const { insurance } = await import('../options/cash.js');
+            return clipFx(await insurance());
+          }
           case 'rules': return clipFx({ rules: await desk.getRules() });
           case 'alerts': return clipFx(await desk.alerts());
-          default: throw new AdvisorToolError('action: scan, plan, evaluate, positions, cash, rules or alerts');
+          default: throw new AdvisorToolError('action: scan, plan, evaluate, positions, cash, insurance, rules or alerts');
         }
       } catch (err) {
         if (err instanceof AdvisorToolError) throw err;

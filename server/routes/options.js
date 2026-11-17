@@ -14,7 +14,7 @@ import { evaluate } from '../lib/options/strategy.js';
 import { toISODate } from '../lib/dates.js';
 import { usdCad } from '../lib/options/fx.js';
 import { getRules, saveRules, scan, plan, strikes, alerts, positions, positionFields, lastSync, WIDE } from '../lib/options/desk.js';
-import { optionCash, saveSource, tagEntry, untagEntry } from '../lib/options/cash.js';
+import { optionCash, saveSource, tagEntry, untagEntry, insurance } from '../lib/options/cash.js';
 
 const router = Router();
 const sym = (s) => {
@@ -48,6 +48,8 @@ router.post('/evaluate', ah(async (req, res) => {
 
 // His option cash, from the brokerage entries already in Money Hub (lib/options/cash.js).
 router.get('/cash', ah(async (req, res) => { const r = await getRules(); res.json(await optionCash({ symbols: [...r.watchlist, ...WIDE] })); }));
+// The puts as insurance: what they cost, what the calls have paid back, the trading days left and the break-even.
+router.get('/insurance', ah(async (req, res) => { try { res.json(await insurance()); } catch (e) { fail(res, e); } }));
 router.put('/cash/source', ah(async (req, res) => { await saveSource(req.body || {}); res.json({ ok: true }); }));
 router.put('/cash/:id', ah(async (req, res) => { try { res.json(await tagEntry(req.params.id, req.body || {})); } catch (e) { fail(res, e); } }));
 router.delete('/cash/:id', ah(async (req, res) => res.json(await untagEntry(req.params.id))));

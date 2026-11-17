@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { pool } from '../db.js';
-import { classify, optionCash, tagEntry, untagEntry, saveSource } from '../lib/options/cash.js';
+import { classify, optionCash, tagEntry, untagEntry, saveSource, insurance } from '../lib/options/cash.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 let db; let acct; let cat; let other;
@@ -92,4 +92,47 @@ test('another account he picks is read too; the currency is his to set', async (
   const c = await optionCash({ symbols: ['TSLA'] });
   assert.equal(c.stocks.find((s) => s.symbol === 'TSLA').calls, 90);
   assert.equal(c.currency, 'CAD');
+});
+
+test('the puts as insurance (Nov 17: "a fixed cost that needs to be extracted over the remaining trading days"): what is left, a trading day, and when the calls make it even', async () => {
+  await saveSource({ account_ids: [], currency: 'USD' });
+  const { rows: [opt] } = await db.query("SELECT id FROM transactions WHERE description = 'Option purchase'");
+  await tagEntry(opt.id, { kind: 'put', symbol: 'SPCX' });
+  const now = new Date('2026-11-17T15:30:00Z'); // Tuesday morning: 31 trading days to Dec 31
+  const leg = (type, side, strike, expiry, premium, days) => ({ type, side, strike, expiry, premium, contracts: 1, days, per_day: Math.round((premium * 100 / days) * 100) / 100 });
+  const list = [
+    { symbol: 'NVDA', status: 'open', premium_collected: 0, open_legs: [leg('call', 'short', 165, '2026-11-20', 5.3, 4), leg('put', 'long', 150, '2026-12-31', 10.55, 33)] },
+    // No Money Hub entries for this one: it goes by the positions record (a put for $600, $250 of calls so far).
+    { symbol: 'AMD', status: 'open', premium_collected: -350, open_legs: [leg('put', 'long', 450, '2026-12-18', 6, 23)] },
+    { symbol: 'TSLA', status: 'closed', premium_collected: 0, open_legs: [] },
+  ];
+  const r = await insurance({ now, list, fx: null });
+  const nv = r.stocks.find((x) => x.symbol === 'NVDA');
+  // From his entries: puts −$966 net, calls $558: $408 to go over 31 trading days.
+  assert.equal(nv.from, 'entries');
+  assert.equal(nv.puts_paid, 966);
+  assert.equal(nv.calls_collected, 558);
+  assert.equal(nv.left, 408);
+  assert.equal(nv.trading_days_left, 31);
+  assert.equal(nv.needed_per_day, 13.16);
+  assert.equal(nv.call_now_per_day, 132.5); // $530 over the call's 4 trading days
+  assert.equal(nv.days_to_even, 4);
+  assert.equal(nv.even_on, '2026-11-20');
+  assert.equal(nv.in_time, true);
+  const amd = r.stocks.find((x) => x.symbol === 'AMD');
+  assert.equal(amd.from, 'positions');
+  assert.equal(amd.puts_paid, 600);
+  assert.equal(amd.calls_collected, 250);
+  assert.equal(amd.left, 350);
+  assert.equal(amd.trading_days_left, 23);
+  assert.equal(amd.call_now_per_day, 0);
+  assert.equal(amd.days_to_even, null, 'no call open: nothing coming in to pay it off');
+  assert.equal(amd.even_on, null);
+  // SPCX: entries only (a $585 put), the put no longer on a position: the cost stands, with no expiry to spread it to.
+  const sp = r.stocks.find((x) => x.symbol === 'SPCX');
+  assert.equal(sp.puts_paid, 585);
+  assert.equal(sp.trading_days_left, null);
+  assert.equal(r.total.puts_paid, 966 + 600 + 585);
+  assert.equal(r.total.left, 408 + 350 + sp.left);
+  assert.equal(r.total.put_expiry, '2026-12-31');
 });

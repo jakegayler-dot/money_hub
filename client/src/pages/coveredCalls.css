@@ -106,3 +106,12 @@
 .cc-table tbody tr.cc-dim td, .cc-table tbody tr.cc-dim td b { color: var(--text-faint); }
 .cc-rule-group + .cc-rule-group { border-top: 1px solid var(--border); }
 .cc-desk { scroll-margin-top: 72px; }
+
+/* The puts as insurance, and the next call (Nov 17). */
+.cc-ins, .cc-next { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.cc-ins .cc-meter-text { margin-top: 0; }
+.cc-nexttable tbody tr { cursor: default; }
+.cc-nexttable tbody tr.cc-best td { background: var(--gold-soft); }
+.cc-nexttable .badge { margin-left: 8px; }
+.cc-table td.cc-diff { font-weight: 600; }
+.cc-meter-wrap .cc-pick-head { margin-bottom: 8px; }

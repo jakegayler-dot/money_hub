@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseOcc, chainFrom } from '../lib/options/market.js';
-import { evaluate, bsPrice, dropCheck, cleanRules, pick, expiryClose, incomeDays, soonExpiries, calendarDays, daysTo, expiryCadence } from '../lib/options/strategy.js';
+import { evaluate, bsPrice, dropCheck, cleanRules, pick, expiryClose, incomeDays, soonExpiries, calendarDays, daysTo, expiryCadence, tradingDaysBetween, sessionDate, isTradingDay } from '../lib/options/strategy.js';
 import { positionFields } from '../lib/options/desk.js';
 
 const NOW = new Date('2026-11-17T15:30:00Z'); // a Tuesday, 10:30 in New York
@@ -36,6 +36,16 @@ test('expiry is 4 p.m. in New York; a 0DTE call earns over one day', () => {
   assert.deepEqual(expiryCadence(['2026-11-17', '2026-11-18', '2026-11-19', '2026-11-20', '2026-11-23'], NOW), { min: 1, max: 1 });
   assert.deepEqual(expiryCadence(['2026-11-20', '2026-11-27', '2026-12-04', '2026-12-11'], NOW), { min: 7, max: 7 });
   assert.equal(expiryCadence(['2026-11-20', '2026-12-18'], NOW), null);
+  // Nov 17: "avg put daily cost (on trading days)": weekdays the market is open (NYSE's 2026 calendar: Thanksgiving Nov 26,
+  // Christmas Dec 25). Tuesday morning to Friday is four sessions; after Tuesday's close, three.
+  assert.equal(incomeDays('2026-11-20', NOW), 4);
+  assert.equal(incomeDays('2026-11-20', new Date('2026-11-17T22:00:00Z')), 3);
+  assert.equal(incomeDays('2026-12-31', NOW), 31);
+  assert.equal(tradingDaysBetween('2026-10-01', '2026-12-31'), 64);
+  assert.equal(isTradingDay('2026-11-26'), false);
+  assert.equal(incomeDays('2026-11-23', new Date('2026-11-21T15:00:00Z')), 1, 'Saturday to Monday: one session');
+  assert.equal(sessionDate(1, NOW), '2026-11-17');
+  assert.equal(sessionDate(8, NOW), '2026-11-27', 'the eighth session skips the weekend and Thanksgiving');
   // A call "within 3 days" goes by the calendar: Tuesday afternoon to Friday is 3, though Friday's close is 3.02 days off.
   const tueAfternoon = new Date('2026-11-17T20:30:00Z');
   assert.equal(calendarDays('2026-11-20', tueAfternoon), 3);
@@ -82,19 +92,19 @@ test('a longer put is valued at its time left when the call expires', () => {
 });
 
 test('net a day: the calls written, less the puts spread from when each was opened (Nov 17: puts "average about $17/day")', () => {
-  // A put bought Oct 1 for $26.35 that expires Dec 31: 91 days, about $29 a day a contract; two contracts. A call sold today.
+  // A put bought Oct 1 that expires Dec 31: 64 trading days; two contracts. A call sold today.
   const legs = [
     { type: 'call', side: 'short', strike: 170, expiry: '2026-11-18', premium: 1.44, contracts: 2 },
     { type: 'put', side: 'long', strike: 140, expiry: '2026-12-31', premium: 15.47, contracts: 2, since: '2026-10-01', iv: 0.6 },
   ];
   const r = evaluate({ price: 153.6, shares: 200, cost: 150, legs }, { now: NOW });
   assert.equal(r.income_per_day, 144); // $288 over the two days to Wednesday's close
-  near(r.protection_per_day, (15.47 * 200) / 91, 0.01);
-  near(r.net_per_day, 144 - (15.47 * 200) / 91, 0.01);
-  // A call sold Monday for Wednesday is spread over its two days, whenever it's looked at.
+  near(r.protection_per_day, (15.47 * 200) / 64, 0.01);
+  near(r.net_per_day, 144 - (15.47 * 200) / 64, 0.01);
+  // A call sold Monday for Wednesday is spread over its three sessions (Monday, Tuesday, Wednesday), whenever it's looked at.
   const sold = evaluate({ price: 153.6, shares: 100, legs: [{ ...legs[0], contracts: 1, since: '2026-11-16' }] }, { now: NOW });
-  assert.equal(sold.income_per_day, 72);
-  assert.equal(sold.net_per_day, 72);
+  assert.equal(sold.income_per_day, 48);
+  assert.equal(sold.net_per_day, 48);
 });
 
 test('his 105 NVDA with one call and one put: 5 shares neither covers, said (Nov 17: "Max gain is unlimited? And max loss seems too much?")', () => {
@@ -144,8 +154,8 @@ test('the gap: the call a day less the put a day, and sizing on margin', () => {
   const ch = { quote: { price: 150 }, expiries: [], contracts: [c('2026-11-18', 'call', 160, 1.5, 1.6, 0.21), c('2026-12-18', 'put', 135, 3.9, 4, -0.2)] };
   const p = pick(ch, { capital: 100000, capital_currency: 'USD', max_position_pct: 50, max_loss_pct: 50, margin_pct: 30, margin_rate: 5.85 }, { now: NOW });
   assert.equal(p.carry.call_per_day, 75); // $150 over two days
-  near(p.carry.put_per_day, 400 / 32); // 32 income days to Dec 18
-  near(p.carry.gap, 75 - 400 / 32);
+  near(p.carry.put_per_day, 400 / 23); // 23 trading days to Dec 18
+  near(p.carry.gap, 75 - 400 / 23);
   near(p.carry.after_interest, p.carry.gap - (15000 * 0.7 * 0.0585) / 365, 0.02);
   assert.equal(p.lot.capital_needed, 4500 + 400);
   assert.equal(p.sizing.lots, Math.floor(50000 / 4900)); // 10 lots of US$4,900 at 30% margin
@@ -177,35 +187,53 @@ test('the drop rule: a day’s fall or far enough below the recent high', () => 
   assert.equal(dropCheck(hist, { ...q, price: 106, change_pct: -3.5 }, rules).why[0], 'down 3.5% today');
 });
 
-test('his rules pick the call nearest his delta, the cheapest put a day, and the lots his limits allow', () => {
+test('his rules (Nov 17: "avg put daily cost (on trading days) on long horizon puts that are $10 otm, and avg short term daily calls $5 otm ... the next call that maximizes my daily return")', () => {
   const c = (expiry, type, strike, bid, ask, delta, iv = 0.6) => ({ expiry, type, strike, bid, ask, mid: (bid + ask) / 2, delta, iv });
   const ch = { quote: { price: 150 }, expiries: [], contracts: [
     c('2026-11-16', 'call', 160, 1, 1.1, 0.2),           // expired yesterday
-    c('2026-11-18', 'call', 155, 3, 3.1, 0.4),           // too much delta
+    c('2026-11-18', 'call', 152.5, 4, 4.1, 0.45),        // under $5 out
+    c('2026-11-18', 'call', 155, 3, 3.1, 0.4),           // Wednesday's $5-out call: $300 over 2 trading days
     c('2026-11-18', 'call', 160, 1.5, 1.6, 0.21),
-    c('2026-11-18', 'call', 165, 0.6, 0.7, 0.12),
-    c('2026-11-20', 'call', 165, 1.4, 1.5, 0.19),
-    c('2026-12-18', 'call', 170, 3, 3.2, 0.2),           // beyond 3 days
-    c('2026-11-27', 'put', 135, 1.5, 1.6, -0.15),        // 10 days: $16 a day
-    c('2026-12-18', 'put', 135, 3.9, 4, -0.2),           // 31 days: about $13 a day
-    c('2026-12-18', 'put', 140, 5, 5.2, -0.27),
-    c('2027-03-19', 'put', 135, 9, 9.5, -0.25),          // beyond 45 days
+    c('2026-11-20', 'call', 165, 1.4, 1.5, 0.19),        // Friday's first strike $5 out: $140 over 4
+    c('2026-12-18', 'call', 170, 3, 3.2, 0.2),           // beyond 3 days: not short term
+    c('2026-11-27', 'put', 135, 1.5, 1.6, -0.15),        // 10 days out: $160 over 8 trading days
+    c('2026-12-18', 'put', 135, 3.9, 4, -0.2),
+    c('2026-12-18', 'put', 140, 5, 5.2, -0.27),          // Dec 18's first strike $10 below: $520 over 23
+    c('2026-12-18', 'put', 145, 7, 7.2, -0.35),          // under $10 below
+    c('2027-03-19', 'put', 135, 9, 9.5, -0.25),          // beyond 45 days: not in his window
   ] };
   const p = pick(ch, { capital: 100000, capital_currency: 'USD', max_position_pct: 50, max_loss_pct: 3, margin_pct: 100 }, { now: NOW });
-  assert.equal(p.call.strike, 160);
+  // The next call: of the short expiries' $5-out calls, the one that pays the most a trading day.
+  assert.equal(p.call.strike, 155);
   assert.equal(p.call.expiry, '2026-11-18');
-  assert.deepEqual(p.call_choices.map((x) => x.expiry), ['2026-11-18', '2026-11-20']);
-  assert.equal(p.put.expiry, '2026-12-18');
+  assert.equal(p.call.per_day, 150);
+  assert.deepEqual(p.call_choices.map((x) => [x.expiry, x.strike, x.days, x.per_day]), [['2026-11-18', 155, 2, 150], ['2026-11-20', 165, 4, 35]]);
+  // The put: $10 below, the cheapest a trading day of the long expiries.
+  assert.equal(p.put.expiry, '2026-11-27');
   assert.equal(p.put.strike, 135);
-  // One lot: 100 × $150 + $400 put. 50% of $100k → 3 lots. Worst case with the put about (150 − 135 − 1.5 + 4) × 100 = $1,750 → 3% ($3,000) allows 1.
-  assert.equal(p.sizing.lots, 1);
+  assert.equal(p.put.cost_per_day, 20);
+  assert.deepEqual(p.put_choices.map((x) => [x.expiry, x.strike, x.days]), [['2026-11-27', 135, 8], ['2026-12-18', 140, 23]]);
+  // The difference he sorts by: the calls' average a trading day less the puts' average.
+  near(p.carry.call_per_day, (150 + 35) / 2);
+  near(p.carry.put_per_day, (20 + 520 / 23) / 2, 0.01);
+  near(p.carry.gap, (150 + 35) / 2 - (20 + 520 / 23) / 2, 0.02);
+  assert.equal(p.carry.calls, 2);
+  assert.equal(p.carry.puts, 2);
+  // One lot: 100 × $150 + the $160 put. 50% of $100k → 3 lots; the loss limit decides the rest.
   assert.match(p.sizing.limits[0], /allows 3 lots/);
-  assert.match(p.sizing.limits[1], /allows 1:/);
-  assert.ok(p.reasons.some((r) => /0\.2 delta target/.test(r)));
+  assert.equal(p.sizing.lots, Number(/allows (\d+):/.exec(p.sizing.limits[1])[1]));
+  assert.ok(p.sizing.lots >= 1 && p.sizing.lots <= 3);
+  assert.ok(p.reasons.some((r) => /at least US\$5 above the price/.test(r) && /pays the most a trading day/.test(r)));
+  assert.ok(p.reasons.some((r) => /at least US\$10 below the price/.test(r)));
   const bare = pick(ch, { capital: 100000, capital_currency: 'USD', protect: false, max_loss_pct: 3, drop_test_pct: 20, margin_pct: 100 }, { now: NOW });
   assert.equal(bare.put, null);
+  assert.ok(bare.carry.put_per_day > 0, 'the comparison still prices the puts');
   assert.match(bare.sizing.limits[1], /a 20% fall with no put/);
   assert.match(pick(ch, {}, { now: NOW }).sizing.limits[0], /Set the money/);
+  // His own distances: $2 out for the call, $15 for the put.
+  const own = pick(ch, { call_otm: 2, put_otm: 15 }, { now: NOW });
+  assert.equal(own.call.strike, 152.5);
+  assert.equal(own.put.strike, 135);
 });
 
 test('in CAD (Nov 17: "I want to see outputs in cad"): capital in CAD is sized in US dollars, the words give CAD', async () => {
@@ -229,9 +257,12 @@ test('in CAD (Nov 17: "I want to see outputs in cad"): capital in CAD is sized i
 });
 
 test('rules are cleaned: symbols upper-cased and checked, numbers kept in range', () => {
-  const r = cleanRules({ watchlist: ['nvda', ' tsla ', 'bad symbol!', 'NVDA'], target_delta: 5, protect: false });
+  const r = cleanRules({ watchlist: ['nvda', ' tsla ', 'bad symbol!', 'NVDA'], call_otm: -3, put_otm: '12.5', protect: false });
   assert.deepEqual(r.watchlist, ['NVDA', 'TSLA']);
-  assert.equal(r.target_delta, 0.6);
+  assert.equal(r.call_otm, 0);
+  assert.equal(r.put_otm, 12.5);
+  assert.equal(cleanRules({}).call_otm, 5);
+  assert.equal(cleanRules({}).put_otm, 10);
   assert.equal(r.protect, false);
 });
 
