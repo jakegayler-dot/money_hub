@@ -2,7 +2,7 @@
 // stock drops a certain amount, the goal is to buy that stock and start writing call options to generate cash ... a calculator
 // of the positions that show max gain and loss at certain calls and puts ... recommend call and puts and position sizing ...
 // have Andrew or Mike offer guidance"). Server: lib/options (Cboe's delayed quotes), /api/options. Money Hub never trades.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { localToday } from '../format.js';
 import './coveredCalls.css';
 
@@ -75,6 +75,20 @@ function Payoff({ curve, price, breakevens, strikes }) {
 }
 
 // ---------------------------------------------------------------- the watchlist
+// The wider list's heading (Nov 17: "the stock watcher needs to look for stocks that have 3 day options or less"): swept in the
+// background, one stock at a time, so it says how fresh it is.
+function WideHead({ scan, rules }) {
+  const n = scan.wide?.length || 0;
+  const unread = scan.wide_unread?.length || 0;
+  const when = scan.wide_as_of ? asOf(scan.wide_as_of) : null;
+  return (
+    <tr className="cc-sub"><td colSpan={10}>
+      {!when ? 'Searching about 50 large stocks for options within ' + rules.call_max_days + ' days (one at a time, a minute or two)…'
+        : `Also with options within ${rules.call_max_days} days, the call beating the put: ${n} of ${scan.wide_checked} large stocks, most first · searched ${when}${scan.wide_running ? ', searching again' : ''}${unread ? ` · ${unread} couldn’t be read` : ''}`}
+    </td></tr>
+  );
+}
+
 function Watchlist({ scan, err, selected, onPick, rules, saveRules }) {
   const [add, setAdd] = useState('');
   const addOne = () => {
@@ -86,17 +100,19 @@ function Watchlist({ scan, err, selected, onPick, rules, saveRules }) {
     <div className="panel cc-panel">
       <div className="panel-header spend-header">
         <span>Watching for drops</span>
-        <span className="cc-faint">down {rules?.drop_day_pct}% in a day, or {rules?.drop_from_high_pct}% under the {rules?.high_days}-day high</span>
+        <span className="cc-faint">down {rules?.drop_day_pct}% in a day, or {rules?.drop_from_high_pct}% under the {rules?.high_days}-day high; options within {rules?.call_max_days} days; the call beats the put{rules?.min_carry > 0 ? ` by ${plain(rules.min_carry)}` : ''}</span>
       </div>
       {err && <p className="review-error">{err}</p>}
       {!scan && !err && <p className="cc-faint cc-pad">Reading the market…</p>}
       {scan && (
         <div className="table-scroll">
           <table className="cc-table">
-            <thead><tr><th>Stock</th><th className="num">Price</th><th className="num">Today</th><th className="num">From high</th><th className="num">5 days</th><th className="num">IV</th><th>Expiries this week</th><th /><th /></tr></thead>
+            <thead><tr><th>Stock</th><th className="num">Price</th><th className="num">Today</th><th className="num">From high</th><th className="num">5 days</th><th className="num">IV</th>
+              <th>Within {rules?.call_max_days} days</th><th className="num" title="What your rules' call brings in a day, less what the put costs a day, for one lot (100 shares)">Call − put a day</th><th /><th /></tr></thead>
             <tbody>
-              {scan.stocks.map((s) => (
-                <tr key={s.symbol} className={`${selected === s.symbol ? 'on' : ''} ${s.triggered ? 'dropped' : ''}`} onClick={() => !s.error && onPick(s.symbol)}>
+              {[...scan.stocks, ...(scan.wide || [])].map((s, i) => (<Fragment key={s.symbol}>
+                {i === scan.stocks.length && <WideHead scan={scan} rules={rules} />}
+                <tr className={`${selected === s.symbol ? 'on' : ''} ${s.triggered && s.qualifies ? 'dropped' : ''}`} onClick={() => !s.error && onPick(s.symbol)}>
                   <td><b>{s.symbol}</b></td>
                   {s.error ? <td colSpan={6} className="cc-faint">{s.error}</td> : <>
                     <td className="num">{usd(s.price, 2)}</td>
@@ -104,13 +120,17 @@ function Watchlist({ scan, err, selected, onPick, rules, saveRules }) {
                     <td className="num">{pctS(s.from_high_pct)}</td>
                     <td className="num">{pctS(s.five_day_pct)}</td>
                     <td className="num">{s.iv30 == null ? '—' : `${Math.round(s.iv30)}%`}</td>
-                    <td>{s.expiries_this_week.length ? s.expiries_this_week.map((e) => short(e).split(',')[0]).join(' · ') : <span className="cc-faint">none</span>}</td>
+                    <td>{s.short_expiries?.length ? s.short_expiries.map((e) => short(e).split(',')[0]).join(' · ') : <span className="cc-faint">none</span>}</td>
+                    <td className={`num ${s.carry && s.carry.gap <= 0 ? 'neg' : ''}`} title={s.carry ? `call ${cad(s.carry.call_per_day)} − put ${cad(s.carry.put_per_day)}; ${cad(s.carry.after_interest)} after ${cad(s.carry.interest_per_day, 2)} margin interest` : ''}>{s.carry ? cad(s.carry.gap) : '—'}</td>
                   </>}
-                  <td>{s.triggered && <span className="badge warn" title={s.why.join('; ')}>DROPPED</span>}</td>
-                  <td><button type="button" className="small-link" title="Stop watching"
-                    onClick={(e) => { e.stopPropagation(); saveRules({ watchlist: rules.watchlist.filter((x) => x !== s.symbol) }); }}>×</button></td>
+                  <td>{s.triggered && s.qualifies && <span className="badge warn" title={s.why.join('; ')}>DROPPED</span>}
+                    {s.triggered && !s.qualifies && !s.error && <span className="cc-faint" title={s.why.join('; ')}>dropped</span>}</td>
+                  <td>{s.watched
+                    ? <button type="button" className="small-link" title="Stop watching" onClick={(e) => { e.stopPropagation(); saveRules({ watchlist: rules.watchlist.filter((x) => x !== s.symbol) }); }}>×</button>
+                    : <button type="button" className="small-link" title="Add to your watchlist" onClick={(e) => { e.stopPropagation(); saveRules({ watchlist: [...rules.watchlist, s.symbol] }); }}>+</button>}</td>
                 </tr>
-              ))}
+              </Fragment>))}
+              {rules?.wide && !scan.wide?.length && <WideHead scan={scan} rules={rules} />}
             </tbody>
           </table>
         </div>
@@ -247,7 +267,7 @@ function Desk({ symbol, rules, onSaved, loaded }) {
           <div><span className="cc-k">Put to buy</span>{plan.rules.protect ? (plan.put ? <b>{plan.put.strike} · {short(plan.put.expiry)}</b> : <b>none fits</b>) : <b>off</b>}
             {plan.put && <span className="cc-faint">ask {plan.put.ask.toFixed(2)} · {cad(plan.put.cost_per_day)} a day a contract</span>}</div>
           <div><span className="cc-k">Size</span><b>{plan.sizing.lots} lot{plan.sizing.lots === 1 ? '' : 's'} ({plan.sizing.shares} shares)</b>
-            <span className="cc-faint">{plan.sizing.money_in ? `${cad(plan.sizing.money_in)} in` : ''}</span></div>
+            <span className="cc-faint">{plan.sizing.money_in ? `${cad(plan.sizing.money_in)} of your capital${plan.rules.margin_pct < 100 ? ` at ${plan.rules.margin_pct}% margin` : ''}` : ''}</span></div>
         </div>
         <ul className="cc-why">{[...plan.reasons, ...plan.sizing.limits].map((r) => <li key={r}>{r}</li>)}</ul>
         {plan.call_choices.length > 1 && (
@@ -282,8 +302,8 @@ function Desk({ symbol, rules, onSaved, loaded }) {
             {figs.uncovered && <p className="review-error">More calls sold than shares cover: the loss has no limit if the stock runs.</p>}
             <div className="cc-figs">
               <div><span className="cc-k">Premium in</span><b>{cad(figs.premium_in)}</b><span className="cc-faint">{cad(figs.income_per_day)} a day</span></div>
-              <div><span className="cc-k">Net a day</span><b className={figs.net_per_day < 0 ? 'cc-neg' : ''}>{cad(figs.net_per_day)}</b>
-                <span className="cc-faint">{figs.protection_per_day ? `after ${cad(figs.protection_per_day)} a day of puts` : 'no puts held'}</span></div>
+              <div><span className="cc-k">Net a day</span><b className={figs.net_after_interest_per_day < 0 ? 'cc-neg' : ''}>{cad(figs.net_after_interest_per_day)}</b>
+                <span className="cc-faint">after {[figs.protection_per_day ? `${cad(figs.protection_per_day)} of puts` : null, figs.interest_per_day ? `${cad(figs.interest_per_day, 2)} of margin interest` : null].filter(Boolean).join(' and ') || 'nothing'} a day</span></div>
               {figs.unlimited_gain && figs.gain_at_call != null
                 ? <div><span className="cc-k">Gain at the call</span><b>{cad(figs.gain_at_call)}</b>
                     <span className="cc-faint">at {usd(figs.call_strike, 2)}; then {cad(figs.shares_not_called, 2)} for each US$1 higher on the {figs.shares_not_called} share{figs.shares_not_called === 1 ? '' : 's'} the call doesn’t cover</span></div>
@@ -291,10 +311,14 @@ function Desk({ symbol, rules, onSaved, loaded }) {
               <div><span className="cc-k">Max loss</span><b>{figs.max_loss == null ? 'no limit' : cad(figs.max_loss)}</b>
                 <span className="cc-faint">{figs.max_loss == null ? '' : figs.shares_without_put
                   ? `if it went to zero; ${cad(figs.shares_without_put * figs.cost)} of it is the ${figs.shares_without_put} share${figs.shares_without_put === 1 ? '' : 's'} the put doesn’t cover`
+                  : figs.put_strike && figs.loss_at_put != null && figs.max_loss_at < 1 ? `if it went to zero; ${cad(figs.loss_at_put)} at the put’s ${usd(figs.put_strike, 2)}`
                   : figs.floor_from ? `about this from ${usd(figs.floor_from, 2)} down` : figs.max_loss_at != null ? (figs.max_loss_at < 1 ? 'if it went to zero' : `at ${usd(figs.max_loss_at, 2)} or below`) : ''}</span></div>
               <div><span className="cc-k">Breakeven</span><b>{figs.breakevens.length ? figs.breakevens.map((b) => usd(b, 2)).join(', ') : '—'}</b><span className="cc-faint">at the call’s expiry</span></div>
               <div><span className="cc-k">Called away</span><b>{figs.called_away_chance == null ? '—' : `≈${Math.round(figs.called_away_chance)}%`}</b><span className="cc-faint">the call’s delta</span></div>
-              <div><span className="cc-k">Money in</span><b>{cad(figs.money_in)}</b><span className="cc-faint">{figs.put_cost ? `${cad(figs.put_cost)} of it the put` : 'the shares'}</span></div>
+              {figs.margin_pct < 100
+                ? <div><span className="cc-k">Capital needed</span><b>{cad(figs.capital_needed)}</b>
+                    <span className="cc-faint">{figs.margin_pct}% of the shares{figs.put_cost ? ' and the put' : ''}; {cad(figs.borrowed)} borrowed at {figs.margin_rate}%{figs.interest_to_horizon ? `, ${cad(figs.interest_to_horizon)} interest to ${short(figs.horizon)}` : ''}</span></div>
+                : <div><span className="cc-k">Money in</span><b>{cad(figs.money_in)}</b><span className="cc-faint">{figs.put_cost ? `${cad(figs.put_cost)} of it the put` : 'the shares'}</span></div>}
             </div>
             <Payoff curve={figs.curve} price={plan.price} breakevens={figs.breakevens} strikes={pos.legs.map((l) => Number(l.strike))} />
             <p className="cc-faint">Profit or loss on {short(figs.horizon)} (the nearest expiry); a longer put is valued at what it would still be worth then.</p>
@@ -345,6 +369,8 @@ const RULE_FIELDS = [
   ['drop_day_pct', 'A drop: down in a day (%)', 0.5], ['drop_from_high_pct', 'or under the recent high (%)', 1], ['high_days', 'Recent high: last N days', 1],
   ['target_delta', 'Call: target delta', 0.01], ['delta_min', 'Call: delta at least', 0.01], ['delta_max', 'Call: delta at most', 0.01], ['call_max_days', 'Call: expiring within (days)', 1],
   ['put_below_pct', 'Put: below today’s price (%)', 1], ['put_days_min', 'Put: at least (days)', 1], ['put_days_max', 'Put: at most (days)', 1], ['drop_test_pct', 'No put: size against a fall of (%)', 1],
+  ['margin_pct', 'Margin: your share of the stock (%; 100 = cash)', 5], ['margin_rate', 'Margin interest (% a year)', 0.05],
+  ['min_carry', 'A stock counts when its call beats the put by ($ a day a lot)', 5],
 ];
 function Rules({ rules, saveRules }) {
   const [f, setF] = useState(rules);
@@ -360,6 +386,7 @@ function Rules({ rules, saveRules }) {
         <label className="cc-mini">Capital is in<select value={f.capital_currency || 'CAD'} onChange={(e) => setF({ ...f, capital_currency: e.target.value })}>
           <option value="CAD">Canadian dollars</option><option value="USD">US dollars</option></select></label>
         <label className="cc-check"><input type="checkbox" checked={!!f.protect} onChange={(e) => setF({ ...f, protect: e.target.checked })} /> Buy a put for protection</label>
+        <label className="cc-check"><input type="checkbox" checked={!!f.wide} onChange={(e) => setF({ ...f, wide: e.target.checked })} /> Also search about 50 large stocks</label>
       </div>
       <div className="cc-row cc-pad">
         <button type="button" className="small" disabled={!dirty} onClick={() => saveRules(f)}>Save rules</button>
@@ -381,7 +408,7 @@ function Positions({ list, reload, onLoad }) {
   return (
     <div className="panel cc-panel">
       <div className="panel-header spend-header"><span>Your positions</span>
-        <span className="cc-faint">{open.length ? `net ${cad(open.reduce((a, p) => a + (p.figures?.net_per_day || 0), 0))} a day · options cash so far ${cad(open.reduce((a, p) => a + p.premium_collected, 0))}` : 'none yet'}</span></div>
+        <span className="cc-faint">{open.length ? `net ${cad(open.reduce((a, p) => a + (p.figures?.net_after_interest_per_day ?? p.figures?.net_per_day ?? 0), 0))} a day after puts and interest · options cash so far ${cad(open.reduce((a, p) => a + p.premium_collected, 0))}` : 'none yet'}</span></div>
       <p className="cc-faint cc-pad" style={{ margin: 0 }}>
         {sync ? `From your broker${sync.account ? ` (${sync.account})` : ''}${sync.by ? ` by ${sync.by}` : ''}: ${new Date(sync.at).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/Regina' })}`
           : 'Nothing from your broker yet: your Grok bot sends the account with submit_positions.'}
@@ -390,7 +417,7 @@ function Positions({ list, reload, onLoad }) {
       {list.length > 0 && (
         <div className="table-scroll">
           <table className="cc-table">
-            <thead><tr><th>Stock</th><th className="num">Shares</th><th className="num">Cost</th><th className="num">Now</th><th className="num">Stock</th><th className="num" title="Premium from calls written, less what puts and buy-backs cost">Options cash</th><th className="num">Total</th><th>Legs now</th><th className="num" title="Calls written a day, less what the puts cost a day (each spread from when it was opened to its expiry)">Net a day</th><th className="num">Max loss</th><th /></tr></thead>
+            <thead><tr><th>Stock</th><th className="num">Shares</th><th className="num">Cost</th><th className="num">Now</th><th className="num">Stock</th><th className="num" title="Premium from calls written, less what puts and buy-backs cost">Options cash</th><th className="num">Total</th><th>Legs now</th><th className="num" title="Calls written a day, less what the puts cost a day (each spread from when it was opened to its expiry), less the margin interest a day by your margin rule">Net a day</th><th className="num">Max loss</th><th /></tr></thead>
             <tbody>
               {list.map((p) => (
                 <tr key={p.id} className={p.status === 'closed' ? 'cc-closed' : ''}>
@@ -400,7 +427,7 @@ function Positions({ list, reload, onLoad }) {
                   <td className="num">{cad(p.premium_collected)}</td>
                   <td className={`num ${p.total_pnl < 0 ? 'neg' : 'pos'}`}>{cad(p.total_pnl)}</td>
                   <td>{p.legs.length ? p.legs.map((l) => `${l.side === 'short' ? '−' : '+'}${l.contracts} ${l.strike}${l.type === 'call' ? 'C' : 'P'} ${short(l.expiry).split(',')[0]}`).join(' · ') : <span className="cc-faint">none</span>}</td>
-                  <td className={`num ${p.figures?.net_per_day < 0 ? 'neg' : ''}`} title={p.figures ? `${cad(p.figures.income_per_day)} calls − ${cad(p.figures.protection_per_day)} puts` : ''}>{cad(p.figures?.net_per_day)}</td>
+                  <td className={`num ${p.figures?.net_per_day < 0 ? 'neg' : ''}`} title={p.figures ? `${cad(p.figures.income_per_day)} calls − ${cad(p.figures.protection_per_day)} puts − ${cad(p.figures.interest_per_day, 2)} margin interest` : ''}>{cad(p.figures?.net_after_interest_per_day ?? p.figures?.net_per_day)}</td>
                   <td className="num">{cad(p.figures?.max_loss)}</td>
                   <td className="cc-actions">
                     {p.status !== 'closed' && <button type="button" className="small" onClick={() => onLoad(p)}>Calculator</button>}
@@ -450,6 +477,11 @@ export default function CoveredCalls() {
     const t = setInterval(loadScan, 5 * 60e3);
     return () => clearInterval(t);
   }, []);
+  useEffect(() => { // while the wider list is being searched, look again every 30 s
+    if (!scan?.wide_running) return undefined;
+    const t = setTimeout(loadScan, 30e3);
+    return () => clearTimeout(t);
+  }, [scan]);
   const saveRules = (r) => send('PUT', '/api/options/rules', r).then((x) => { setRules(x); loadScan(); });
   const today = useMemo(() => alerts.filter((a) => a.date === new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date())), [alerts]);
 

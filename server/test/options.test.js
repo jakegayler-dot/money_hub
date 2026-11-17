@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseOcc, chainFrom } from '../lib/options/market.js';
-import { evaluate, bsPrice, dropCheck, cleanRules, pick, expiryClose, incomeDays, soonExpiries } from '../lib/options/strategy.js';
+import { evaluate, bsPrice, dropCheck, cleanRules, pick, expiryClose, incomeDays, soonExpiries, calendarDays, daysTo } from '../lib/options/strategy.js';
 import { positionFields } from '../lib/options/desk.js';
 
 const NOW = new Date('2026-11-17T15:30:00Z'); // a Tuesday, 10:30 in New York
@@ -30,6 +30,11 @@ test('expiry is 4 p.m. in New York; a 0DTE call earns over one day', () => {
   assert.equal(expiryClose('2026-07-17').toISOString(), '2026-07-17T20:00:00.000Z'); // EDT
   assert.equal(incomeDays('2026-11-17', NOW), 1);
   assert.equal(incomeDays('2026-11-18', NOW), 2);
+  // "3 day options or less" by the calendar: Tuesday afternoon to Friday is 3, though Friday's close is 3.02 days off.
+  const tueAfternoon = new Date('2026-11-17T20:30:00Z');
+  assert.equal(calendarDays('2026-11-20', tueAfternoon), 3);
+  assert.ok(daysTo('2026-11-20', tueAfternoon) > 3);
+  assert.equal(calendarDays('2026-11-17', tueAfternoon), 0);
   assert.deepEqual(soonExpiries(['2026-11-16', '2026-11-18', '2026-11-20', '2026-12-18'], 7, NOW), ['2026-11-18', '2026-11-20']);
 });
 
@@ -110,6 +115,37 @@ test('his 105 NVDA with one call and one put: 5 shares neither covers, said (Nov
   assert.ok(round.floor_from > 90 && round.floor_from < 150, `floor from ${round.floor_from}`);
 });
 
+test('on margin (Nov 17: "required capital at 30% margin, factor in interest costs"): capital, interest a day, interest in the figures', () => {
+  const legs = [
+    { type: 'call', side: 'short', strike: 160, expiry: '2026-11-18', premium: 1.5, contracts: 1 },
+    { type: 'put', side: 'long', strike: 135, expiry: '2026-11-18', premium: 1, contracts: 1 },
+  ];
+  const cash = evaluate({ price: 150, shares: 100, cost: 150, legs }, { now: NOW });
+  const r = evaluate({ price: 150, shares: 100, cost: 150, legs }, { now: NOW, margin: { pct: 30, rate: 5.85 } });
+  assert.equal(r.capital_needed, 4500 + 100); // 30% of the shares, the put in full
+  assert.equal(r.borrowed, 10500);
+  near(r.interest_per_day, (10500 * 0.0585) / 365);
+  near(r.interest_to_horizon, r.interest_per_day * 2, 0.02); // two days to Wednesday's close
+  near(r.max_gain, cash.max_gain - r.interest_to_horizon, 0.02);
+  near(r.max_loss, cash.max_loss - r.interest_to_horizon, 0.02);
+  near(r.net_after_interest_per_day, r.net_per_day - r.interest_per_day, 0.02);
+  assert.equal(cash.interest_per_day, 0);
+  assert.equal(cash.capital_needed, 15100);
+});
+
+test('the gap: the call a day less the put a day, and sizing on margin', () => {
+  const c = (expiry, type, strike, bid, ask, delta) => ({ expiry, type, strike, bid, ask, mid: (bid + ask) / 2, delta, iv: 0.6 });
+  const ch = { quote: { price: 150 }, expiries: [], contracts: [c('2026-11-18', 'call', 160, 1.5, 1.6, 0.21), c('2026-12-18', 'put', 135, 3.9, 4, -0.2)] };
+  const p = pick(ch, { capital: 100000, capital_currency: 'USD', max_position_pct: 50, max_loss_pct: 50, margin_pct: 30, margin_rate: 5.85 }, { now: NOW });
+  assert.equal(p.carry.call_per_day, 75); // $150 over two days
+  near(p.carry.put_per_day, 400 / 32); // 32 income days to Dec 18
+  near(p.carry.gap, 75 - 400 / 32);
+  near(p.carry.after_interest, p.carry.gap - (15000 * 0.7 * 0.0585) / 365, 0.02);
+  assert.equal(p.lot.capital_needed, 4500 + 400);
+  assert.equal(p.sizing.lots, Math.floor(50000 / 4900)); // 10 lots of US$4,900 at 30% margin
+  assert.match(p.sizing.limits[0], /30% of the shares on margin, the put in full/);
+});
+
 test('no calls: gain unlimited; more calls than shares: uncovered, no max loss', () => {
   assert.equal(evaluate({ price: 100, shares: 100, legs: [] }).unlimited_gain, true);
   const r = evaluate({ price: 100, shares: 100, legs: [{ type: 'call', side: 'short', strike: 110, expiry: '2026-11-20', premium: 1, contracts: 2 }] }, { now: NOW });
@@ -149,7 +185,7 @@ test('his rules pick the call nearest his delta, the cheapest put a day, and the
     c('2026-12-18', 'put', 140, 5, 5.2, -0.27),
     c('2027-03-19', 'put', 135, 9, 9.5, -0.25),          // beyond 45 days
   ] };
-  const p = pick(ch, { capital: 100000, max_position_pct: 50, max_loss_pct: 3 }, { now: NOW });
+  const p = pick(ch, { capital: 100000, capital_currency: 'USD', max_position_pct: 50, max_loss_pct: 3, margin_pct: 100 }, { now: NOW });
   assert.equal(p.call.strike, 160);
   assert.equal(p.call.expiry, '2026-11-18');
   assert.deepEqual(p.call_choices.map((x) => x.expiry), ['2026-11-18', '2026-11-20']);
@@ -160,7 +196,7 @@ test('his rules pick the call nearest his delta, the cheapest put a day, and the
   assert.match(p.sizing.limits[0], /allows 3 lots/);
   assert.match(p.sizing.limits[1], /allows 1:/);
   assert.ok(p.reasons.some((r) => /0\.2 delta target/.test(r)));
-  const bare = pick(ch, { capital: 100000, protect: false, max_loss_pct: 3, drop_test_pct: 20 }, { now: NOW });
+  const bare = pick(ch, { capital: 100000, capital_currency: 'USD', protect: false, max_loss_pct: 3, drop_test_pct: 20, margin_pct: 100 }, { now: NOW });
   assert.equal(bare.put, null);
   assert.match(bare.sizing.limits[1], /a 20% fall with no put/);
   assert.match(pick(ch, {}, { now: NOW }).sizing.limits[0], /Set the money/);
@@ -174,13 +210,13 @@ test('in CAD (Nov 17: "I want to see outputs in cad"): capital in CAD is sized i
     { expiry: '2026-11-18', type: 'call', strike: 160, bid: 1.5, ask: 1.6, mid: 1.55, delta: 0.21, iv: 0.6 },
   ] };
   // C$43,000 at 1.43 is about US$30,070: 50% is US$15,035, one lot of US$15,000.
-  const p = pick(ch, { capital: 43000, capital_currency: 'CAD', max_position_pct: 50, max_loss_pct: 50, protect: false }, { now: NOW, fx: 1.43 });
+  const p = pick(ch, { capital: 43000, capital_currency: 'CAD', max_position_pct: 50, max_loss_pct: 50, protect: false, margin_pct: 100 }, { now: NOW, fx: 1.43 });
   assert.equal(p.sizing.lots, 1);
   assert.match(p.sizing.limits[0], /50% of \$43,000 in one name allows 1 lot at \$21,450 each/);
   assert.equal(p.usd_cad, 1.43);
-  const inUsd = pick(ch, { capital: 43000, capital_currency: 'USD', max_position_pct: 50, max_loss_pct: 50, protect: false }, { now: NOW, fx: 1.43 });
+  const inUsd = pick(ch, { capital: 43000, capital_currency: 'USD', max_position_pct: 50, max_loss_pct: 50, protect: false, margin_pct: 100 }, { now: NOW, fx: 1.43 });
   assert.equal(inUsd.sizing.lots, 1, 'US$21,500: still one lot');
-  assert.equal(pick(ch, { capital: 31000, capital_currency: 'USD', max_position_pct: 100, max_loss_pct: 100, protect: false }, { now: NOW }).sizing.lots, 2);
+  assert.equal(pick(ch, { capital: 31000, capital_currency: 'USD', max_position_pct: 100, max_loss_pct: 100, protect: false, margin_pct: 100 }, { now: NOW }).sizing.lots, 2);
   // A capital saved before CAD came in was US$; new rules start in CAD.
   assert.equal(cleanRules({ capital: 50000 }).capital_currency, 'USD');
   assert.equal(cleanRules({}).capital_currency, 'CAD');

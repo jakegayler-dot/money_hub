@@ -13,6 +13,7 @@
 .cc-table td.neg { color: var(--negative); }
 .cc-table td.pos { color: var(--positive); }
 .cc-table tr.cc-closed { opacity: 0.55; }
+.cc-table tr.cc-sub td { padding-top: 14px; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); cursor: default; }
 .cc-actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; white-space: nowrap; }
 .cc-alerts { display: flex; flex-wrap: wrap; gap: 8px; }
 .cc-alert { all: unset; cursor: pointer; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid rgba(201, 162, 39, 0.3);

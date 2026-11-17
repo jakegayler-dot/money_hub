@@ -26,6 +26,11 @@ export function expiryClose(expiry) {
 }
 /** Days from `now` to the close on `expiry` (fractional; negative once it has expired). */
 export const daysTo = (expiry, now = new Date()) => (expiryClose(expiry) - now) / 86400e3;
+/** Calendar days to the expiry in New York (Tuesday to Friday is 3): "options of 3 days or less" (Nov 17). */
+export const calendarDays = (expiry, now = new Date()) => {
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(now);
+  return Math.round((Date.parse(`${expiry}T12:00:00Z`) - Date.parse(`${today}T12:00:00Z`)) / 86400e3);
+};
 /** Calendar days the premium is earned over: a 0DTE call is one day's income. */
 export const incomeDays = (expiry, now = new Date()) => Math.max(1, Math.ceil(daysTo(expiry, now) - 1e-9));
 /**
@@ -61,10 +66,17 @@ const legSign = (l) => (l.side === 'long' ? 1 : -1);
  * position: { price (today's), shares, cost (per share; default today's price), legs: [{ type call|put, side short|long,
  * strike, expiry, premium (per share), contracts, iv?, delta? }] }. Returns the figures and a curve for the chart.
  */
-export function evaluate(position, { now = new Date(), testPcts = [] } = {}) {
+// margin { pct, rate } (Nov 17: "determine required capital at 30% margin, factor in interest costs"): he puts up pct% of the
+// shares and borrows the rest at rate% a year; options are paid in full. The interest to the nearest expiry is in every
+// profit-or-loss figure; pct 100 is a cash account.
+export const marginOf = (r = {}) => ({ pct: num(r.margin_pct, 25, 100, 100), rate: num(r.margin_rate, 0, 30, 0) });
+export function evaluate(position, { now = new Date(), testPcts = [], margin = null } = {}) {
   const price = Number(position.price);
   const shares = Math.max(0, Math.round(Number(position.shares) || 0));
   const cost = Number(position.cost) > 0 ? Number(position.cost) : price;
+  const m = marginOf(margin ? { margin_pct: margin.pct, margin_rate: margin.rate } : {});
+  const borrowed = cost * shares * (1 - m.pct / 100);
+  const interestPerDay = (borrowed * m.rate) / 100 / 365;
   const legs = (position.legs || []).filter((l) => l && Number(l.strike) > 0 && Number(l.contracts) > 0).map((l) => ({
     ...l, strike: Number(l.strike), premium: Number(l.premium) || 0, contracts: Math.round(Number(l.contracts)), iv: Number(l.iv) || null,
   }));
@@ -74,7 +86,8 @@ export function evaluate(position, { now = new Date(), testPcts = [] } = {}) {
     const T = Math.max(0, (expiryClose(l.expiry) - expiryClose(horizon)) / (365 * 86400e3));
     return bsPrice(l.type, S, l.strike, T, l.iv || 0.5);
   };
-  const pnl = (S) => (S - cost) * shares + legs.reduce((a, l) => a + legSign(l) * (valueAt(l, S) - l.premium) * l.contracts * 100, 0);
+  const interestToHorizon = horizon ? interestPerDay * incomeDays(horizon, now) : 0;
+  const pnl = (S) => (S - cost) * shares - interestToHorizon + legs.reduce((a, l) => a + legSign(l) * (valueAt(l, S) - l.premium) * l.contracts * 100, 0);
 
   const top = Math.max(price, cost, ...legs.map((l) => l.strike)) * 3;
   const points = new Set([0, cost, price, top, ...legs.map((l) => l.strike)]);
@@ -116,6 +129,8 @@ export function evaluate(position, { now = new Date(), testPcts = [] } = {}) {
     horizon, shares, cost: r2(cost), price: r2(price),
     money_in: r2(stockIn + paidOut), stock_in: r2(stockIn), premium_in: r2(premiumIn), put_cost: r2(paidOut), net_credit: r2(credit),
     income_per_day: r2(perDay), protection_per_day: r2(costPerDay), net_per_day: r2(perDay - costPerDay),
+    margin_pct: m.pct, margin_rate: m.rate, capital_needed: r2(stockIn * m.pct / 100 + paidOut), borrowed: r2(borrowed),
+    interest_per_day: r2(interestPerDay), interest_to_horizon: r2(interestToHorizon), net_after_interest_per_day: r2(perDay - costPerDay - interestPerDay),
     max_gain: uncovered || rising ? null : r2(best[1]), max_gain_at: uncovered || rising ? null : r2(best[0]),
     max_loss: uncovered ? null : r2(worst[1]), max_loss_at: uncovered ? null : r2(worst[0]),
     unlimited_gain: !uncovered && rising, uncovered,
@@ -148,6 +163,10 @@ export const DEFAULT_RULES = {
   put_below_pct: 10,        // about this far below today's price
   put_days_min: 7, put_days_max: 45,
   drop_test_pct: 20,        // without a put, the fall the loss limit is checked against
+  margin_pct: 30,           // his share of the stock on margin (Nov 17: "required capital at 30% margin"); 100 = cash
+  margin_rate: 5.85,        // his broker's yearly rate on what's borrowed (his answer, Nov 17)
+  wide: true,               // also look through about 50 large stocks, not only the watchlist (his pick, Nov 17)
+  min_carry: 0,             // a stock counts only when its ≤3-day call pays more a day than the put costs, by at least this (CAD a lot)
 };
 const num = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
 export function cleanRules(r = {}) {
@@ -171,6 +190,10 @@ export function cleanRules(r = {}) {
     put_days_min: Math.round(num(r.put_days_min, 0, 365, d.put_days_min)),
     put_days_max: Math.round(num(r.put_days_max, 1, 730, d.put_days_max)),
     drop_test_pct: num(r.drop_test_pct, 1, 90, d.drop_test_pct),
+    margin_pct: num(r.margin_pct, 25, 100, d.margin_pct),
+    margin_rate: num(r.margin_rate, 0, 30, d.margin_rate),
+    wide: r.wide == null ? d.wide : !!r.wide,
+    min_carry: num(r.min_carry, -1e5, 1e5, d.min_carry),
   };
 }
 
@@ -206,7 +229,7 @@ export function pick(ch, rulesIn, { now = new Date(), fx = null } = {}) {
   const open = ch.contracts.filter((c) => daysTo(c.expiry, now) > 0);
   // The call: out of the money, a bid, delta in his band; per expiry the one nearest his target.
   const calls = open.filter((c) => c.type === 'call' && c.strike > price && c.bid >= 0.05 && c.delta != null
-    && c.delta >= rules.delta_min && c.delta <= rules.delta_max && daysTo(c.expiry, now) <= rules.call_max_days + 1);
+    && c.delta >= rules.delta_min && c.delta <= rules.delta_max && calendarDays(c.expiry, now) <= rules.call_max_days);
   const byExp = new Map();
   for (const c of calls) {
     const cur = byExp.get(c.expiry);
@@ -236,9 +259,10 @@ export function pick(ch, rulesIn, { now = new Date(), fx = null } = {}) {
   const legs = [];
   if (call) legs.push({ type: 'call', side: 'short', strike: call.strike, expiry: call.expiry, premium: call.bid, contracts: 1, iv: call.iv, delta: call.delta });
   if (put) legs.push({ type: 'put', side: 'long', strike: put.strike, expiry: put.expiry, premium: put.ask, contracts: 1, iv: put.iv, delta: put.delta });
-  const lot = evaluate({ price, shares: 100, cost: price, legs }, { now, testPcts: [-rules.drop_test_pct] });
+  const margin = { pct: rules.margin_pct, rate: rules.margin_rate };
+  const lot = evaluate({ price, shares: 100, cost: price, legs }, { now, testPcts: [-rules.drop_test_pct], margin });
   const lossPerLot = Math.max(0.01, -Math.min(0, put ? lot.max_loss : lot.scenarios.find((s) => s.pct === -rules.drop_test_pct).pnl));
-  const perLotMoney = price * 100 + (put ? put.ask * 100 : 0);
+  const perLotMoney = lot.capital_needed; // his share of the shares on margin, and the put in full
   const sizing = { lots: 0, shares: 0, limits: [], money_in: 0 };
   if (!(capital > 0)) {
     sizing.limits.push('Set the money you’d put into this (Capital) to size it.');
@@ -249,7 +273,7 @@ export function pick(ch, rulesIn, { now = new Date(), fx = null } = {}) {
     sizing.lots = Math.max(0, Math.min(byPosition, byLoss));
     sizing.shares = sizing.lots * 100;
     sizing.money_in = r2(sizing.lots * perLotMoney);
-    sizing.limits.push(`${rules.max_position_pct}% of ${money(capital)} in one name allows ${byPosition} lot${byPosition === 1 ? '' : 's'} at ${money(perLotMoney)} each.`);
+    sizing.limits.push(`${rules.max_position_pct}% of ${money(capital)} in one name allows ${byPosition} lot${byPosition === 1 ? '' : 's'} at ${money(perLotMoney)} each${rules.margin_pct < 100 ? ` (${rules.margin_pct}% of the shares on margin${put ? ', the put in full' : ''})` : ''}.`);
     sizing.limits.push(`Losing at most ${rules.max_loss_pct}% (${money(capital * rules.max_loss_pct / 100)}) allows ${byLoss}: ${lossLabel} is ${money(lossPerLot)} a lot.`);
     if (capCad && !rate) sizing.limits.push('The exchange rate couldn’t be had, so your CAD capital was taken as US dollars.');
     if (!sizing.lots) sizing.limits.push('Not one lot fits these limits.');
@@ -261,5 +285,11 @@ export function pick(ch, rulesIn, { now = new Date(), fx = null } = {}) {
     if (put) reasons.push(`Put: about ${rules.put_below_pct}% below today’s price, the cheapest a day of the expiries ${rules.put_days_min} to ${rules.put_days_max} days out.`);
     else reasons.push(`No put fits: none ${rules.put_days_min} to ${rules.put_days_max} days out near ${rules.put_below_pct}% below.`);
   }
-  return { rules, price, call, put, call_choices: callChoices, put_choices: putChoices, lot, sizing, reasons, usd_cad: rate };
+  // The gap (Nov 17: "a delta between short term calls and long term puts"; his answer: calls pay more than puts cost), a lot
+  // a day in US$: the call his rules pick, less the put; and after the margin interest on one lot.
+  const carry = call ? {
+    call_per_day: call.per_day, put_per_day: put ? put.cost_per_day : 0, interest_per_day: lot.interest_per_day,
+    gap: r2(call.per_day - (put ? put.cost_per_day : 0)), after_interest: r2(call.per_day - (put ? put.cost_per_day : 0) - lot.interest_per_day),
+  } : null;
+  return { rules, price, call, put, call_choices: callChoices, put_choices: putChoices, lot, sizing, reasons, carry, usd_cad: rate };
 }

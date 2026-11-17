@@ -7,17 +7,28 @@ const cache = new Map(); // path → { at, data }
 const TTL = { quote: 60e3, chain: 5 * 60e3, history: 6 * 3600e3 };
 export const SYMBOL = /^[A-Z]{1,6}$/;
 
+// Cboe's free feed answers 429 when asked too much (Nov 17, a 50-stock scan): then nothing is asked for two minutes and what
+// was last read is used, however old.
+let coolUntil = 0;
+const BUSY = 'Cboe asked us to slow down; trying again in a couple of minutes.';
+export const cboeBusy = () => Date.now() < coolUntil;
 async function getJson(path, ttl, fetchImpl = fetch) {
   const hit = cache.get(path);
   if (hit && Date.now() - hit.at < ttl) return hit.data;
+  if (cboeBusy()) { if (hit) return hit.data; throw Object.assign(new Error(BUSY), { status: 503 }); }
   const res = await fetchImpl(`${BASE}/${path}`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(20000) });
+  if (res.status === 429) {
+    coolUntil = Date.now() + 120e3;
+    if (hit) return hit.data;
+    throw Object.assign(new Error(BUSY), { status: 503 });
+  }
   if (res.status === 403 || res.status === 404) throw Object.assign(new Error(`Cboe has no options data for that symbol.`), { status: 404 });
   if (!res.ok) throw Object.assign(new Error(`Cboe's quote feed answered ${res.status}.`), { status: 502 });
   const data = await res.json();
   cache.set(path, { at: Date.now(), data });
   return data;
 }
-export const clearMarketCache = () => cache.clear();
+export const clearMarketCache = () => { cache.clear(); coolUntil = 0; };
 
 /** Cboe's timestamp ("2026-11-17 15:27:18", UTC) as ISO. */
 const isoUtc = (s) => (s ? `${String(s).replace(' ', 'T')}Z` : null);
@@ -71,5 +82,5 @@ export function chainFrom(j, symbol, band = 0.4) {
 }
 
 export async function chain(symbol, opts = {}) {
-  return chainFrom(await getJson(`options/${symbol}.json`, TTL.chain, opts.fetchImpl), symbol);
+  return chainFrom(await getJson(`options/${symbol}.json`, opts.ttl || TTL.chain, opts.fetchImpl), symbol);
 }

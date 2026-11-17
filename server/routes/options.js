@@ -41,7 +41,8 @@ router.get('/strikes/:symbol', ah(async (req, res) => {
 router.post('/evaluate', ah(async (req, res) => {
   const p = req.body?.position || {};
   if (!(Number(p.price) > 0)) return res.status(422).json({ error: 'The stock’s price is needed.' });
-  res.json(evaluate(p));
+  const r = await getRules(); // his margin rule unless the position names its own
+  res.json(evaluate(p, { margin: { pct: p.margin_pct ?? r.margin_pct, rate: p.margin_rate ?? r.margin_rate } }));
 }));
 
 router.get('/sync', ah(async (req, res) => res.json(await lastSync())));
