@@ -13,8 +13,8 @@
 //   rent had landed on Other though the forecast already carries it, farm fuel was on Other, and the small capital buys at
 //   RB Auction were missing): every purchase, the farm's share and the household's, capital ones included, LESS what the
 //   cash flow forecast already plans (forecastWhy, plannedByEstimates): bills (paid by a linked payment, to a recurring
-//   bill's payee or name, or lump sums on a vendor's account; a capital buy paid against its own one-off invoice is a
-//   purchase, not a planned bill), loan payments, rent (projected from the landlords' rent bills)
+//   bill's payee or name, or lump sums on a vendor's account; but a one-off invoice entered within a week of being paid is
+//   only the record of a purchase, not a planned bill: PLANNED_DAYS), loan payments, rent (projected from the landlords' rent bills)
 //   and, for the farm and capital buys, an active estimate dated near it, up to the estimate's amount (a capital buy only by
 //   a plan about its size). What's left out is listed on the page with why. A farm purchase sits on its own line by its category
 //   (farm fuel on Fuel & vehicle), except lines that only fit a household (Household & home, Health, Kids): those, and
@@ -68,16 +68,23 @@ export function billFor(l, bills, tx = new Map()) {
   const t = tx.get(l.transaction_id);
   if (l.scheduled && !invoiceBuy(l, t)) {
     if (t?.loan) return 'A loan payment';
-    return t?.bill_name ? `Paid against the ${t.bill_name} bill` : 'Paid against a bill or a loan payment';
+    return t?.bill_name ? `Paid against the ${t.bill_name} bill${t.bill_one_time && t.bill_since ? ` (on the books since ${t.bill_since})` : ''}` : 'Paid against a bill or a loan payment';
   }
   if (!t) return null;
   if (t.payee_id && bills.payees.has(t.payee_id)) return `The ${bills.names?.payee.get(t.payee_id) || 'recurring'} bill`;
   const k = bills.keys.find((x) => t.text.includes(x));
   return k ? `The ${bills.names?.key.get(k) || 'recurring'} bill` : null;
 }
-/** A capital buy paid against its own one-off invoice (Nov 16, the RB Auction buys: "Paid against a bill"): the invoice is
- *  only the record of the purchase, not something the forecast planned, so it counts unless an estimate plans it. */
-const invoiceBuy = (l, t) => !!(l.capex && t?.bill_one_time && !t.loan);
+/** How long a one-off bill must have been on the books before it was paid for the forecast to have planned it. */
+export const PLANNED_DAYS = 7;
+/**
+ * A purchase paid against its own one-off invoice that the forecast never planned (Nov 16, the RB Auction buys: "Paid against
+ * a bill"; Nov 17: "the rbauction items remain unaccounted for in the discretionary budget account and were not accounted for
+ * in the forecast"): an invoice entered when it's paid, or within a week of it, is only the record of the purchase, so the
+ * payment counts unless an estimate plans it. A one-off bill on the books a week or more ahead was in the forecast. Capital or
+ * not: a bill paid from the Bills page makes a payment with no capital flag, which is how the auction buys kept dropping out.
+ */
+const invoiceBuy = (l, t) => !!(t?.bill_one_time && !t.loan && !(t.bill_lead >= PLANNED_DAYS));
 /** Is a line covered by the bills system? */
 export const coveredByBills = (l, bills, tx = new Map()) => !!billFor(l, bills, tx);
 async function txInfo(lines) {
@@ -88,13 +95,24 @@ async function txInfo(lines) {
       (EXISTS (SELECT 1 FROM vendor_credits vc WHERE vc.transaction_id = t.id AND vc.status <> 'kept')
        OR EXISTS (SELECT 1 FROM vendor_on_account o WHERE o.transaction_id = t.id)) AS pays_bills,
       b.name AS bill_name, b.frequency::text AS bill_frequency, b.loan_id AS bill_loan,
-      EXISTS (SELECT 1 FROM loan_payments lp WHERE lp.linked_transaction_id = t.id) AS loan_paid
+      (t.date - b.created_at::date) AS bill_lead, to_char(b.created_at, 'YYYY-MM-DD') AS bill_since,
+      EXISTS (SELECT 1 FROM loan_payments lp WHERE lp.linked_transaction_id = t.id) AS loan_paid,
+      -- A lump sum on the vendor's account: a bill it was applied to (else, with nothing applied yet, one of the vendor's
+      -- still owing then) that was on the books a week ahead, or recurs. None: the invoices were only records of the buys.
+      COALESCE(
+        (SELECT ab.name FROM vendor_credits vc JOIN credit_applications ca ON ca.credit_id = vc.id JOIN bills ab ON ab.id = ca.bill_id
+          WHERE vc.transaction_id = t.id AND (ab.frequency <> 'one_time' OR ab.created_at::date <= t.date - ${PLANNED_DAYS}) ORDER BY ab.id LIMIT 1),
+        (SELECT ob.name FROM bills ob WHERE ob.payee_id = t.payee_id AND t.payee_id IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM vendor_credits vc JOIN credit_applications ca ON ca.credit_id = vc.id WHERE vc.transaction_id = t.id)
+            AND (ob.frequency <> 'one_time' OR ob.created_at::date <= t.date - ${PLANNED_DAYS})
+            AND ob.linked_transaction_id IS NULL AND (ob.paid_date IS NULL OR ob.paid_date >= t.date) ORDER BY ob.id LIMIT 1)) AS account_bill
     FROM transactions t
-    LEFT JOIN LATERAL (SELECT name, frequency, loan_id FROM bills WHERE linked_transaction_id = t.id ORDER BY id LIMIT 1) b ON true LEFT JOIN payees p ON p.id = t.payee_id WHERE t.id = ANY($1)`, [ids]);
+    LEFT JOIN LATERAL (SELECT name, frequency, loan_id, created_at FROM bills WHERE linked_transaction_id = t.id ORDER BY id LIMIT 1) b ON true LEFT JOIN payees p ON p.id = t.payee_id WHERE t.id = ANY($1)`, [ids]);
   return new Map(rows.map((r) => [r.id, {
     payee_id: r.payee_id, payee: squash(r.payee), text: squash(`${r.payee} ${r.description}`), pays_bills: !!r.pays_bills,
     name: r.payee || r.description || '',
     bill_name: r.bill_name || null, bill_one_time: r.bill_frequency === 'one_time', loan: !!(r.loan_paid || r.bill_loan),
+    bill_lead: r.bill_lead == null ? null : Number(r.bill_lead), bill_since: r.bill_since || null, account_bill: r.account_bill || null,
   }]));
 }
 
@@ -129,7 +147,7 @@ export function forecastWhy(l, src, tx = new Map()) {
   }
   const bill = billFor(l, src, tx);
   if (bill) return bill;
-  if (t?.pays_bills) return 'Paid on the vendor’s account against its invoices (bills)';
+  if (t?.pays_bills && t.account_bill) return `Paid on the vendor’s account against the ${t.account_bill} bill`;
   // Rent: the forecast brings every landlord's rent round each year from the rent bills.
   if (src.rent && RENT.test(l.category || '')) {
     if (t?.payee_id && src.rent.payees.has(t.payee_id)) return `Rent (the ${src.rent.payees.get(t.payee_id)} bill)`;
@@ -145,7 +163,8 @@ export function forecastWhy(l, src, tx = new Map()) {
  * Farm and capital purchases an active estimate plans (pure): line index → the estimate's name. An estimate fits by its
  * category or the payee it names, dated within two months, and covers only up to its own amount. A capital buy is the
  * planned one only if it's about the plan's size (half to one and a half times): smaller buys in the same category aren't
- * (Nov 16: the small RB Auction buys had gone under a planned $95,000 machine).
+ * (Nov 16: the small RB Auction buys had gone under a planned $95,000 machine). Any purchase under a tenth of a one-off
+ * plan isn't that plan either.
  */
 export function plannedByEstimates(lines, src, tx = new Map()) {
   const out = new Map();
@@ -160,6 +179,9 @@ export function plannedByEstimates(lines, src, tx = new Map()) {
     for (const e of src.estimates) {
       if (!((e.key.length >= 4 && cat.includes(e.key)) || (payee.length >= 4 && e.nameKey.includes(payee)))) continue;
       if (l.capex && !(l.amount >= e.amount * 0.5 && l.amount <= e.amount * 1.5)) continue;
+      // A one-off plan is one purchase: a payment under a tenth of it isn't that purchase (Nov 17: a $900 auction buy had
+      // gone under a planned $400,000 combine in the same category). A recurring estimate takes small buys up to its amount.
+      if (e.frequency === 'one_time' && l.amount < e.amount * 0.1) continue;
       const hit = occurrences(e, shiftDays(l.date, -EST_DAYS), shiftDays(l.date, EST_DAYS + 1))
         .map((d) => `${e.id}:${String(d).slice(0, 10)}`).find((k) => (room.has(k) ? room.get(k) : e.amount) >= l.amount - 0.005);
       if (!hit) continue;
@@ -299,6 +321,54 @@ export async function budgetView({ month, who = 'both', today = todayISO() } = {
     months, lines, total: { budget: lines.reduce((a, l) => a + l.budget, 0), spent: r2(lines.reduce((a, l) => a + l.spent, 0)), farm: r2(farmBy.get(sel) || 0) },
     left_out: [...leftOut.values()].sort((a, b) => b.amount - a.amount),
   };
+}
+
+/**
+ * Where a payment went (Jake, Nov 17: "the rbauction items remain unaccounted for in the discretionary budget account and were
+ * not accounted for in the forecast"): every entry this year whose payee or description has the words, and what the budget did
+ * with it: on a line, left out (with why), or not a purchase at all. Bills by that name with no payment linked are listed too:
+ * no money shows leaving an account for those.
+ */
+export async function findPayments({ q, today = todayISO() } = {}) {
+  const term = String(q || '').trim();
+  if (term.length < 2) return [];
+  const from = `${today.slice(0, 4)}-01-01`;
+  const like = `%${term.replace(/[%_]/g, ' ')}%`;
+  const [{ rows: txs }, { kept, left }, { rows: bills }] = await Promise.all([
+    pool.query(`SELECT t.id, t.date, t.amount, t.description, t.is_transfer, t.is_debt_service, p.name AS payee, c.kind
+       FROM transactions t LEFT JOIN payees p ON p.id = t.payee_id LEFT JOIN expense_categories c ON c.id = t.category_id
+      WHERE t.date >= $1 AND t.date <= $2 AND (p.name ILIKE $3 OR t.description ILIKE $3) ORDER BY t.date DESC, t.id DESC LIMIT 60`, [from, today, like]),
+    budgetSplit(from, addDay(today)),
+    pool.query(`SELECT b.id, b.name, b.amount, b.status::text AS status, b.due_date, b.paid_date FROM bills b LEFT JOIN payees p ON p.id = b.payee_id
+      WHERE b.linked_transaction_id IS NULL AND b.due_date >= $1 AND (b.name ILIKE $2 OR p.name ILIKE $2) ORDER BY b.due_date DESC LIMIT 30`, [from, like]),
+  ]);
+  const label = Object.fromEntries(LINES.map((l) => [l.key, l.label]));
+  const inBudget = new Map(); const out = new Map();
+  for (const l of kept) {
+    const e = inBudget.get(l.transaction_id) || { amount: 0, lines: new Set(), month: l.month };
+    e.amount += l.amount; e.lines.add(label[lineOf(l)]);
+    inBudget.set(l.transaction_id, e);
+  }
+  for (const l of left) { const e = out.get(l.transaction_id) || { amount: 0, why: l.why }; e.amount += l.amount; out.set(l.transaction_id, e); }
+  const iso = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : String(d || '').slice(0, 10));
+  const rows = txs.map((t) => {
+    const base = { id: t.id, date: iso(t.date), name: t.payee || t.description || '', description: t.description || '', amount: r2(Math.abs(Number(t.amount))) };
+    const b = inBudget.get(t.id); const o = out.get(t.id);
+    if (b) {
+      return { ...base, where: 'budget', counted: r2(b.amount),
+        detail: `In the budget for ${monthLabel(b.month)}: ${[...b.lines].join(', ')}${o ? `; $${Math.round(o.amount).toLocaleString('en-US')} of it left out (${o.why})` : ''}` };
+    }
+    if (o) return { ...base, where: 'left_out', counted: 0, detail: `Left out: ${o.why}` };
+    const why = t.is_transfer ? 'a transfer between your own accounts' : t.is_debt_service ? 'a loan payment'
+      : t.kind === 'income' || Number(t.amount) > 0 ? 'money in' : 'none of it is the farm’s or the household’s share';
+    return { ...base, where: 'not_counted', counted: 0, detail: `Not a purchase: ${why}` };
+  });
+  for (const b of bills) {
+    rows.push({ id: `bill-${b.id}`, date: iso(b.paid_date || b.due_date), name: b.name, description: 'bill', amount: r2(Number(b.amount)), counted: 0, where: 'bill',
+      detail: b.status === 'paid' ? 'A bill marked paid with no payment linked: no money shows leaving an account for it. The payment that paid it is what the budget counts.'
+        : 'An unpaid bill: in the forecast on its due date' });
+  }
+  return rows;
 }
 
 /** The transactions behind one line in one month, each with what the page needs to edit it. */

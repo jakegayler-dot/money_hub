@@ -134,3 +134,9 @@
 .pb .pb-leftlist td { font-size: 13px; padding: 6px 8px; }
 .pb .pb-leftlist th { padding: 6px 8px; }
 @media (max-width: 720px) { .pb-leftout { overflow-x: auto; } .pb-leftlist { min-width: 560px; } }
+
+/* Where a payment went (the search under the budget). */
+.pb-find { display: flex; gap: 8px; padding: 10px 16px; align-items: center; }
+.pb-find input { flex: 1 1 240px; max-width: 360px; }
+.pb .pb-in { color: var(--positive); }
+.pb-faint { color: var(--text-faint); }

@@ -145,6 +145,43 @@ function YearChart({ months, sel, showBudget, onPick }) {
   );
 }
 
+// Where a payment went (Nov 17: "the rbauction items remain unaccounted for"): type a name, see each entry and what the budget
+// did with it: on a line, left out with why, or not a purchase.
+function FindPayment() {
+  const [q, setQ] = useState('');
+  const [asked, setAsked] = useState('');
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const find = () => {
+    const term = q.trim();
+    if (term.length < 2) return;
+    setBusy(true);
+    fetch(`/api/personal/budget-view/find?q=${encodeURIComponent(term)}`).then((r) => r.json())
+      .then((x) => { setRows(Array.isArray(x) ? x : []); setAsked(term); }).catch(() => { setRows([]); setAsked(term); }).finally(() => setBusy(false));
+  };
+  return (
+    <section className="panel">
+      <div className="panel-header pb-ph"><span>Can’t find a payment?</span><span className="pb-sum">Search this year by who it was paid to</span></div>
+      <div className="pb-find">
+        <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && find()} placeholder="e.g. RB Auction" aria-label="Paid to" />
+        <button type="button" className="small" onClick={find} disabled={busy}>{busy ? 'Looking…' : 'Find'}</button>
+      </div>
+      {rows && (rows.length === 0 ? <p className="pb-empty">No entry this year has “{asked}” in its payee or description.</p> : (
+        <table className="pb-entries pb-leftlist" data-nostack="">
+          <thead><tr><th>Date</th><th>Paid to</th><th>What the budget did with it</th><th className="num">Amount</th></tr></thead>
+          <tbody>
+            {rows.map((e) => (
+              <tr key={e.id}><td>{e.date}</td>
+                <td>{e.name}{e.description && e.description !== e.name && e.description !== 'bill' ? <span className="pb-faint"> · {e.description}</span> : null}</td>
+                <td className={e.where === 'budget' ? 'pb-in' : ''}>{e.detail}</td><td className="num">{money(e.amount)}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      ))}
+    </section>
+  );
+}
+
 export default function Personal() {
   const [who, setWho] = useState('both');
   const [month, setMonth] = useState(null);
@@ -322,6 +359,8 @@ export default function Personal() {
           </details>
         </section>
       )}
+
+      <FindPayment />
 
       <section className="panel">
         <div className="panel-header pb-ph">

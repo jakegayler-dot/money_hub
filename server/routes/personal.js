@@ -4,7 +4,7 @@ import { ah } from '../lib/asyncHandler.js';
 import { personalPlan, spendingBreakdown, categoryEntries } from '../lib/personal.js';
 import { ownerCheck } from '../lib/ownerCheck.js';
 import { generateBudget } from '../lib/budgetPlan.js';
-import { budgetView, lineEntries, setLine, lineFor } from '../lib/householdBudget.js';
+import { budgetView, lineEntries, setLine, lineFor, findPayments } from '../lib/householdBudget.js';
 import { categoryBuckets } from '../lib/personal.js';
 import { todayISO } from '../lib/dates.js';
 
@@ -70,6 +70,8 @@ router.get('/budget-view', ah(async (req, res) => {
   const [v, cats] = await Promise.all([budgetView({ month: req.query.month, who: whoOf(req.query) }), categoryBuckets()]);
   res.json({ ...v, categories: cats.map((c) => ({ id: c.id, name: c.full, line: lineFor(c.full) })).sort((a, b) => a.name.localeCompare(b.name)) });
 }));
+// Where a payment went: ?q= words in its payee or description (this year).
+router.get('/budget-view/find', ah(async (req, res) => res.json(await findPayments({ q: req.query.q }))));
 // The transactions behind a line in a month: ?month&line&who.
 router.get('/budget-view/entries', ah(async (req, res) => {
   try { res.json(await lineEntries({ month: req.query.month, line: req.query.line, who: whoOf(req.query) })); }
