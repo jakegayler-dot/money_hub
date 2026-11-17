@@ -286,24 +286,28 @@ export async function runTool(name, input = {}, run = {}) {
     }
     case 'covered_calls': {
       const desk = await import('../options/desk.js');
+      // The desk's money is in US dollars (the market's); he reads CAD (Nov 17), so every answer carries the rate.
+      const fx = await (await import('../options/fx.js')).usdCad().catch(() => null);
+      const money = { usd_cad: fx?.rate ?? null, rate_date: fx?.date ?? null, note: 'Desk amounts are US dollars; give Jake money in CAD (x usd_cad), share prices and strikes in US dollars, saying which.' };
+      const clipFx = (v) => clip(Array.isArray(v) ? { money, rows: v } : { money, ...v });
       try {
         switch (input.action) {
-          case 'scan': return clip(await desk.scan());
+          case 'scan': return clipFx(await desk.scan());
           case 'plan': {
             if (!input.symbol) throw new AdvisorToolError('plan needs a symbol');
             const { lot, ...p } = await desk.plan(String(input.symbol).toUpperCase(), input.overrides || {});
             const { curve, ...figures } = lot;
-            return clip({ ...p, one_lot: figures });
+            return clipFx({ ...p, one_lot: figures });
           }
           case 'evaluate': {
             const { evaluate } = await import('../options/strategy.js');
             if (!(Number(input.position?.price) > 0)) throw new AdvisorToolError('evaluate needs position.price');
             const { curve, ...figures } = evaluate(input.position);
-            return clip(figures);
+            return clipFx(figures);
           }
-          case 'positions': return clip(await desk.positions());
-          case 'rules': return clip(await desk.getRules());
-          case 'alerts': return clip(await desk.alerts());
+          case 'positions': return clipFx(await desk.positions());
+          case 'rules': return clipFx({ rules: await desk.getRules() });
+          case 'alerts': return clipFx(await desk.alerts());
           default: throw new AdvisorToolError('action: scan, plan, evaluate, positions, rules or alerts');
         }
       } catch (err) {

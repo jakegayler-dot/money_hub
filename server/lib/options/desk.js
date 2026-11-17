@@ -4,6 +4,7 @@ import { pool, getSetting } from '../../db.js';
 import { quote, history, chain, parseOcc } from './market.js';
 import { cleanRules, dropCheck, soonExpiries, pick, evaluate, daysTo } from './strategy.js';
 import { toISODate } from '../dates.js';
+import { usdCad } from './fx.js';
 
 const RULES_KEY = 'covered_call_rules';
 const ALERTS_KEY = 'covered_call_alerts';
@@ -49,9 +50,9 @@ export async function scan(rulesIn = null, now = new Date()) {
 export async function plan(symbol, overrides = {}, now = new Date()) {
   const rules = cleanRules({ ...(await getRules()), ...overrides });
   const ch = await chain(symbol);
-  const [hist] = await Promise.all([history(symbol, rules.high_days + 10)]);
-  const p = pick(ch, rules, { now });
-  return { symbol, as_of: ch.as_of, quote: ch.quote, drop: dropCheck(hist, ch.quote, rules), ...p };
+  const [hist, fx] = await Promise.all([history(symbol, rules.high_days + 10), usdCad()]);
+  const p = pick(ch, rules, { now, fx: fx?.rate });
+  return { symbol, as_of: ch.as_of, quote: ch.quote, drop: dropCheck(hist, ch.quote, rules), ...p, fx };
 }
 
 /** One expiry's strikes for the calculator's pickers (nearest `n` each side of the price). */
@@ -93,6 +94,7 @@ export async function watch(now = new Date()) {
         call: p.call && { strike: p.call.strike, expiry: p.call.expiry, bid: p.call.bid, delta: r2(p.call.delta) },
         put: p.put && { strike: p.put.strike, expiry: p.put.expiry, ask: p.put.ask },
         lots: p.sizing.lots, income_per_day: p.lot.income_per_day, net_per_day: p.lot.net_per_day, max_loss_per_lot: p.lot.max_loss,
+        usd_cad: p.usd_cad,
       };
     } catch { /* the alert stands without the picks */ }
     fresh.push({ symbol: st.symbol, date: today, at: now.toISOString(), price: st.price, day_pct: st.day_pct, from_high_pct: st.from_high_pct,

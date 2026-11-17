@@ -34,7 +34,7 @@
 .cc-mini input { width: 110px; }
 .cc-check { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--text-muted); }
 .cc-rule-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
-.cc-rule-grid .cc-mini input { width: 100%; }
+.cc-rule-grid .cc-mini input, .cc-rule-grid .cc-mini select { width: 100%; }
 .cc-rules > summary { cursor: pointer; list-style: none; }
 .cc-rules > summary::-webkit-details-marker { display: none; }
 .cc-figs { margin-top: 12px; }

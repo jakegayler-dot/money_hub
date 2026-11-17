@@ -125,7 +125,8 @@ export const DEFAULT_RULES = {
   drop_day_pct: 3,          // a fall of this much in a day flags it
   drop_from_high_pct: 8,    // or this far below its highest close of the last high_days
   high_days: 20,
-  capital: 0,               // the money set aside for this (USD); 0 until he sets it
+  capital: 0,               // the money set aside for this; 0 until he sets it
+  capital_currency: 'CAD',  // what capital is in (Nov 17: "I want to see outputs in cad"); a capital saved before then was US$
   max_position_pct: 25,     // most of it in one name
   max_loss_pct: 5,          // most he'll lose on one position, as % of the capital
   target_delta: 0.2,        // the call: about a 1-in-5 chance of being called away
@@ -146,6 +147,7 @@ export function cleanRules(r = {}) {
     drop_from_high_pct: num(r.drop_from_high_pct, 1, 80, d.drop_from_high_pct),
     high_days: Math.round(num(r.high_days, 5, 120, d.high_days)),
     capital: num(r.capital, 0, 1e9, d.capital),
+    capital_currency: ['CAD', 'USD'].includes(r.capital_currency) ? r.capital_currency : (Number(r.capital) > 0 ? 'USD' : d.capital_currency),
     max_position_pct: num(r.max_position_pct, 1, 100, d.max_position_pct),
     max_loss_pct: num(r.max_loss_pct, 0.1, 100, d.max_loss_pct),
     target_delta: num(r.target_delta, 0.02, 0.6, d.target_delta),
@@ -169,7 +171,7 @@ export function dropCheck(hist, q, rules) {
   const day = Number.isFinite(q.change_pct) ? q.change_pct : null;
   const why = [];
   if (day != null && day <= -rules.drop_day_pct) why.push(`down ${r2(-day)}% today`);
-  if (fromHigh != null && fromHigh <= -rules.drop_from_high_pct) why.push(`${r2(-fromHigh)}% below its ${rules.high_days}-day high of $${r2(high)}`);
+  if (fromHigh != null && fromHigh <= -rules.drop_from_high_pct) why.push(`${r2(-fromHigh)}% below its ${rules.high_days}-day high of US$${r2(high)}`);
   return {
     day_pct: day == null ? null : r2(day), high: high == null ? null : r2(high), from_high_pct: fromHigh == null ? null : r2(fromHigh),
     five_day_pct: fiveAgo ? r2(((q.price - fiveAgo) / fiveAgo) * 100) : null, triggered: why.length > 0, why,
@@ -180,8 +182,14 @@ export function dropCheck(hist, q, rules) {
 export const soonExpiries = (expiries, days = 7, now = new Date()) => expiries.filter((e) => daysTo(e, now) > 0 && daysTo(e, now) <= days);
 
 /** The legs his rules pick from a chain, and the lots his limits allow. ch from market.chainFrom. */
-export function pick(ch, rulesIn, { now = new Date() } = {}) {
+// fx: CAD per US dollar. The contracts are in US dollars; capital in CAD is turned into US dollars to size, and the sizing's
+// words give money in CAD when fx is known.
+export function pick(ch, rulesIn, { now = new Date(), fx = null } = {}) {
   const rules = cleanRules(rulesIn);
+  const rate = Number(fx) > 0 ? Number(fx) : null;
+  const capCad = rules.capital_currency === 'CAD';
+  const capital = capCad && rate ? rules.capital / rate : rules.capital; // US$ (CAD capital without a rate: taken at par, said below)
+  const money = (usdAmt) => (rate ? `$${Math.round(usdAmt * rate).toLocaleString('en-US')}` : `US$${Math.round(usdAmt).toLocaleString('en-US')}`);
   const price = ch.quote.price;
   const open = ch.contracts.filter((c) => daysTo(c.expiry, now) > 0);
   // The call: out of the money, a bid, delta in his band; per expiry the one nearest his target.
@@ -220,17 +228,18 @@ export function pick(ch, rulesIn, { now = new Date() } = {}) {
   const lossPerLot = Math.max(0.01, -Math.min(0, put ? lot.max_loss : lot.scenarios.find((s) => s.pct === -rules.drop_test_pct).pnl));
   const perLotMoney = price * 100 + (put ? put.ask * 100 : 0);
   const sizing = { lots: 0, shares: 0, limits: [], money_in: 0 };
-  if (!(rules.capital > 0)) {
+  if (!(capital > 0)) {
     sizing.limits.push('Set the money you’d put into this (Capital) to size it.');
   } else {
-    const byPosition = Math.floor((rules.capital * rules.max_position_pct / 100) / perLotMoney);
+    const byPosition = Math.floor((capital * rules.max_position_pct / 100) / perLotMoney);
     const lossLabel = put ? 'its worst case with the put' : `a ${rules.drop_test_pct}% fall with no put`;
-    const byLoss = Math.floor((rules.capital * rules.max_loss_pct / 100) / lossPerLot);
+    const byLoss = Math.floor((capital * rules.max_loss_pct / 100) / lossPerLot);
     sizing.lots = Math.max(0, Math.min(byPosition, byLoss));
     sizing.shares = sizing.lots * 100;
     sizing.money_in = r2(sizing.lots * perLotMoney);
-    sizing.limits.push(`${rules.max_position_pct}% of $${Math.round(rules.capital).toLocaleString('en-US')} in one name allows ${byPosition} lot${byPosition === 1 ? '' : 's'} at $${Math.round(perLotMoney).toLocaleString('en-US')} each.`);
-    sizing.limits.push(`Losing at most ${rules.max_loss_pct}% ($${Math.round(rules.capital * rules.max_loss_pct / 100).toLocaleString('en-US')}) allows ${byLoss}: ${lossLabel} is $${Math.round(lossPerLot).toLocaleString('en-US')} a lot.`);
+    sizing.limits.push(`${rules.max_position_pct}% of ${money(capital)} in one name allows ${byPosition} lot${byPosition === 1 ? '' : 's'} at ${money(perLotMoney)} each.`);
+    sizing.limits.push(`Losing at most ${rules.max_loss_pct}% (${money(capital * rules.max_loss_pct / 100)}) allows ${byLoss}: ${lossLabel} is ${money(lossPerLot)} a lot.`);
+    if (capCad && !rate) sizing.limits.push('The exchange rate couldn’t be had, so your CAD capital was taken as US dollars.');
     if (!sizing.lots) sizing.limits.push('Not one lot fits these limits.');
   }
   const reasons = [];
@@ -240,5 +249,5 @@ export function pick(ch, rulesIn, { now = new Date() } = {}) {
     if (put) reasons.push(`Put: about ${rules.put_below_pct}% below today’s price, the cheapest a day of the expiries ${rules.put_days_min} to ${rules.put_days_max} days out.`);
     else reasons.push(`No put fits: none ${rules.put_days_min} to ${rules.put_days_max} days out near ${rules.put_below_pct}% below.`);
   }
-  return { rules, price, call, put, call_choices: callChoices, put_choices: putChoices, lot, sizing, reasons };
+  return { rules, price, call, put, call_choices: callChoices, put_choices: putChoices, lot, sizing, reasons, usd_cad: rate };
 }

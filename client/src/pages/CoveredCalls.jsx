@@ -8,8 +8,14 @@ import './coveredCalls.css';
 
 const send = (method, url, body) => fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })
   .then(async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`); return d; });
-const usd = (n, d = 0) => (n == null || !Number.isFinite(Number(n)) ? '—'
-  : `${Number(n) < 0 ? '−' : ''}$${Math.abs(Number(n)).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })}`);
+const fmt = (pre, n, d) => (n == null || !Number.isFinite(Number(n)) ? '—'
+  : `${Number(n) < 0 ? '−' : ''}${pre}${Math.abs(Number(n)).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })}`);
+// Money in CAD (Nov 17: "I want to see outputs in cad"): the desk's figures are the market's US dollars, turned into CAD at the
+// Bank of Canada's daily rate (FX, set by the page). Share prices, strikes and per-share premiums stay US$, as the broker shows them.
+let FX = null;
+const usd = (n, d = 0) => fmt('US$', n, d);
+const cad = (n, d = 0) => (n == null || !Number.isFinite(Number(n)) ? '—' : FX ? fmt('$', Number(n) * FX, d) : fmt('US$', n, d));
+const plain = (n, d = 0) => fmt('$', n, d);
 const pctS = (n) => (n == null ? '—' : `${n > 0 ? '+' : n < 0 ? '−' : ''}${Math.abs(n).toFixed(1)}%`);
 const short = (iso) => (iso ? new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', weekday: 'short', timeZone: 'UTC' }) : '—');
 const asOf = (iso) => (iso ? new Date(iso).toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit', timeZone: 'America/Regina' }) : '');
@@ -40,7 +46,7 @@ function Payoff({ curve, price, breakevens, strikes }) {
         {ticks.map((v) => (
           <g key={v}>
             <line x1={L} x2={W - R} y1={sy(v)} y2={sy(v)} className={v === 0 ? 'cc-zero' : 'cc-grid'} />
-            <text x={L - 6} y={sy(v) + 4} textAnchor="end" className="cc-axis">{usd(v)}</text>
+            <text x={L - 6} y={sy(v) + 4} textAnchor="end" className="cc-axis">{cad(v)}</text>
           </g>
         ))}
         {(strikes || []).map((k, i) => k > x0 && k < x1 && (
@@ -62,7 +68,7 @@ function Payoff({ curve, price, breakevens, strikes }) {
         )}
       </svg>
       <div className="cc-tip" style={{ visibility: hover ? 'visible' : 'hidden' }}>
-        {hover ? <>At {usd(hover.price, 2)}: <b>{usd(hover.pnl)}</b></> : '.'}
+        {hover ? <>At {usd(hover.price, 2)}: <b>{cad(hover.pnl)}</b></> : '.'}
       </div>
     </div>
   );
@@ -188,8 +194,8 @@ function Desk({ symbol, rules, onSaved }) {
 
   const setLeg = (i, l) => setPos({ ...pos, legs: pos.legs.map((x, j) => (j === i ? l : x)) });
   const describe = () => {
-    const legs = pos.legs.map((l) => `${l.side === 'short' ? 'sell' : 'buy'} ${l.contracts} ${symbol} ${l.expiry} ${l.strike} ${l.type}${Number(l.contracts) > 1 ? 's' : ''} at $${Number(l.premium).toFixed(2)}`).join('; ');
-    return `${pos.shares} shares of ${symbol} at $${Number(pos.cost).toFixed(2)} (price now $${plan.price.toFixed(2)})${legs ? `; ${legs}` : ''}.`;
+    const legs = pos.legs.map((l) => `${l.side === 'short' ? 'sell' : 'buy'} ${l.contracts} ${symbol} ${l.expiry} ${l.strike} ${l.type}${Number(l.contracts) > 1 ? 's' : ''} at US$${Number(l.premium).toFixed(2)}`).join('; ');
+    return `${pos.shares} shares of ${symbol} at US$${Number(pos.cost).toFixed(2)} (price now US$${plan.price.toFixed(2)})${legs ? `; ${legs}` : ''}.`;
   };
   const askMike = () => {
     const q = mike.q.trim() || 'What does this position earn and risk, and where do my rules look loose or tight?';
@@ -215,11 +221,11 @@ function Desk({ symbol, rules, onSaved }) {
         <div className="cc-pick-head">What your rules pick</div>
         <div className="cc-pick-grid">
           <div><span className="cc-k">Call to sell</span>{plan.call ? <b>{plan.call.strike} · {short(plan.call.expiry)}</b> : <b>none fits</b>}
-            {plan.call && <span className="cc-faint">bid {plan.call.bid.toFixed(2)} · delta {plan.call.delta.toFixed(2)} · {usd(plan.call.per_day)} a day a contract</span>}</div>
+            {plan.call && <span className="cc-faint">bid {plan.call.bid.toFixed(2)} · delta {plan.call.delta.toFixed(2)} · {cad(plan.call.per_day)} a day a contract</span>}</div>
           <div><span className="cc-k">Put to buy</span>{plan.rules.protect ? (plan.put ? <b>{plan.put.strike} · {short(plan.put.expiry)}</b> : <b>none fits</b>) : <b>off</b>}
-            {plan.put && <span className="cc-faint">ask {plan.put.ask.toFixed(2)} · {usd(plan.put.cost_per_day)} a day a contract</span>}</div>
+            {plan.put && <span className="cc-faint">ask {plan.put.ask.toFixed(2)} · {cad(plan.put.cost_per_day)} a day a contract</span>}</div>
           <div><span className="cc-k">Size</span><b>{plan.sizing.lots} lot{plan.sizing.lots === 1 ? '' : 's'} ({plan.sizing.shares} shares)</b>
-            <span className="cc-faint">{plan.sizing.money_in ? `${usd(plan.sizing.money_in)} in` : ''}</span></div>
+            <span className="cc-faint">{plan.sizing.money_in ? `${cad(plan.sizing.money_in)} in` : ''}</span></div>
         </div>
         <ul className="cc-why">{[...plan.reasons, ...plan.sizing.limits].map((r) => <li key={r}>{r}</li>)}</ul>
         {plan.call_choices.length > 1 && (
@@ -227,7 +233,7 @@ function Desk({ symbol, rules, onSaved }) {
             <button key={c.expiry} type="button" className="small secondary" onClick={() => setPos({ ...pos, legs: [
               ...pos.legs.filter((l) => !(l.type === 'call' && l.side === 'short')),
               { type: 'call', side: 'short', strike: c.strike, expiry: c.expiry, premium: c.bid, contracts: pos.legs.find((l) => l.type === 'call')?.contracts || 1, iv: c.iv, delta: c.delta },
-            ] })}>{short(c.expiry)}: {c.strike} for {c.bid.toFixed(2)} ({usd(c.per_day)}/day)</button>
+            ] })}>{short(c.expiry)}: {c.strike} for {c.bid.toFixed(2)} ({cad(c.per_day)}/day)</button>
           ))}</div>
         )}
       </div>
@@ -251,14 +257,14 @@ function Desk({ symbol, rules, onSaved }) {
           <>
             {figs.uncovered && <p className="review-error">More calls sold than shares cover: the loss has no limit if the stock runs.</p>}
             <div className="cc-figs">
-              <div><span className="cc-k">Premium in</span><b>{usd(figs.premium_in)}</b><span className="cc-faint">{usd(figs.income_per_day)} a day</span></div>
-              <div><span className="cc-k">Net a day</span><b className={figs.net_per_day < 0 ? 'cc-neg' : ''}>{usd(figs.net_per_day)}</b>
-                <span className="cc-faint">{figs.protection_per_day ? `after ${usd(figs.protection_per_day)} a day of puts` : 'no puts held'}</span></div>
-              <div><span className="cc-k">Max gain</span><b>{figs.unlimited_gain ? 'no cap' : usd(figs.max_gain)}</b><span className="cc-faint">{figs.max_gain_at != null ? `at ${usd(figs.max_gain_at, 2)} or above` : ''}</span></div>
-              <div><span className="cc-k">Max loss</span><b>{figs.max_loss == null ? 'no limit' : usd(figs.max_loss)}</b><span className="cc-faint">{figs.max_loss_at != null ? (figs.max_loss_at < 1 ? 'if it went to zero' : `at ${usd(figs.max_loss_at, 2)} or below`) : ''}</span></div>
+              <div><span className="cc-k">Premium in</span><b>{cad(figs.premium_in)}</b><span className="cc-faint">{cad(figs.income_per_day)} a day</span></div>
+              <div><span className="cc-k">Net a day</span><b className={figs.net_per_day < 0 ? 'cc-neg' : ''}>{cad(figs.net_per_day)}</b>
+                <span className="cc-faint">{figs.protection_per_day ? `after ${cad(figs.protection_per_day)} a day of puts` : 'no puts held'}</span></div>
+              <div><span className="cc-k">Max gain</span><b>{figs.unlimited_gain ? 'no cap' : cad(figs.max_gain)}</b><span className="cc-faint">{figs.max_gain_at != null ? `at ${usd(figs.max_gain_at, 2)} or above` : ''}</span></div>
+              <div><span className="cc-k">Max loss</span><b>{figs.max_loss == null ? 'no limit' : cad(figs.max_loss)}</b><span className="cc-faint">{figs.max_loss_at != null ? (figs.max_loss_at < 1 ? 'if it went to zero' : `at ${usd(figs.max_loss_at, 2)} or below`) : ''}</span></div>
               <div><span className="cc-k">Breakeven</span><b>{figs.breakevens.length ? figs.breakevens.map((b) => usd(b, 2)).join(', ') : '—'}</b><span className="cc-faint">at the call’s expiry</span></div>
               <div><span className="cc-k">Called away</span><b>{figs.called_away_chance == null ? '—' : `≈${Math.round(figs.called_away_chance)}%`}</b><span className="cc-faint">the call’s delta</span></div>
-              <div><span className="cc-k">Money in</span><b>{usd(figs.money_in)}</b><span className="cc-faint">{figs.put_cost ? `${usd(figs.put_cost)} of it the put` : 'the shares'}</span></div>
+              <div><span className="cc-k">Money in</span><b>{cad(figs.money_in)}</b><span className="cc-faint">{figs.put_cost ? `${cad(figs.put_cost)} of it the put` : 'the shares'}</span></div>
             </div>
             <Payoff curve={figs.curve} price={plan.price} breakevens={figs.breakevens} strikes={pos.legs.map((l) => Number(l.strike))} />
             <p className="cc-faint">Profit or loss on {short(figs.horizon)} (the nearest expiry); a longer put is valued at what it would still be worth then.</p>
@@ -267,7 +273,7 @@ function Desk({ symbol, rules, onSaved }) {
                 <thead><tr><th>If {symbol} is</th>{figs.scenarios.map((s) => <th key={s.pct} className="num">{pctS(s.pct)}</th>)}</tr></thead>
                 <tbody>
                   <tr><td className="cc-faint">price</td>{figs.scenarios.map((s) => <td key={s.pct} className="num">{usd(s.price, 2)}</td>)}</tr>
-                  <tr><td className="cc-faint">you make</td>{figs.scenarios.map((s) => <td key={s.pct} className={`num ${s.pnl < 0 ? 'neg' : 'pos'}`}>{usd(s.pnl)}</td>)}</tr>
+                  <tr><td className="cc-faint">you make</td>{figs.scenarios.map((s) => <td key={s.pct} className={`num ${s.pnl < 0 ? 'neg' : 'pos'}`}>{cad(s.pnl)}</td>)}</tr>
                 </tbody>
               </table>
             </div>
@@ -296,7 +302,7 @@ function Desk({ symbol, rules, onSaved }) {
 
 // ---------------------------------------------------------------- his rules
 const RULE_FIELDS = [
-  ['capital', 'Capital for this (US$)', 1000], ['max_position_pct', 'Most in one stock (%)', 1], ['max_loss_pct', 'Most to lose on one position (% of capital)', 0.5],
+  ['capital', 'Capital for this', 1000], ['max_position_pct', 'Most in one stock (%)', 1], ['max_loss_pct', 'Most to lose on one position (% of capital)', 0.5],
   ['drop_day_pct', 'A drop: down in a day (%)', 0.5], ['drop_from_high_pct', 'or under the recent high (%)', 1], ['high_days', 'Recent high: last N days', 1],
   ['target_delta', 'Call: target delta', 0.01], ['delta_min', 'Call: delta at least', 0.01], ['delta_max', 'Call: delta at most', 0.01], ['call_max_days', 'Call: expiring within (days)', 1],
   ['put_below_pct', 'Put: below today’s price (%)', 1], ['put_days_min', 'Put: at least (days)', 1], ['put_days_max', 'Put: at most (days)', 1], ['drop_test_pct', 'No put: size against a fall of (%)', 1],
@@ -307,11 +313,13 @@ function Rules({ rules, saveRules }) {
   const dirty = JSON.stringify(f) !== JSON.stringify(rules);
   return (
     <details className="panel cc-panel cc-rules" open={!rules.capital}>
-      <summary className="panel-header spend-header"><span>Your rules</span><span className="cc-faint">{rules.capital ? `${usd(rules.capital)} · call Δ${rules.target_delta} within ${rules.call_max_days} days · ${rules.protect ? `put ${rules.put_below_pct}% below` : 'no put'}` : 'set your capital to size positions'}</span></summary>
+      <summary className="panel-header spend-header"><span>Your rules</span><span className="cc-faint">{rules.capital ? `${rules.capital_currency === 'USD' ? usd(rules.capital) : plain(rules.capital)} · call Δ${rules.target_delta} within ${rules.call_max_days} days · ${rules.protect ? `put ${rules.put_below_pct}% below` : 'no put'}` : 'set your capital to size positions'}</span></summary>
       <div className="cc-rule-grid cc-pad">
         {RULE_FIELDS.map(([k, label, step]) => (
           <label key={k} className="cc-mini">{label}<input type="number" step={step} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></label>
         ))}
+        <label className="cc-mini">Capital is in<select value={f.capital_currency || 'CAD'} onChange={(e) => setF({ ...f, capital_currency: e.target.value })}>
+          <option value="CAD">Canadian dollars</option><option value="USD">US dollars</option></select></label>
         <label className="cc-check"><input type="checkbox" checked={!!f.protect} onChange={(e) => setF({ ...f, protect: e.target.checked })} /> Buy a put for protection</label>
       </div>
       <div className="cc-row cc-pad">
@@ -334,7 +342,7 @@ function Positions({ list, reload, onPick }) {
   return (
     <div className="panel cc-panel">
       <div className="panel-header spend-header"><span>Your positions</span>
-        <span className="cc-faint">{open.length ? `net ${usd(open.reduce((a, p) => a + (p.figures?.net_per_day || 0), 0))} a day · options cash so far ${usd(open.reduce((a, p) => a + p.premium_collected, 0))}` : 'none yet'}</span></div>
+        <span className="cc-faint">{open.length ? `net ${cad(open.reduce((a, p) => a + (p.figures?.net_per_day || 0), 0))} a day · options cash so far ${cad(open.reduce((a, p) => a + p.premium_collected, 0))}` : 'none yet'}</span></div>
       <p className="cc-faint cc-pad" style={{ margin: 0 }}>
         {sync ? `From your broker${sync.account ? ` (${sync.account})` : ''}${sync.by ? ` by ${sync.by}` : ''}: ${new Date(sync.at).toLocaleString('en-CA', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/Regina' })}`
           : 'Nothing from your broker yet: your Grok bot sends the account with submit_positions.'}
@@ -349,16 +357,16 @@ function Positions({ list, reload, onPick }) {
                 <tr key={p.id} className={p.status === 'closed' ? 'cc-closed' : ''}>
                   <td><button type="button" className="small-link" onClick={() => onPick(p.symbol)}><b>{p.symbol}</b></button>{p.status !== 'open' && <span className="badge"> {p.status.toUpperCase()}</span>}{p.source === 'broker' && p.status !== 'closed' && <span className="cc-faint"> · broker</span>}</td>
                   <td className="num">{p.shares}</td><td className="num">{usd(p.cost, 2)}</td><td className="num">{usd(p.price, 2)}</td>
-                  <td className={`num ${p.stock_pnl < 0 ? 'neg' : 'pos'}`}>{usd(p.stock_pnl)}</td>
-                  <td className="num">{usd(p.premium_collected)}</td>
-                  <td className={`num ${p.total_pnl < 0 ? 'neg' : 'pos'}`}>{usd(p.total_pnl)}</td>
+                  <td className={`num ${p.stock_pnl < 0 ? 'neg' : 'pos'}`}>{cad(p.stock_pnl)}</td>
+                  <td className="num">{cad(p.premium_collected)}</td>
+                  <td className={`num ${p.total_pnl < 0 ? 'neg' : 'pos'}`}>{cad(p.total_pnl)}</td>
                   <td>{p.legs.length ? p.legs.map((l) => `${l.side === 'short' ? '−' : '+'}${l.contracts} ${l.strike}${l.type === 'call' ? 'C' : 'P'} ${short(l.expiry).split(',')[0]}`).join(' · ') : <span className="cc-faint">none</span>}</td>
-                  <td className={`num ${p.figures?.net_per_day < 0 ? 'neg' : ''}`} title={p.figures ? `${usd(p.figures.income_per_day)} calls − ${usd(p.figures.protection_per_day)} puts` : ''}>{usd(p.figures?.net_per_day)}</td>
-                  <td className="num">{usd(p.figures?.max_loss)}</td>
+                  <td className={`num ${p.figures?.net_per_day < 0 ? 'neg' : ''}`} title={p.figures ? `${cad(p.figures.income_per_day)} calls − ${cad(p.figures.protection_per_day)} puts` : ''}>{cad(p.figures?.net_per_day)}</td>
+                  <td className="num">{cad(p.figures?.max_loss)}</td>
                   <td className="cc-actions">
                     {p.status !== 'closed' && (log?.id === p.id ? (
                       <span className="cc-row">
-                        <input type="number" step="1" placeholder="$ in" value={log.amount} onChange={(e) => setLog({ ...log, amount: e.target.value })} style={{ width: 80 }} />
+                        <input type="number" step="1" placeholder="US$ in" value={log.amount} onChange={(e) => setLog({ ...log, amount: e.target.value })} style={{ width: 80 }} />
                         <button type="button" className="small" onClick={() => { patch(p.id, { premium_collected: p.premium_collected + Number(log.amount || 0) }); setLog(null); }}>Add</button>
                       </span>
                     ) : <button type="button" className="small secondary" onClick={() => setLog({ id: p.id, amount: '' })} title="Premium from a call written; negative for a call bought back or a put bought">+ Option cash</button>)}
@@ -384,6 +392,8 @@ export default function CoveredCalls() {
   const [selected, setSelected] = useState(null);
   const [positions, setPositions] = useState(null);
   const [alerts, setAlerts] = useState([]);
+  const [fx, setFx] = useState(null);
+  FX = fx?.rate || null;
   const loadScan = () => send('GET', '/api/options/scan').then((s) => {
     setScan(s); setScanErr(null);
     setSelected((cur) => cur || s.stocks.find((x) => x.triggered && !x.error)?.symbol || s.stocks.find((x) => !x.error)?.symbol || null);
@@ -391,6 +401,7 @@ export default function CoveredCalls() {
   const loadPositions = () => send('GET', '/api/options/positions').then(setPositions).catch(() => setPositions([]));
   useEffect(() => {
     send('GET', '/api/options/rules').then(setRules);
+    send('GET', '/api/options/fx').then(setFx).catch(() => {});
     send('GET', '/api/options/alerts').then(setAlerts).catch(() => {});
     loadScan(); loadPositions();
     const t = setInterval(loadScan, 5 * 60e3);
@@ -403,7 +414,10 @@ export default function CoveredCalls() {
     <div className="cc-page">
       <div className="page-header">
         <div><h1 className="page-title">Covered calls</h1>
-          <div className="page-meta">Buy the drop, write short-dated calls for income, buy a put against a big fall. Money Hub reads the market and keeps your records; it never places a trade.</div></div>
+          <div className="page-meta">Buy the drop, write short-dated calls for income, buy a put against a big fall. Money Hub reads the market and keeps your records; it never places a trade.</div>
+          <div className="page-meta">{fx?.rate
+            ? `Money in Canadian dollars at the Bank of Canada’s ${fx.rate.toFixed(4)} (${short(fx.date)}); share prices, strikes and premiums a share in US$, as your broker shows them.`
+            : 'Exchange rate unavailable: money shown in US$.'}</div></div>
       </div>
       {today.length > 0 && (
         <div className="cc-alerts">{today.map((a) => (

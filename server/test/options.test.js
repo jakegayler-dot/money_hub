@@ -106,7 +106,7 @@ test('the drop rule: a day’s fall or far enough below the recent high', () => 
   assert.equal(d.high, 110);
   near(d.from_high_pct, -9.09);
   assert.equal(d.triggered, true);
-  assert.match(d.why[0], /below its 5-day high of \$110/);
+  assert.match(d.why[0], /below its 5-day high of US\$110/);
   assert.equal(dropCheck(hist, { ...q, price: 106, change_pct: -1 }, rules).triggered, false);
   assert.equal(dropCheck(hist, { ...q, price: 106, change_pct: -3.5 }, rules).why[0], 'down 3.5% today');
 });
@@ -140,6 +140,26 @@ test('his rules pick the call nearest his delta, the cheapest put a day, and the
   assert.equal(bare.put, null);
   assert.match(bare.sizing.limits[1], /a 20% fall with no put/);
   assert.match(pick(ch, {}, { now: NOW }).sizing.limits[0], /Set the money/);
+});
+
+test('in CAD (Nov 17: "I want to see outputs in cad"): capital in CAD is sized in US dollars, the words give CAD', async () => {
+  const { rateFrom } = await import('../lib/options/fx.js');
+  assert.deepEqual(rateFrom({ observations: [{ d: '2026-11-16', FXUSDCAD: { v: '1.4298' } }] }), { rate: 1.4298, date: '2026-11-16' });
+  assert.equal(rateFrom({ observations: [] }), null);
+  const ch = { quote: { price: 150 }, expiries: [], contracts: [
+    { expiry: '2026-11-18', type: 'call', strike: 160, bid: 1.5, ask: 1.6, mid: 1.55, delta: 0.21, iv: 0.6 },
+  ] };
+  // C$43,000 at 1.43 is about US$30,070: 50% is US$15,035, one lot of US$15,000.
+  const p = pick(ch, { capital: 43000, capital_currency: 'CAD', max_position_pct: 50, max_loss_pct: 50, protect: false }, { now: NOW, fx: 1.43 });
+  assert.equal(p.sizing.lots, 1);
+  assert.match(p.sizing.limits[0], /50% of \$43,000 in one name allows 1 lot at \$21,450 each/);
+  assert.equal(p.usd_cad, 1.43);
+  const inUsd = pick(ch, { capital: 43000, capital_currency: 'USD', max_position_pct: 50, max_loss_pct: 50, protect: false }, { now: NOW, fx: 1.43 });
+  assert.equal(inUsd.sizing.lots, 1, 'US$21,500: still one lot');
+  assert.equal(pick(ch, { capital: 31000, capital_currency: 'USD', max_position_pct: 100, max_loss_pct: 100, protect: false }, { now: NOW }).sizing.lots, 2);
+  // A capital saved before CAD came in was US$; new rules start in CAD.
+  assert.equal(cleanRules({ capital: 50000 }).capital_currency, 'USD');
+  assert.equal(cleanRules({}).capital_currency, 'CAD');
 });
 
 test('rules are cleaned: symbols upper-cased and checked, numbers kept in range', () => {
