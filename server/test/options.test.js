@@ -219,6 +219,9 @@ test('his rules (Nov 17: "avg put daily cost (on trading days) on long horizon p
   near(p.carry.gap, (150 + 35) / 2 - (20 + 520 / 23) / 2, 0.02);
   assert.equal(p.carry.calls, 2);
   assert.equal(p.carry.puts, 2);
+  // The contracts behind the averages, with their prices, for the scanner's list (Nov 18).
+  assert.deepEqual([p.carry.call.strike, p.carry.call.expiry, p.carry.call.bid, p.carry.call.per_day], [155, '2026-11-18', p.call.bid, 150]);
+  assert.deepEqual([p.carry.put.strike, p.carry.put.expiry, p.carry.put.ask, p.carry.put.cost_per_day], [135, '2026-11-27', p.put.ask, 20]);
   // One lot: 100 × $150 + the $160 put. 50% of $100k → 3 lots; the loss limit decides the rest.
   assert.match(p.sizing.limits[0], /allows 3 lots/);
   assert.equal(p.sizing.lots, Number(/allows (\d+):/.exec(p.sizing.limits[1])[1]));

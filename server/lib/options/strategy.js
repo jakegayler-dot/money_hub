@@ -354,6 +354,10 @@ export function pick(ch, rulesIn, { now = new Date(), fx = null } = {}) {
     call_per_day: r2(callAvg), calls: callRows.length, put_per_day: putAvg == null ? null : r2(putAvg), puts: putRows.length,
     interest_per_day: lot.interest_per_day,
     gap: putAvg == null ? null : r2(callAvg - putAvg), after_interest: putAvg == null ? null : r2(callAvg - putAvg - lot.interest_per_day),
+    // The contracts behind the averages (Nov 18: "doesn't seem to have any data on option prices"): the call that pays the
+    // most a trading day and the cheapest put a trading day, with their prices and deltas, so the list shows what it priced.
+    call: call && { strike: call.strike, expiry: call.expiry, bid: call.bid, ask: call.ask, delta: call.delta == null ? null : r2(call.delta), per_day: call.per_day, days: call.days },
+    put: putChoices[0] ? { strike: putChoices[0].strike, expiry: putChoices[0].expiry, bid: putChoices[0].bid, ask: putChoices[0].ask, delta: putChoices[0].delta == null ? null : r2(putChoices[0].delta), cost_per_day: putChoices[0].cost_per_day, days: putChoices[0].days } : null,
   } : null;
   return { rules, price, call, put, call_choices: callChoices, put_choices: putChoices, lot, sizing, reasons, carry, usd_cad: rate };
 }

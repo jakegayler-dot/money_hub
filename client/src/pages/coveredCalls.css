@@ -143,3 +143,9 @@
   .cc-clock-times { justify-content: flex-start; }
   .cc-clock-times > div { text-align: left; }
 }
+
+/* The contract behind each option average in the scanner (Nov 18): strike, expiry, bid/ask, delta, under the figure. */
+.cc-table .cc-opt { display: block; font-size: 11px; line-height: 1.35; color: var(--text-muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.cc-table .cc-opt > span { display: block; white-space: nowrap; }
+.cc-table tbody tr.cc-dim .cc-opt { color: var(--text-faint); }
+@media (max-width: 760px) { .cc-table .cc-wide-only { display: none; } }

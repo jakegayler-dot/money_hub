@@ -84,6 +84,20 @@ const cadenceLabel = (c) => (!c ? 'too few listed' : c.max <= 3 && c.min === 1 ?
 // puts that are $10 otm, and avg short term daily calls $5 otm. then sort the stocks by the difference"): what the short-term
 // calls pay a trading day on average, less what the long-horizon puts cost, for 100 shares. His watchlist and the wider list
 // together; a stock whose options don't expire often enough sits at the bottom, greyed.
+// The contract behind a column's average (Nov 18: "doesn't seem to have any data on option prices"): strike, expiry, the
+// price it was taken at (a call's bid, a put's ask, per share, US$ as the broker shows it) and its delta.
+const optDay = (iso) => new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-CA', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+function OptLine({ o, kind }) {
+  if (!o) return null;
+  const px = kind === 'call' ? o.bid : o.ask;
+  return (
+    <span className="cc-opt">
+      <span>{o.strike} {kind === 'call' ? 'C' : 'P'} {optDay(o.expiry)}</span>
+      <span>US${Number(px).toFixed(2)} {kind === 'call' ? 'bid' : 'ask'}{o.delta != null ? ` · Δ ${Number(o.delta).toFixed(2)}` : ''}</span>
+    </span>
+  );
+}
+
 function Watchlist({ scan, err, selected, onPick, rules, saveRules }) {
   const [add, setAdd] = useState('');
   const addOne = () => {
@@ -105,22 +119,25 @@ function Watchlist({ scan, err, selected, onPick, rules, saveRules }) {
       {scan && (
         <div className="table-scroll">
           <table className="cc-table">
-            <thead><tr><th>Stock</th><th className="num">Price</th><th className="num">Today</th><th className="num">From high</th><th>Options expire</th>
-              <th className="num" title={`The average, over the expiries within ${rules.call_max_days} days, of the first call at least US$${rules.call_otm} above the price, at the bid, for each trading day to its expiry`}>Calls US${rules.call_otm} out</th>
-              <th className="num" title={`The average, over the expiries ${rules.put_days_min} to ${rules.put_days_max} days out, of the first put at least US$${rules.put_otm} below the price, at the ask, for each trading day to its expiry`}>Puts US${rules.put_otm} out</th>
-              <th className="num" title="Calls less puts, a trading day, for 100 shares">Difference</th><th /><th /></tr></thead>
+            <thead><tr><th>Stock</th><th className="num">Price</th>
+              <th className="num" title={`The average, over the expiries within ${rules.call_max_days} days, of the first call at least US$${rules.call_otm} above the price, at the bid, for each trading day to its expiry. Under it: the call that pays the most a trading day, its bid and delta.`}>Calls US${rules.call_otm} out</th>
+              <th className="num" title={`The average, over the expiries ${rules.put_days_min} to ${rules.put_days_max} days out, of the first put at least US$${rules.put_otm} below the price, at the ask, for each trading day to its expiry. Under it: the cheapest put a trading day, its ask and delta.`}>Puts US${rules.put_otm} out</th>
+              <th className="num" title="Calls less puts, a trading day, for 100 shares">Difference</th>
+              <th>Options expire</th><th className="num cc-wide-only">Today</th><th className="num cc-wide-only">From high</th><th /><th /></tr></thead>
             <tbody>
               {rows.map((s) => (
                 <tr key={s.symbol} className={`${selected === s.symbol ? 'on' : ''} ${s.triggered && s.qualifies ? 'dropped' : ''} ${!s.error && !s.qualifies ? 'cc-dim' : ''}`} onClick={() => !s.error && onPick(s.symbol)}>
                   <td><b>{s.symbol}</b></td>
                   {s.error ? <td colSpan={7} className="cc-faint">{s.error}</td> : <>
                     <td className="num">{usd(s.price, 2)}</td>
-                    <td className="num">{pctS(s.day_pct)}</td>
-                    <td className="num">{pctS(s.from_high_pct)}</td>
-                    <td>{cadenceLabel(s.cadence)}{!s.often && <span className="cc-faint"> · not often enough</span>}</td>
-                    <td className="num" title={s.carry ? `average of ${s.carry.calls} expir${s.carry.calls === 1 ? 'y' : 'ies'}` : ''}>{s.carry ? cad(s.carry.call_per_day) : '—'}</td>
-                    <td className="num" title={s.carry?.puts ? `average of ${s.carry.puts} expir${s.carry.puts === 1 ? 'y' : 'ies'}` : ''}>{s.carry?.put_per_day != null ? cad(s.carry.put_per_day) : '—'}</td>
+                    <td className="num" title={s.carry ? `average of ${s.carry.calls} expir${s.carry.calls === 1 ? 'y' : 'ies'}, a trading day` : ''}>
+                      {s.carry ? cad(s.carry.call_per_day) : '—'}<OptLine o={s.carry?.call} kind="call" /></td>
+                    <td className="num" title={s.carry?.puts ? `average of ${s.carry.puts} expir${s.carry.puts === 1 ? 'y' : 'ies'}, a trading day` : ''}>
+                      {s.carry?.put_per_day != null ? cad(s.carry.put_per_day) : '—'}<OptLine o={s.carry?.put} kind="put" /></td>
                     <td className={`num cc-diff ${s.carry?.gap != null ? sign(s.carry.gap) : ''}`} title={s.carry?.after_interest != null ? `${cad(s.carry.after_interest)} after ${cad(s.carry.interest_per_day, 2)} of margin interest` : ''}>{s.carry?.gap != null ? signed(s.carry.gap) : '—'}</td>
+                    <td>{cadenceLabel(s.cadence)}{!s.often && <span className="cc-faint"> · not often enough</span>}</td>
+                    <td className="num cc-wide-only">{pctS(s.day_pct)}</td>
+                    <td className="num cc-wide-only">{pctS(s.from_high_pct)}</td>
                   </>}
                   <td>{s.triggered && s.qualifies && <span className="badge warn" title={s.why.join('; ')}>DROPPED</span>}</td>
                   <td>{s.watched
