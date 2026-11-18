@@ -10,7 +10,7 @@ import { Router } from 'express';
 import { pool } from '../db.js';
 import { ah } from '../lib/asyncHandler.js';
 import { SYMBOL } from '../lib/options/market.js';
-import { evaluate } from '../lib/options/strategy.js';
+import { evaluate, marketCalendar } from '../lib/options/strategy.js';
 import { toISODate } from '../lib/dates.js';
 import { usdCad } from '../lib/options/fx.js';
 import { getRules, saveRules, scan, plan, strikes, alerts, positions, positionFields, lastSync, WIDE } from '../lib/options/desk.js';
@@ -25,6 +25,7 @@ const sym = (s) => {
 const fail = (res, e) => res.status(e.status || 502).json({ error: e.message });
 
 router.get('/fx', ah(async (req, res) => res.json(await usdCad())));
+router.get('/hours', (req, res) => res.json(marketCalendar()));
 router.get('/rules', ah(async (req, res) => res.json(await getRules())));
 router.put('/rules', ah(async (req, res) => res.json(await saveRules(req.body || {}))));
 router.get('/scan', ah(async (req, res) => { try { res.json(await scan()); } catch (e) { fail(res, e); } }));

@@ -5,6 +5,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { localToday } from '../format.js';
 import './coveredCalls.css';
+import MarketClock from './MarketClock.jsx';
 
 const send = (method, url, body) => fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })
   .then(async (r) => { const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`); return d; });
@@ -733,6 +734,7 @@ export default function CoveredCalls() {
             ? `Money in Canadian dollars at the Bank of Canada’s ${fx.rate.toFixed(4)} (${short(fx.date)}). Share prices, strikes and premiums a share in US$, as your broker shows them.`
             : 'Exchange rate unavailable: money shown in US$.'} Money Hub never places a trade.</div></div>
       </div>
+      <MarketClock />
       <Earnings positions={positions} cash={cash} ins={ins} />
       <Holdings positions={positions} cash={cash} ins={ins} onLoad={loadPosition} reload={() => { loadPositions(); loadCash(); }} reloadCash={loadCash} />
       {today.length > 0 && (

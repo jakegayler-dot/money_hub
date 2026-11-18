@@ -213,3 +213,48 @@ export async function insurance({ now = new Date(), list: given = null, fx: give
     } : null,
   };
 }
+
+/**
+ * What his holdings earned each of the last sessions (Jake, Nov 18, for Andrew's stock panel: "mix in my previous days
+ * earnings and show my current holdings"): for each completed US session, the shares' move (the shares he holds now, from
+ * the day each position was opened, times the close's change on Cboe's daily history) and the option premium in his Money
+ * Hub entries dated that day (calls in, puts out). US$, with the Bank of Canada rate for CAD.
+ */
+export async function sessionEarnings({ sessions = 5, now = new Date(), list: given = null, fx: givenFx, historyImpl = null } = {}) {
+  const { positions } = await import('./desk.js');
+  const { history } = await import('./market.js');
+  const { usdCad } = await import('./fx.js');
+  const { expiryClose, isTradingDay } = await import('./strategy.js');
+  const [list, fx] = await Promise.all([given || positions(now), givenFx === undefined ? usdCad().catch(() => null) : givenFx]);
+  const open = list.filter((p) => p.status === 'open' && Number(p.shares) > 0);
+  const cash = await optionCash({ symbols: open.map((p) => p.symbol) });
+  const toUsd = (n) => (cash.currency === 'CAD' && fx?.rate ? n / fx.rate : n);
+  const done = (d) => isTradingDay(d) && now >= expiryClose(d);
+  const moves = new Map(); // date -> symbol -> { close, change }
+  for (const p of open) {
+    let h = [];
+    try { h = await (historyImpl || history)(p.symbol, sessions + 8); } catch { h = []; }
+    h = h.filter((r) => r.date && Number.isFinite(r.close) && done(r.date));
+    for (let i = 1; i < h.length; i++) {
+      if (!moves.has(h[i].date)) moves.set(h[i].date, new Map());
+      moves.get(h[i].date).set(p.symbol, { close: h[i].close, change: h[i].close - h[i - 1].close });
+    }
+  }
+  const dates = [...moves.keys()].sort().slice(-sessions).reverse();
+  const rows = dates.map((date) => {
+    const by_stock = open.map((p) => {
+      const m = moves.get(date).get(p.symbol);
+      const held = !p.opened_on || p.opened_on <= date;
+      const opt = cash.entries.filter((e) => e.date === date && e.symbol === p.symbol);
+      const calls = toUsd(opt.filter((e) => e.kind === 'call').reduce((a, e) => a + e.amount, 0));
+      const puts = toUsd(opt.filter((e) => e.kind === 'put').reduce((a, e) => a + e.amount, 0));
+      const shares = m && held ? Number(p.shares) * m.change : 0;
+      return { symbol: p.symbol, shares: Number(p.shares), close: m ? r2(m.close) : null, change: m ? r2(m.change) : null, held,
+        shares_change: r2(shares), calls: r2(calls), puts: r2(puts), total: r2(shares + calls + puts) };
+    });
+    const sum = (k) => r2(by_stock.reduce((a, x) => a + x[k], 0));
+    return { id: date, date, shares_change: sum('shares_change'), calls: sum('calls'), puts: sum('puts'), options: r2(sum('calls') + sum('puts')), total: sum('total'),
+      by_stock, usd_cad: fx?.rate || null, note: 'US$; shares at what he holds now, from the day each position opened; options from his Money Hub entries dated that day' };
+  });
+  return rows;
+}

@@ -115,3 +115,31 @@
 .cc-nexttable .badge { margin-left: 8px; }
 .cc-table td.cc-diff { font-weight: 600; }
 .cc-meter-wrap .cc-pick-head { margin-bottom: 8px; }
+
+/* The US market's hours (Nov 18, MarketClock.jsx): status, the countdown, New York and his own time, the session bar. */
+.cc-clock { display: grid; grid-template-columns: 1fr auto; gap: 10px 20px; padding: 14px 16px; align-items: center; }
+.cc-clock-main { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; }
+.cc-clock-status { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; letter-spacing: 0.02em; padding: 5px 11px;
+  border-radius: 999px; border: 1px solid var(--border); background: var(--panel-alt); color: var(--text-muted); }
+.cc-clock-status i { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); }
+.cc-clock-status.open { color: var(--positive); border-color: rgba(62, 207, 142, 0.35); }
+.cc-clock-status.open i { background: var(--positive); box-shadow: 0 0 0 3px rgba(62, 207, 142, 0.18); animation: cc-pulse 2s ease-in-out infinite; }
+.cc-clock-status.pre, .cc-clock-status.after { color: var(--gold-bright, var(--gold)); border-color: rgba(201, 162, 39, 0.35); }
+.cc-clock-status.pre i, .cc-clock-status.after i { background: var(--gold); }
+@keyframes cc-pulse { 50% { box-shadow: 0 0 0 6px rgba(62, 207, 142, 0.05); } }
+@media (prefers-reduced-motion: reduce) { .cc-clock-status.open i { animation: none; } }
+.cc-clock-count { display: flex; flex-direction: column; gap: 2px; }
+.cc-clock-count b, .cc-clock-times b { font-family: var(--font-mono); font-size: 22px; font-weight: 500; color: var(--text); font-feature-settings: 'tnum'; line-height: 1.15; }
+.cc-clock-times { display: flex; gap: 22px; justify-content: flex-end; }
+.cc-clock-times > div { display: flex; flex-direction: column; gap: 2px; text-align: right; }
+.cc-clock-times b { font-size: 17px; }
+.cc-clock-bar { grid-column: 1 / -1; height: 6px; border-radius: 3px; background: var(--panel-alt); border: 1px solid var(--border); overflow: hidden; }
+.cc-clock-bar span { display: block; height: 100%; background: var(--positive); opacity: 0.7; }
+.cc-clock-hours { grid-column: 1 / -1; font-size: 12.5px; color: var(--text-muted); line-height: 1.5; }
+.cc-clock-ahead { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--text-muted); }
+.cc-clock-ahead b { color: var(--text); font-weight: 600; margin-right: 4px; }
+@media (max-width: 640px) {
+  .cc-clock { grid-template-columns: 1fr; }
+  .cc-clock-times { justify-content: flex-start; }
+  .cc-clock-times > div { text-align: left; }
+}

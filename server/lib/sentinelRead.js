@@ -1332,6 +1332,17 @@ def({
   },
 });
 
+def({
+  name: 'covered_call_earnings', mode: 'js', idType: 'text', summary: true,
+  description: "SUMMARY. What Jake's covered-call holdings earned in each of the last five completed US sessions, newest first (id = the session date): the shares' move (the shares he holds now, from the day each position was opened, times that day's change in the close), the call and put premium in his Money Hub entries dated that day, the total, by stock. US$; usd_cad is the Bank of Canada rate for CAD.",
+  fields: ['id', 'date', 'shares_change', 'calls', 'puts', 'options', 'total', 'by_stock', 'usd_cad', 'note'],
+  search: [], date: 'date', filters: [],
+  load: async () => {
+    const { sessionEarnings } = await import('./options/cash.js');
+    return sessionEarnings();
+  },
+});
+
 // ================= Engine =================
 
 const byName = new Map(collections.map((c) => [c.name, c]));

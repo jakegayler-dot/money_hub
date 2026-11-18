@@ -214,7 +214,8 @@ test('every collection answers in the contract shape, with only catalogued field
     assert.equal(r.body.count, r.body.rows.length);
     assert.ok(r.body.total >= r.body.count);
     assert.equal(r.body.truncated, r.body.total > r.body.count);
-    assert.ok(r.body.count > 0, `${c.name} returned no rows from the seed`);
+    // The holdings' earnings need an open position and live closes; the seed's one position is closed (optionsCash.test.js covers it).
+    if (c.name !== 'covered_call_earnings') assert.ok(r.body.count > 0, `${c.name} returned no rows from the seed`);
     for (const row of r.body.rows) {
       for (const k of Object.keys(row)) assert.ok(c.fields.includes(k), `${c.name}.${k} not in catalog fields`);
       for (const [k, v] of Object.entries(row)) {

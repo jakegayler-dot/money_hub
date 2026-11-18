@@ -21,10 +21,10 @@ function nyOffsetMinutes(date) {
   const m = /GMT([+-]\d+)(?::(\d+))?/.exec(part);
   return m ? Number(m[1]) * 60 + Math.sign(Number(m[1])) * Number(m[2] || 0) : -300;
 }
-/** When an option expiring on `expiry` stops trading: 4 p.m. in New York, as a Date. */
+/** When an option expiring on `expiry` stops trading: 4 p.m. in New York (1 p.m. on an early close), as a Date. */
 export function expiryClose(expiry) {
   const off = nyOffsetMinutes(new Date(`${expiry}T12:00:00Z`));
-  return new Date(Date.parse(`${expiry}T16:00:00Z`) - off * 60e3);
+  return new Date(Date.parse(`${expiry}T${EARLY_CLOSES[expiry] ? '13' : '16'}:00:00Z`) - off * 60e3);
 }
 /** Days from `now` to the close on `expiry` (fractional; negative once it has expired). */
 export const daysTo = (expiry, now = new Date()) => (expiryClose(expiry) - now) / 86400e3;
@@ -49,6 +49,30 @@ export const calendarDays = (expiry, now = new Date()) => {
 // for 2026 and 2027 (its December 2025 release); beyond that, weekdays.
 const HOLIDAYS = new Set(['2026-01-01', '2026-01-19', '2026-02-16', '2026-04-03', '2026-05-25', '2026-06-19', '2026-07-03', '2026-09-07', '2026-11-26', '2026-12-25',
   '2027-01-01', '2027-01-18', '2027-02-15', '2027-03-26', '2027-05-31', '2027-06-18', '2027-07-05', '2027-09-06', '2027-11-25', '2027-12-24']);
+// Early closes (1 p.m. New York) from the same NYSE calendar: the day after Thanksgiving and Christmas Eve 2026, the day
+// after Thanksgiving 2027 (Christmas Eve 2027 is the Christmas holiday itself).
+export const EARLY_CLOSES = { '2026-11-27': '13:00', '2026-12-24': '13:00', '2027-11-26': '13:00' };
+const HOLIDAY_NAMES = {
+  '2026-01-01': "New Year's Day", '2026-01-19': 'Martin Luther King Jr. Day', '2026-02-16': "Washington's Birthday", '2026-04-03': 'Good Friday',
+  '2026-05-25': 'Memorial Day', '2026-06-19': 'Juneteenth', '2026-07-03': 'Independence Day (observed)', '2026-09-07': 'Labor Day',
+  '2026-11-26': 'Thanksgiving', '2026-12-25': 'Christmas', '2027-01-01': "New Year's Day", '2027-01-18': 'Martin Luther King Jr. Day',
+  '2027-02-15': "Washington's Birthday", '2027-03-26': 'Good Friday', '2027-05-31': 'Memorial Day', '2027-06-18': 'Juneteenth (observed)',
+  '2027-07-05': 'Independence Day (observed)', '2027-09-06': 'Labor Day', '2027-11-25': 'Thanksgiving', '2027-12-24': 'Christmas (observed)',
+};
+/**
+ * The US market's calendar for a page's clock (Jake, Nov 18: "add trading hours ... with live time, and time till open time
+ * till close"): regular session 9:30 to 4 p.m. New York (options trade only then), pre-market from 4 a.m., after hours to
+ * 8 p.m.; full closures and early closes as published. The page works out open/closed and the countdowns itself.
+ */
+export function marketCalendar() {
+  return {
+    zone: 'America/New_York', regular: { open: '09:30', close: '16:00' }, pre: { open: '04:00' }, after: { close: '20:00' },
+    holidays: [...HOLIDAYS].sort().map((d) => ({ date: d, name: HOLIDAY_NAMES[d] || null })),
+    early_closes: Object.entries(EARLY_CLOSES).map(([date, close]) => ({ date, close })),
+    known_to: [...HOLIDAYS].sort().at(-1).slice(0, 4) + '-12-31',
+    source: "NYSE's published holiday and early-closing calendar (2026 and 2027)",
+  };
+}
 const nyDate = (now) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(now);
 const nextDate = (iso) => new Date(Date.parse(`${iso}T12:00:00Z`) + 86400e3).toISOString().slice(0, 10);
 export const isTradingDay = (iso) => { const d = new Date(`${iso}T12:00:00Z`).getUTCDay(); return d !== 0 && d !== 6 && !HOLIDAYS.has(iso); };
