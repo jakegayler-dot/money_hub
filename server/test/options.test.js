@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseOcc, chainFrom } from '../lib/options/market.js';
-import { evaluate, bsPrice, dropCheck, cleanRules, pick, expiryClose, incomeDays, soonExpiries, calendarDays, daysTo, expiryCadence, tradingDaysBetween, sessionDate, isTradingDay } from '../lib/options/strategy.js';
+import { evaluate, bsPrice, dropCheck, cleanRules, pick, expiryClose, incomeDays, soonExpiries, calendarDays, daysTo, expiryCadence, tradingDaysBetween, sessionDate, isTradingDay, playValue } from '../lib/options/strategy.js';
 import { positionFields } from '../lib/options/desk.js';
 
 const NOW = new Date('2026-11-17T15:30:00Z'); // a Tuesday, 10:30 in New York
@@ -140,8 +140,10 @@ test('on margin (Nov 17: "required capital at 30% margin, factor in interest cos
   const r = evaluate({ price: 150, shares: 100, cost: 150, legs }, { now: NOW, margin: { pct: 30, rate: 5.85 } });
   assert.equal(r.capital_needed, 4500 + 100); // 30% of the shares, the put in full
   assert.equal(r.borrowed, 10500);
-  near(r.interest_per_day, (10500 * 0.0585) / 365);
-  near(r.interest_to_horizon, r.interest_per_day * 2, 0.02); // two days to Wednesday's close
+  // Interest a trading day is the year's over 252 trading days, the same every day (Nov 18); it runs on calendar days to the expiry.
+  near(r.interest_per_day, (10500 * 0.0585) / 252);
+  near(r.interest_per_calendar_day, (10500 * 0.0585) / 365);
+  near(r.interest_to_horizon, r.interest_per_calendar_day * 2, 0.02); // two days to Wednesday's close
   near(r.max_gain, cash.max_gain - r.interest_to_horizon, 0.02);
   near(r.max_loss, cash.max_loss - r.interest_to_horizon, 0.02);
   near(r.net_after_interest_per_day, r.net_per_day - r.interest_per_day, 0.02);
@@ -156,7 +158,10 @@ test('the gap: the call a day less the put a day, and sizing on margin', () => {
   assert.equal(p.carry.call_per_day, 75); // $150 over two days
   near(p.carry.put_per_day, 400 / 23); // 23 trading days to Dec 18
   near(p.carry.gap, 75 - 400 / 23);
-  near(p.carry.after_interest, p.carry.gap - (15000 * 0.7 * 0.0585) / 365, 0.02);
+  near(p.carry.after_interest, p.carry.gap - (15000 * 0.7 * 0.0585) / 252, 0.02);
+  // What a lot is worth for what it ties up and risks (Nov 18).
+  near(p.carry.on_capital_pct_year, (p.carry.after_interest / p.lot.capital_needed) * 252 * 100, 0.05);
+  assert.equal(p.carry.days_to_earn_max_loss, Math.ceil(Math.abs(p.lot.max_loss) / p.carry.after_interest));
   assert.equal(p.lot.capital_needed, 4500 + 400);
   assert.equal(p.sizing.lots, Math.floor(50000 / 4900)); // 10 lots of US$4,900 at 30% margin
   assert.match(p.sizing.limits[0], /30% of the shares on margin, the put in full/);
@@ -276,4 +281,24 @@ test('a position needs a symbol, shares and a cost; legs are cleaned', () => {
   assert.equal(f.symbol, 'NVDA');
   assert.deepEqual(f.legs, [{ type: 'call', side: 'short', strike: 160, expiry: '2026-11-18', premium: 1.5, contracts: 1 }]);
   assert.equal(f.status, 'open');
+});
+
+test('option revenue a trading day (Nov 18): each open option over the days from when it was opened to its expiry, interest off, then against capital and max loss', () => {
+  const legs = [
+    { type: 'call', side: 'short', strike: 160, expiry: '2026-11-20', premium: 2, contracts: 1, since: '2026-11-16' },  // 5 sessions Mon-Fri
+    { type: 'put', side: 'long', strike: 135, expiry: '2026-12-18', premium: 4.6, contracts: 1, since: '2026-11-16' },   // Nov 16 to Dec 18
+    { type: 'call', side: 'short', strike: 155, expiry: '2026-11-13', premium: 3, contracts: 1, since: '2026-11-09' },   // expired: not counted
+  ];
+  const r = evaluate({ price: 150, shares: 100, cost: 150, legs }, { now: NOW, margin: { pct: 30, rate: 5.85 } });
+  const callDays = tradingDaysBetween('2026-11-16', '2026-11-20'); const putDays = tradingDaysBetween('2026-11-16', '2026-12-18');
+  assert.equal(callDays, 5);
+  near(r.income_per_day, 200 / callDays, 0.01);
+  near(r.protection_per_day, 460 / putDays, 0.01);
+  near(r.revenue_per_day, 200 / callDays - 460 / putDays - (10500 * 0.0585) / 252, 0.02);
+  assert.equal(r.revenue_per_day, r.net_after_interest_per_day);
+  assert.deepEqual(r.legs_counted.map((l) => [l.type, l.opened, l.days]), [['call', '2026-11-16', 5], ['put', '2026-11-16', putDays]]);
+  near(r.on_capital_pct_year, (r.revenue_per_day / r.capital_needed) * 252 * 100, 0.05);
+  assert.equal(r.days_to_earn_max_loss, Math.ceil(Math.abs(r.max_loss) / r.revenue_per_day));
+  assert.deepEqual(playValue(10, 1000, -500), { revenue_per_day: 10, on_capital_pct_day: 1, on_capital_pct_year: 252, vs_max_loss_pct_day: 2, days_to_earn_max_loss: 50 });
+  assert.equal(playValue(-5, 1000, -500).days_to_earn_max_loss, null);
 });

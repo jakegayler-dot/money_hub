@@ -136,6 +136,19 @@ const legSign = (l) => (l.side === 'long' ? 1 : -1);
 // shares and borrows the rest at rate% a year; options are paid in full. The interest to the nearest expiry is in every
 // profit-or-loss figure; pct 100 is a cash account.
 export const marginOf = (r = {}) => ({ pct: num(r.margin_pct, 25, 100, 100), rate: num(r.margin_rate, 0, 30, 0) });
+export const TRADING_DAYS_A_YEAR = 252;
+/** Option revenue a trading day against the capital it ties up and the most it can lose (pure). */
+export function playValue(revenuePerDay, capital, maxLoss) {
+  const rev = Number(revenuePerDay); const cap = Number(capital); const loss = maxLoss == null ? null : Math.abs(Math.min(0, Number(maxLoss)));
+  return {
+    revenue_per_day: r2(rev),
+    on_capital_pct_day: cap > 0 ? Math.round((rev / cap) * 1e6) / 1e4 : null,
+    on_capital_pct_year: cap > 0 ? r2((rev / cap) * TRADING_DAYS_A_YEAR * 100) : null,
+    vs_max_loss_pct_day: loss ? Math.round((rev / loss) * 1e6) / 1e4 : null,
+    days_to_earn_max_loss: loss && rev > 0 ? Math.ceil(loss / rev) : null,
+  };
+}
+
 export function evaluate(position, { now = new Date(), testPcts = [], margin = null } = {}) {
   const price = Number(position.price);
   const shares = Math.max(0, Math.round(Number(position.shares) || 0));
@@ -143,7 +156,8 @@ export function evaluate(position, { now = new Date(), testPcts = [], margin = n
   const m = marginOf(margin ? { margin_pct: margin.pct, margin_rate: margin.rate } : {});
   const borrowed = cost * shares * (1 - m.pct / 100);
   const interestPerDay = (borrowed * m.rate) / 100 / 365;
-  const legs = (position.legs || []).filter((l) => l && Number(l.strike) > 0 && Number(l.contracts) > 0).map((l) => ({
+  // Only options still open count (Nov 18): one that expired is gone from the payoff and the income alike.
+  const legs = (position.legs || []).filter((l) => l && Number(l.strike) > 0 && Number(l.contracts) > 0 && !(daysTo(l.expiry, now) <= 0)).map((l) => ({
     ...l, strike: Number(l.strike), premium: Number(l.premium) || 0, contracts: Math.round(Number(l.contracts)), iv: Number(l.iv) || null,
   }));
   const horizon = legs.length ? legs.map((l) => l.expiry).sort()[0] : null;
@@ -153,8 +167,10 @@ export function evaluate(position, { now = new Date(), testPcts = [], margin = n
     return bsPrice(l.type, S, l.strike, T, l.iv || 0.5);
   };
   const interestToHorizon = horizon ? interestPerDay * calendarSpan(horizon, now) : 0;
-  // A trading day's share of the interest (it runs through weekends too), to set beside the calls and puts a trading day.
-  const interestPerSession = horizon ? interestToHorizon / incomeDays(horizon, now) : (interestPerDay * 7) / 5;
+  // A trading day's share of the interest (Nov 18: "then interest comes off after that"): the year's interest over the year's
+  // 252 trading days, the same every day (it had been the interest to the nearest expiry over its sessions, so a Friday took
+  // a weekend's worth).
+  const interestPerSession = interestPerDay * 365 / TRADING_DAYS_A_YEAR;
   const pnl = (S) => (S - cost) * shares - interestToHorizon + legs.reduce((a, l) => a + legSign(l) * (valueAt(l, S) - l.premium) * l.contracts * 100, 0);
 
   const top = Math.max(price, cost, ...legs.map((l) => l.strike)) * 3;
@@ -175,8 +191,12 @@ export function evaluate(position, { now = new Date(), testPcts = [], margin = n
   const rising = vals[vals.length - 1][1] - vals[vals.length - 2][1] > 1e-6;
   const credit = legs.reduce((a, l) => a - legSign(l) * l.premium * l.contracts * 100, 0);
   const premiumIn = legs.filter((l) => l.side === 'short').reduce((a, l) => a + l.premium * l.contracts * 100, 0);
-  const perDay = legs.filter((l) => l.side === 'short').reduce((a, l) => a + (l.premium * l.contracts * 100) / legDays(l, now), 0);
-  const costPerDay = legs.filter((l) => l.side === 'long').reduce((a, l) => a + (l.premium * l.contracts * 100) / legDays(l, now), 0);
+  // Option revenue a trading day (Nov 18: "look at call premium currently on the trades, the date they expire and the date they
+  // were made, that is the call premium/day, then the same for the put options to determine the put cost, and then interest
+  // comes off"): each option still open, its premium over the trading days from when it was opened to its expiry.
+  const live = legs;
+  const perDay = live.filter((l) => l.side === 'short').reduce((a, l) => a + (l.premium * l.contracts * 100) / legDays(l, now), 0);
+  const costPerDay = live.filter((l) => l.side === 'long').reduce((a, l) => a + (l.premium * l.contracts * 100) / legDays(l, now), 0);
   const stockIn = cost * shares;
   const paidOut = legs.filter((l) => l.side === 'long').reduce((a, l) => a + l.premium * l.contracts * 100, 0);
   const call = legs.find((l) => l.type === 'call' && l.side === 'short');
@@ -200,6 +220,11 @@ export function evaluate(position, { now = new Date(), testPcts = [], margin = n
     margin_pct: m.pct, margin_rate: m.rate, capital_needed: r2(stockIn * m.pct / 100 + paidOut), borrowed: r2(borrowed),
     interest_per_day: r2(interestPerSession), interest_per_calendar_day: r2(interestPerDay), interest_to_horizon: r2(interestToHorizon),
     net_after_interest_per_day: r2(perDay - costPerDay - interestPerSession),
+    // What the play is worth for what it ties up and what it risks (Nov 18: "the option play value should also consider the
+    // return vs capital requirement, and return vs max loss").
+    ...playValue(perDay - costPerDay - interestPerSession, stockIn * m.pct / 100 + paidOut, uncovered ? null : worst[1]),
+    legs_counted: live.map((l) => ({ type: l.type, side: l.side, strike: l.strike, expiry: l.expiry, contracts: l.contracts, premium: l.premium,
+      opened: /^\d{4}-\d{2}-\d{2}$/.test(String(l.since || '')) ? l.since : null, days: legDays(l, now), per_day: r2((l.premium * l.contracts * 100) / legDays(l, now)) })),
     max_gain: uncovered || rising ? null : r2(best[1]), max_gain_at: uncovered || rising ? null : r2(best[0]),
     max_loss: uncovered ? null : r2(worst[1]), max_loss_at: uncovered ? null : r2(worst[0]),
     unlimited_gain: !uncovered && rising, uncovered,
@@ -354,6 +379,8 @@ export function pick(ch, rulesIn, { now = new Date(), fx = null } = {}) {
     call_per_day: r2(callAvg), calls: callRows.length, put_per_day: putAvg == null ? null : r2(putAvg), puts: putRows.length,
     interest_per_day: lot.interest_per_day,
     gap: putAvg == null ? null : r2(callAvg - putAvg), after_interest: putAvg == null ? null : r2(callAvg - putAvg - lot.interest_per_day),
+    capital_per_lot: lot.capital_needed, max_loss_per_lot: lot.max_loss,
+    ...(putAvg == null ? {} : (({ on_capital_pct_year, days_to_earn_max_loss }) => ({ on_capital_pct_year, days_to_earn_max_loss }))(playValue(callAvg - putAvg - lot.interest_per_day, lot.capital_needed, lot.max_loss))),
     // The contracts behind the averages (Nov 18: "doesn't seem to have any data on option prices"): the call that pays the
     // most a trading day and the cheapest put a trading day, with their prices and deltas, so the list shows what it priced.
     call: call && { strike: call.strike, expiry: call.expiry, bid: call.bid, ask: call.ask, delta: call.delta == null ? null : r2(call.delta), per_day: call.per_day, days: call.days },

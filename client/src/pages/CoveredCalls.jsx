@@ -134,7 +134,9 @@ function Watchlist({ scan, err, selected, onPick, rules, saveRules }) {
                       {s.carry ? cad(s.carry.call_per_day) : '—'}<OptLine o={s.carry?.call} kind="call" /></td>
                     <td className="num" title={s.carry?.puts ? `average of ${s.carry.puts} expir${s.carry.puts === 1 ? 'y' : 'ies'}, a trading day` : ''}>
                       {s.carry?.put_per_day != null ? cad(s.carry.put_per_day) : '—'}<OptLine o={s.carry?.put} kind="put" /></td>
-                    <td className={`num cc-diff ${s.carry?.gap != null ? sign(s.carry.gap) : ''}`} title={s.carry?.after_interest != null ? `${cad(s.carry.after_interest)} after ${cad(s.carry.interest_per_day, 2)} of margin interest` : ''}>{s.carry?.gap != null ? signed(s.carry.gap) : '—'}</td>
+                    <td className={`num cc-diff ${s.carry?.gap != null ? sign(s.carry.gap) : ''}`} title={s.carry?.after_interest != null ? `${cad(s.carry.after_interest)} after ${cad(s.carry.interest_per_day, 2)} of margin interest` : ''}>{s.carry?.gap != null ? signed(s.carry.gap) : '—'}
+                      {s.carry?.on_capital_pct_year != null && <span className="cc-opt"><span>{s.carry.on_capital_pct_year.toFixed(0)}% a year on capital</span>
+                        <span>{s.carry.days_to_earn_max_loss != null ? `max loss back in ${s.carry.days_to_earn_max_loss} days` : 'not earning after interest'}</span></span>}</td>
                     <td>{cadenceLabel(s.cadence)}{!s.often && <span className="cc-faint"> · not often enough</span>}</td>
                     <td className="num cc-wide-only">{pctS(s.day_pct)}</td>
                     <td className="num cc-wide-only">{pctS(s.from_high_pct)}</td>
@@ -205,7 +207,12 @@ function LegRow({ leg, symbol, expiries, onChange, onRemove }) {
 const nyToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
 const fromPosition = (p) => ({
   shares: p.shares, cost: p.cost,
-  legs: (p.legs || []).filter((l) => l.expiry >= nyToday()).map((l) => ({ ...l, premium: Number(l.premium), contracts: Number(l.contracts) || 1 })),
+  // Each leg keeps the day it was opened (or the position's, as the desk takes it), so the calculator's figures a trading day are
+  // the position's own (Nov 18).
+  legs: (p.legs || []).filter((l) => l.expiry >= nyToday()).map((l) => {
+    const seen = (p.open_legs || []).find((o) => o.type === l.type && o.side === l.side && Number(o.strike) === Number(l.strike) && o.expiry === l.expiry);
+    return { ...l, premium: Number(l.premium), contracts: Number(l.contracts) || 1, ...(!l.since && seen?.since ? { since: seen.since } : {}) };
+  }),
 });
 function Desk({ symbol, rules, onSaved, loaded, onClose }) {
   const [from, setFrom] = useState(null); // the position in the calculator, or null for the rules' pick
@@ -321,9 +328,13 @@ function Desk({ symbol, rules, onSaved, loaded, onClose }) {
           <>
             {figs.uncovered && <p className="review-error">More calls sold than shares cover: the loss has no limit if the stock runs.</p>}
             <div className="cc-figs">
-              <div><span className="cc-k">Premium in</span><b>{cad(figs.premium_in)}</b><span className="cc-faint">{cad(figs.income_per_day)} a trading day</span></div>
-              <div><span className="cc-k">Net a trading day</span><b className={figs.net_after_interest_per_day < 0 ? 'cc-neg' : ''}>{cad(figs.net_after_interest_per_day)}</b>
-                <span className="cc-faint">after {[figs.protection_per_day ? `${cad(figs.protection_per_day)} of puts` : null, figs.interest_per_day ? `${cad(figs.interest_per_day, 2)} of margin interest` : null].filter(Boolean).join(' and ') || 'nothing'} a trading day</span></div>
+              <div><span className="cc-k">Option revenue a trading day</span><b className={figs.revenue_per_day < 0 ? 'cc-neg' : ''}>{cad(figs.revenue_per_day)}</b>
+                <span className="cc-faint">calls {cad(figs.income_per_day)}{figs.protection_per_day ? ` − puts ${cad(figs.protection_per_day)}` : ''}{figs.interest_per_day ? ` − interest ${cad(figs.interest_per_day, 2)}` : ''}</span></div>
+              <div><span className="cc-k">On the capital</span><b className={figs.on_capital_pct_year < 0 ? 'cc-neg' : ''}>{figs.on_capital_pct_year == null ? '—' : `${figs.on_capital_pct_year.toFixed(1)}% a year`}</b>
+                <span className="cc-faint">{figs.on_capital_pct_day == null ? '' : `${figs.on_capital_pct_day.toFixed(3)}% a trading day of ${cad(figs.capital_needed)} tied up`}</span></div>
+              <div><span className="cc-k">Against the max loss</span><b>{figs.days_to_earn_max_loss == null ? '—' : `${figs.days_to_earn_max_loss} trading days`}</b>
+                <span className="cc-faint">{figs.days_to_earn_max_loss == null ? (figs.max_loss == null ? 'no limit on the loss' : 'it isn’t earning') : `of revenue to earn back a max loss of ${cad(Math.abs(figs.max_loss))} (${figs.vs_max_loss_pct_day.toFixed(2)}% of it a day)`}</span></div>
+              <div><span className="cc-k">Premium in</span><b>{cad(figs.premium_in)}</b><span className="cc-faint">the calls, in full</span></div>
               {figs.unlimited_gain && figs.gain_at_call != null
                 ? <div><span className="cc-k">Gain at the call</span><b>{cad(figs.gain_at_call)}</b>
                     <span className="cc-faint">at {usd(figs.call_strike, 2)}; then {cad(figs.shares_not_called, 2)} for each US$1 higher on the {figs.shares_not_called} share{figs.shares_not_called === 1 ? '' : 's'} the call doesn’t cover</span></div>
@@ -614,14 +625,18 @@ function Holding({ symbol, p, c, entries, money, toUsd, onLoad, reload, reloadCa
             </>
           : <Tile k="Options cash" v={signed(optNet)} cls={sign(optNet)} sub="from your positions record" />}
         {p && <Tile k="All in" v={signed((p.stock_pnl || 0) + optNet)} cls={sign((p.stock_pnl || 0) + optNet)} sub="shares and options" />}
-        {netDay != null && <Tile k="Coming in now" v={`${cad(netDay)} a trading day`} cls={sign(netDay)} sub={p.figures.interest_per_day ? `after ${cad(p.figures.interest_per_day, 2)} margin interest` : 'calls less puts'} />}
+        {netDay != null && <Tile k="Option revenue" v={`${cad(netDay)} a trading day`} cls={sign(netDay)}
+          sub={`calls ${cad(p.figures.income_per_day)}${p.figures.protection_per_day ? ` − puts ${cad(p.figures.protection_per_day)}` : ''}${p.figures.interest_per_day ? ` − interest ${cad(p.figures.interest_per_day, 2)}` : ''}`} />}
+        {p?.figures?.on_capital_pct_year != null && <Tile k="On the capital" v={`${p.figures.on_capital_pct_year.toFixed(1)}% a year`} cls={sign(p.figures.on_capital_pct_year)} sub={`${cad(p.figures.capital_needed)} tied up`} />}
+        {p?.figures && (p.figures.days_to_earn_max_loss != null || p.figures.max_loss != null) && <Tile k="Against the max loss" v={p.figures.days_to_earn_max_loss == null ? '—' : `${p.figures.days_to_earn_max_loss} trading days`}
+          sub={p.figures.max_loss == null ? 'no limit on the loss' : `to earn back ${cad(Math.abs(p.figures.max_loss))}`} />}
       </div>
       {p && (
         <div className="cc-open">
           <span className="cc-k">Open now</span>
           {legs.length ? legs.map((l, i) => (
             <span key={i} className={`cc-chip ${l.side === 'short' ? 'sold' : 'own'}`}>
-              <b>{l.side === 'short' ? 'Sold' : 'Own'} {l.contracts} × {l.strike} {l.type}</b> {short(l.expiry)} · {l.side === 'short' ? 'for' : 'paid'} {Number(l.premium).toFixed(2)} · {l.side === 'short' ? '+' : '−'}{cad(l.per_day)} a trading day over {l.days}
+              <b>{l.side === 'short' ? 'Sold' : 'Own'} {l.contracts} × {l.strike} {l.type}</b> {l.since ? `${day(l.since)}${l.since_from_position ? ' (the position’s date)' : ''} → ` : ''}{short(l.expiry)} · {l.side === 'short' ? 'for' : 'paid'} {Number(l.premium).toFixed(2)} · {l.side === 'short' ? '+' : '−'}{cad(l.per_day)} a trading day over {l.days}
             </span>
           )) : <span className="cc-faint">no options on it: nothing coming in</span>}
         </div>

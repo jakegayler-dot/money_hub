@@ -202,18 +202,24 @@ export async function positions(now = new Date()) {
   return rows.map((r) => {
     const cost = Number(r.cost); const shares = Number(r.shares);
     const price = r.status === 'closed' ? Number(r.closed_price) || null : prices.get(r.symbol) ?? null;
-    const legs = (r.legs || []).filter((l) => r.status === 'closed' || daysTo(l.expiry, now) > -1);
+    // An option without the day it was opened is taken from the day the position was (Nov 18): spread over the days left, a
+    // premium grew to the whole of it on its last day.
+    const opened = toISODate(r.opened_on);
+    const legs = (r.legs || []).filter((l) => r.status === 'closed' || daysTo(l.expiry, now) > -1)
+      .map((l) => (l.since || !opened || opened > l.expiry || opened > new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(now) ? l : { ...l, since: opened }));
     const figures = price ? evaluate({ price, shares, cost, legs }, { now, margin: r.status === 'closed' ? null : margin }) : null;
     const stockPnl = price ? r2((price - cost) * shares) : null;
     return {
       id: r.id, symbol: r.symbol, shares, cost, status: r.status, source: r.source || 'manual', synced_at: r.synced_at || null, opened_on: toISODate(r.opened_on), closed_on: toISODate(r.closed_on), notes: r.notes,
       legs: r.legs || [], premium_collected: Number(r.premium_collected), price: price == null ? null : r2(price),
-      open_legs: r.status === 'closed' ? [] : legs.filter((l) => daysTo(l.expiry, now) > 0).map((l) => ({ ...l, days: legDays(l, now), per_day: r2((Number(l.premium) * Number(l.contracts) * 100) / legDays(l, now)) })),
+      open_legs: r.status === 'closed' ? [] : legs.filter((l) => daysTo(l.expiry, now) > 0).map((l) => ({ ...l, days: legDays(l, now), per_day: r2((Number(l.premium) * Number(l.contracts) * 100) / legDays(l, now)), ...(l.since && !(r.legs || []).find((o) => o.strike === l.strike && o.expiry === l.expiry && o.type === l.type)?.since ? { since_from_position: true } : {}) })),
       stock_pnl: stockPnl, total_pnl: stockPnl == null ? null : r2(stockPnl + Number(r.premium_collected)),
       days_held: Math.max(1, Math.round((now - new Date(`${toISODate(r.opened_on)}T12:00:00Z`)) / 86400e3)),
       figures: figures && { max_gain: figures.max_gain, max_loss: figures.max_loss, breakevens: figures.breakevens, horizon: figures.horizon, income_per_day: figures.income_per_day,
         protection_per_day: figures.protection_per_day, net_per_day: figures.net_per_day,
-        interest_per_day: figures.interest_per_day, net_after_interest_per_day: figures.net_after_interest_per_day, capital_needed: figures.capital_needed },
+        interest_per_day: figures.interest_per_day, net_after_interest_per_day: figures.net_after_interest_per_day, capital_needed: figures.capital_needed,
+        revenue_per_day: figures.revenue_per_day, on_capital_pct_day: figures.on_capital_pct_day, on_capital_pct_year: figures.on_capital_pct_year,
+        vs_max_loss_pct_day: figures.vs_max_loss_pct_day, days_to_earn_max_loss: figures.days_to_earn_max_loss },
     };
   });
 }
