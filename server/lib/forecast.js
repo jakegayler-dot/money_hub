@@ -40,7 +40,20 @@ import { billDates } from './billDates.js';
 import { householdSpentThisMonth } from './personal.js';
 import { contractParts } from './contracts.js';
 import { paystubForecastFlows } from './paystubs.js';
-import { ccbFlows } from './ccb.js';
+import { ccbFlows, benefitYearOf } from './ccb.js';
+
+// What CRA has paid a month this benefit year (from July): the median of the Canada Child Benefit deposits since then, so a
+// one-off back payment doesn't set it (Feb 2026 had one of $2,872.24). Null before the first deposit.
+export async function ccbPaidMonthly(today = todayISO()) {
+  const start = `${benefitYearOf(today.slice(0, 7))}-07-01`;
+  const { rows } = await pool.query(
+    `SELECT amount FROM transactions WHERE amount > 0 AND date >= $1 AND date <= $2 AND description ~* '(canada child benefit|\\mccb\\M|child tax benefit)'
+       AND COALESCE(is_transfer, false) = false ORDER BY amount`, [start, today]);
+  if (!rows.length) return null;
+  const a = rows.map((r) => Number(r.amount));
+  const mid = Math.floor(a.length / 2);
+  return Math.round((a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2) * 100) / 100;
+}
 
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const pad = (n) => String(n).padStart(2, '0');
@@ -364,10 +377,11 @@ export async function loadForecast({ months = 12, today = todayISO() } = {}) {
       const inc = new Map();
       for (const y of [thisYear - 1, thisYear]) inc.set(y, await familyNetIncome(y).catch(() => null));
       const incomeOf = (y) => (y >= thisYear ? inc.get(thisYear) : inc.get(y) ?? null);
-      for (const f of ccbFlows({ today, endStr, birthYears: profile.kids_birth_years, actualMonthly: profile.ccb_monthly, incomeOf })) {
+      const paidMonthly = await ccbPaidMonthly(today).catch(() => null);
+      for (const f of ccbFlows({ today, endStr, birthYears: profile.kids_birth_years, actualMonthly: profile.ccb_monthly, paidMonthly, incomeOf })) {
         add({
           key: `ccb:${f.date}`, kind: 'estimate_in', label: 'Canada Child Benefit', date: f.date, amount: f.amount, farm: 0,
-          owners: own({ segment: 'ashley' }), taxable: 0, estimate: f.basis !== 'actual', ref: { program: 'ccb', benefit_year: f.benefit_year, basis: f.basis },
+          owners: own({ segment: 'ashley' }), taxable: 0, estimate: f.basis !== 'actual' && f.basis !== 'paid', ref: { program: 'ccb', benefit_year: f.benefit_year, basis: f.basis },
         });
       }
     }

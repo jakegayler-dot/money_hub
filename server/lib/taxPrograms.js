@@ -211,6 +211,8 @@ export async function taxPrograms(year = Number(todayISO().slice(0, 4))) {
   const by = year; // the benefit year that starts this July, from this year's income, is next year's (by + 1)
   const nextCcb = kids.length && f.familyNet != null ? ccbYear(by + 1, f.profile.kids_birth_years, f.familyNet) : null;
   const nowMonthly = Number(f.profile.ccb_monthly) > 0 ? Number(f.profile.ccb_monthly) : null;
+  // Without his figure, what CRA has deposited since July (Nov 19), as Cash Flow counts it.
+  const paid = nowMonthly ? null : await import('./forecast.js').then((m) => m.ccbPaidMonthly()).catch(() => null);
   add({
     id: 'ccb', who: 'household', level: 'Federal', kind: 'Tax-free benefit',
     name: 'Canada Child Benefit',
@@ -218,7 +220,7 @@ export async function taxPrograms(year = Number(todayISO().slice(0, 4))) {
     status: kids.length ? 'auto' : 'check',
     value: nextCcb ? nextCcb.annual : null,
     value_note: !kids.length ? 'Add the children\'s birth years below.'
-      : [nowMonthly ? `Now ${money(nowMonthly)} a month to June ${by + 1} (your figure).` : `Enter this year's monthly payment below for Cash Flow.`,
+      : [nowMonthly ? `Now ${money(nowMonthly)} a month to June ${by + 1} (your figure).` : paid ? `Now ${money(paid)} a month to June ${by + 1}, as CRA has paid since July (enter the CRA notice's figure below to override).` : `Enter this year's monthly payment below for Cash Flow.`,
         nextCcb ? `July ${by + 1} on: about ${money(nextCcb.monthly)} a month (${money(nextCcb.annual)} a year) on ${money(f.familyNet)} of ${year} family net income — counted in Cash Flow.` : null].filter(Boolean).join(' '),
     claim: 'Both of you file every year, on time — the payments stop if either return is late.',
     sources: ['https://www.canada.ca/en/revenue-agency/services/child-family-benefits/canada-child-benefit-overview.html'],

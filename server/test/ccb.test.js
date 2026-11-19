@@ -32,3 +32,16 @@ test('flows: this benefit year at the actual, from July at the estimate from thi
   assert.equal(none[0].date, '2026-12-20', 'November’s is past');
   assert.equal(none[0].amount, ccbYear(2026, [2021], 60000).monthly, 'no actual: last year’s income');
 });
+
+test('no figure from Jake: this benefit year at what CRA paid, and no later year above it (Nov 19)', () => {
+  // The formula on a low 2025 income said $1,359.50 a month; Ashley's deposits since July are $641.93.
+  const f = ccbFlows({ today: '2026-11-19', endStr: '2027-09-01', birthYears: [2021, 2023], actualMonthly: null, paidMonthly: 641.93,
+    incomeOf: () => 20000 });
+  assert.ok(f.filter((x) => x.date < '2027-07').every((x) => x.amount === 641.93 && x.basis === 'paid'));
+  const july = f.find((x) => x.date === '2027-07-20');
+  assert.ok(ccbYear(2027, [2021, 2023], 20000).monthly > 641.93, 'the formula alone would be higher');
+  assert.equal(july.amount, 641.93);
+  assert.match(july.basis, /held to the \$641\.93 a month CRA pays now/);
+  // Jake's own figure still wins over the deposits.
+  assert.equal(ccbFlows({ today: '2026-11-19', endStr: '2027-01-01', birthYears: [2021, 2023], actualMonthly: 700, paidMonthly: 641.93, incomeOf: () => 20000 })[0].amount, 700);
+});

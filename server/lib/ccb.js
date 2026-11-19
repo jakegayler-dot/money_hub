@@ -8,6 +8,9 @@
 //   (the Tax tab's farm net income plus Ashley's pay less her pension). Each child's age goes by birth year: the
 //   under-6 rate runs to the June after the year they turn 6, and payments stop the June after the year they turn 18
 //   (birth months aren't kept, so it changes with the benefit year).
+//   Without Jake's figure, this benefit year is what CRA has deposited since July (Nov 19, Jake: "why the fuck is the cash flow
+//   showing CCB estimated income at over $1000/month?": the formula on Money Hub's 2025 income said $1,359.50, Ashley gets $641.93),
+//   and no later year is put above what CRA pays now.
 //   Counted in Ashley's name (CRA pays the parent who's the primary caregiver).
 import { toISODate } from './dates.js';
 
@@ -41,7 +44,7 @@ export function ccbYear(startYear, birthYears, afni) {
 }
 
 /** The monthly payments from today to endStr. incomeOf(year) → family net income for that calendar year (or null). */
-export function ccbFlows({ today, endStr, birthYears, actualMonthly, incomeOf }) {
+export function ccbFlows({ today, endStr, birthYears, actualMonthly, paidMonthly, incomeOf }) {
   if (!birthYears?.length) return [];
   const out = [];
   const nowYear = benefitYearOf(today.slice(0, 7));
@@ -52,10 +55,16 @@ export function ccbFlows({ today, endStr, birthYears, actualMonthly, incomeOf })
     if (date >= today) {
       const by = benefitYearOf(date.slice(0, 7));
       let monthly; let basis;
+      const known = Number(actualMonthly) > 0 ? Number(actualMonthly) : Number(paidMonthly) > 0 ? Number(paidMonthly) : null;
       if (by === nowYear && Number(actualMonthly) > 0) { monthly = Number(actualMonthly); basis = 'actual'; }
+      else if (by === nowYear && Number(paidMonthly) > 0) { monthly = Number(paidMonthly); basis = 'paid'; }
       else {
         const inc = incomeOf(by - 1);
-        if (inc != null) { monthly = ccbYear(by, birthYears, inc).monthly; basis = `estimate from ${by - 1} family net income`; }
+        if (inc != null) {
+          monthly = ccbYear(by, birthYears, inc).monthly; basis = `estimate from ${by - 1} family net income`;
+          // Never above what CRA pays now (Nov 19: the formula said $1,359.50 a month on Money Hub's 2025 income; CRA pays $641.93).
+          if (known != null && monthly > known) { monthly = known; basis = `${basis}, held to the $${known} a month CRA pays now`; }
+        }
       }
       if (monthly > 0) out.push({ date: toISODate(date), amount: r2(monthly), benefit_year: by, basis });
     }
