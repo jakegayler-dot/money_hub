@@ -419,5 +419,35 @@ export function pick(ch, rulesIn, { now = new Date(), fx = null, putStrike = nul
     call: call && { strike: call.strike, expiry: call.expiry, bid: call.bid, ask: call.ask, delta: call.delta == null ? null : r2(call.delta), per_day: call.per_day, days: call.days },
     put: putChoices[0] ? { strike: putChoices[0].strike, expiry: putChoices[0].expiry, bid: putChoices[0].bid, ask: putChoices[0].ask, delta: putChoices[0].delta == null ? null : r2(putChoices[0].delta), cost_per_day: putChoices[0].cost_per_day, days: putChoices[0].days } : null,
   } : null;
-  return { rules, price, call, put, call_choices: callChoices, put_choices: putChoices, lot, sizing, reasons, carry, usd_cad: rate, call_floor: floor };
+  // The day's position (Nov 19, Jake: "5 recommended positions for the day based on call option value today/tomorrow vs put
+  // option cost long term"): 100 shares bought now, the call expiring today or the next trading day by his rule (the first
+  // strike at least call_otm above the price, at the bid) that pays the most a trading day, and the cheapest long-horizon put a
+  // trading day by his rule (putChoices[0], at the ask). Valued as one lot on his margin, sized by his limits.
+  const nearExp = [...new Set(open.filter((c) => c.type === 'call').map((c) => c.expiry))].filter((e) => incomeDays(e, now) <= 2).sort();
+  const dayCalls = nearExp.map((e) => {
+    const c = open.filter((x) => x.type === 'call' && x.expiry === e && x.strike >= price + rules.call_otm - 1e-9 && x.bid >= 0.01).sort((x, y) => x.strike - y.strike)[0];
+    return c ? { ...c, days: incomeDays(e, now), per_day: r2((c.bid * 100) / incomeDays(e, now)) } : null;
+  }).filter(Boolean).sort((x, y) => y.per_day - x.per_day);
+  const dc = dayCalls[0]; const dp = putChoices[0];
+  let dayPlay = null;
+  if (dc && dp) {
+    const legsDay = [
+      { type: 'call', side: 'short', strike: dc.strike, expiry: dc.expiry, premium: dc.bid, contracts: 1, iv: dc.iv, delta: dc.delta },
+      { type: 'put', side: 'long', strike: dp.strike, expiry: dp.expiry, premium: dp.ask, contracts: 1, iv: dp.iv, delta: dp.delta },
+    ];
+    const v = evaluate({ price, shares: 100, cost: price, legs: legsDay }, { now, margin });
+    const net = r2(dc.per_day - dp.cost_per_day - v.interest_per_day);
+    const loss = Math.max(0.01, -Math.min(0, v.max_loss ?? 0));
+    const lots = capital > 0 ? Math.max(0, Math.min(Math.floor((capital * rules.max_position_pct / 100) / v.capital_needed), Math.floor((capital * rules.max_loss_pct / 100) / loss))) : null;
+    dayPlay = {
+      price, legs: legsDay,
+      call: { strike: dc.strike, expiry: dc.expiry, bid: dc.bid, delta: dc.delta == null ? null : r2(dc.delta), days: dc.days, per_day: dc.per_day },
+      put: { strike: dp.strike, expiry: dp.expiry, ask: dp.ask, delta: dp.delta == null ? null : r2(dp.delta), days: dp.days, per_day: dp.cost_per_day },
+      interest_per_day: v.interest_per_day, net_per_day: net, max_loss: v.max_loss, capital: v.capital_needed, breakevens: v.breakevens,
+      on_capital_pct_year: v.capital_needed > 0 ? r2((net * TRADING_DAYS_A_YEAR / v.capital_needed) * 100) : null,
+      days_to_earn_max_loss: net > 0 && v.max_loss < 0 ? Math.ceil(-v.max_loss / net) : null,
+      called_away_chance: dc.delta != null ? Math.round(Math.abs(dc.delta) * 100) : null, lots,
+    };
+  }
+  return { rules, price, call, put, call_choices: callChoices, put_choices: putChoices, lot, sizing, reasons, carry, usd_cad: rate, call_floor: floor, day_play: dayPlay };
 }

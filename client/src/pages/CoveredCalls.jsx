@@ -98,6 +98,57 @@ function OptLine({ o, kind }) {
   );
 }
 
+// The day's five (Jake, Nov 19: "5 recommended positions for the day based on call option value today/tomorrow vs put option
+// cost long term"): from every stock the page reads, 100 shares with the call expiring today or the next trading day by his
+// rule and the cheapest long-horizon put by his rule, ranked by what the call pays a trading day less the put and the margin
+// interest. His rules applied to today's prices; the trade is his. Tap one to open it in the calculator.
+function TodayFive({ scan, onLoad }) {
+  const five = scan?.today_five || [];
+  if (!scan) return null;
+  const when = (iso) => (iso === nyToday() ? 'today' : `${optDay(iso)}`);
+  return (
+    <div className="panel cc-panel">
+      <div className="panel-header spend-header">
+        <span>Today’s five</span>
+        <span className="cc-faint">a call expiring today or next session against a long-term put, one lot each, by your rules</span>
+      </div>
+      {!five.length
+        ? <p className="cc-faint cc-pad">None comes out ahead right now: no stock’s call expiring today or next session pays more a trading day than its put and the interest cost.{scan.wide_running ? ' Still searching the wider list.' : ''}</p>
+        : (
+          <div className="table-scroll">
+            <table className="cc-table cc-five">
+              <thead><tr>
+                <th>#</th><th>Stock</th>
+                <th>Sell the call</th><th>Buy the put</th>
+                <th className="num" title="The call a trading day, less the put a trading day and the margin interest, for one lot">Net a trading day</th>
+                <th className="num">Max loss</th><th className="num">Capital</th><th className="num">Breakeven</th><th className="num">Lots</th>
+              </tr></thead>
+              <tbody>
+                {five.map((f, i) => (
+                  <tr key={f.symbol} onClick={() => onLoad({ symbol: f.symbol, shares: 100, cost: f.price, legs: f.legs, idea: true })} title="Open it in the calculator">
+                    <td className="cc-faint">{i + 1}</td>
+                    <td><b>{f.symbol}</b><span className="cc-opt"><span>{usd(f.price, 2)}{f.day_pct != null ? ` · ${pctS(f.day_pct)} today` : ''}</span></span></td>
+                    <td>{f.call.strike} C {when(f.call.expiry)} at {usd(f.call.bid, 2)}
+                      <span className="cc-opt"><span>{cad(f.call.per_day)} a trading day{f.called_away_chance != null ? ` · ${f.called_away_chance}% chance called` : ''}</span></span></td>
+                    <td>{f.put.strike} P {optDay(f.put.expiry)} at {usd(f.put.ask, 2)}
+                      <span className="cc-opt"><span>{cad(f.put.per_day)} a trading day over {f.put.days}</span></span></td>
+                    <td className={`num cc-diff ${sign(f.net_per_day)}`}>{signed(f.net_per_day)}
+                      <span className="cc-opt"><span>after {cad(f.interest_per_day, 2)} interest</span>{f.on_capital_pct_year != null && <span>{f.on_capital_pct_year.toFixed(0)}% a year on capital</span>}</span></td>
+                    <td className="num neg">{f.max_loss != null ? cad(f.max_loss) : '—'}{f.days_to_earn_max_loss != null && <span className="cc-opt"><span>earned back in {f.days_to_earn_max_loss} days</span></span>}</td>
+                    <td className="num">{cad(f.capital)}</td>
+                    <td className="num">{f.breakevens?.length ? usd(f.breakevens[0], 2) : '—'}</td>
+                    <td className="num">{f.lots == null ? <span className="cc-faint">set capital</span> : f.lots}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      <p className="cc-faint cc-pad">Your rules applied to 15-minute-delayed Cboe prices: the call at least US${scan.call_otm} above the price, the put at least US${scan.put_otm} below. Not advice; the trade is yours. Tap one to work it in the calculator.</p>
+    </div>
+  );
+}
+
 function Watchlist({ scan, err, selected, onPick, rules, saveRules }) {
   const [add, setAdd] = useState('');
   const addOne = () => {
@@ -237,13 +288,13 @@ function Desk({ symbol, rules, onSaved, loaded, onClose }) {
     setPlan(null); setErr(null); setFigs(null); setMike({ busy: false, reply: null, err: null, q: '' }); setSaved(null);
     send('GET', `/api/options/plan/${symbol}`).then((p) => {
       setPlan(p);
-      if (loaded?.symbol === symbol) { setPos(fromPosition(loaded)); setFrom(loaded); showCalc(); }
+      if (loaded?.symbol === symbol) { setPos(fromPosition(loaded)); setFrom(loaded.idea ? null : loaded); showCalc(); }
       else { setPos(fromPlan(p)); setFrom(null); setTimeout(() => rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80); }
     }).catch((e) => setErr(e.message));
   }, [symbol, rules]);
   useEffect(() => { // a position loaded on the stock already open
     if (!loaded || loaded.symbol !== symbol || plan?.symbol !== symbol) return;
-    setPos(fromPosition(loaded)); setFrom(loaded); setSaved(null); showCalc();
+    setPos(fromPosition(loaded)); setFrom(loaded.idea ? null : loaded); setSaved(null); showCalc(); // one of today’s five is a new trade, not his position
   }, [loaded]);
   useEffect(() => {
     if (!plan || !pos) return;
@@ -789,6 +840,7 @@ export default function CoveredCalls() {
           </button>
         ))}</div>
       )}
+      <TodayFive scan={scan} onLoad={(p) => loadPosition(p, p.legs)} />
       {rules && <Watchlist scan={scan} err={scanErr} selected={selected} onPick={pickStock} rules={rules} saveRules={saveRules} />}
       {rules && selected && <Desk symbol={selected} rules={rules} onSaved={loadPositions} loaded={loaded} onClose={() => { setSelected(null); setLoaded(null); }} />}
       {rules && <Rules rules={rules} saveRules={saveRules} />}

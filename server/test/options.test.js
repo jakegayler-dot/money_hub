@@ -330,3 +330,25 @@ test('calls at or above the put (Nov 19: "any strike at or above the put"), by t
   const old = pick(ch, { call_max_days: 3, call_otm: 5, protect: false }, { now });
   assert.ok(old.call_choices.every((x) => x.strike >= 157), 'with no put held, the old rule');
 });
+
+// Nov 19 (Jake: "5 recommended positions for the day based on call option value today/tomorrow vs put option cost long term").
+test('the day’s position: the call expiring today or next session by his rule, the cheapest long-term put, one lot', () => {
+  const c = (expiry, type, strike, bid, ask, delta) => ({ expiry, type, strike, bid, ask, mid: (bid + ask) / 2, delta, iv: 0.6 });
+  const ch = { quote: { price: 150 }, expiries: [], contracts: [
+    c('2026-11-17', 'call', 154, 0.4, 0.5, 0.2), c('2026-11-17', 'call', 156, 0.9, 1, 0.15), // today: 156 is the first ≥ 155
+    c('2026-11-18', 'call', 155, 1.6, 1.7, 0.25),                                         // next session
+    c('2026-11-20', 'call', 155, 3, 3.2, 0.3),                                            // Friday: not today or tomorrow
+    c('2026-12-18', 'put', 140, 3.9, 4, -0.2), c('2026-12-31', 'put', 140, 4.6, 4.8, -0.2),
+  ] };
+  const p = pick(ch, { capital: 100000, capital_currency: 'USD', max_position_pct: 50, max_loss_pct: 50, margin_pct: 30, margin_rate: 5.85, call_otm: 5, put_otm: 10 }, { now: NOW });
+  const d = p.day_play;
+  // Today's 156 pays $90 over its one session; tomorrow's 155 pays $160 over two: $80. The most a trading day wins.
+  assert.equal(d.call.strike, 156); assert.equal(d.call.expiry, '2026-11-17'); assert.equal(d.call.per_day, 90);
+  assert.equal(d.put.expiry, '2026-12-31', 'the cheapest put a trading day');
+  near(d.net_per_day, d.call.per_day - d.put.per_day - d.interest_per_day, 0.02);
+  assert.ok(d.max_loss < 0 && d.capital > 0 && d.lots >= 1);
+  assert.equal(d.legs.length, 2);
+  // Nothing expiring today or next session: no day's position.
+  const later = pick({ ...ch, contracts: ch.contracts.filter((x) => !['2026-11-17', '2026-11-18'].includes(x.expiry)) }, { capital: 100000 }, { now: NOW });
+  assert.equal(later.day_play, null);
+});

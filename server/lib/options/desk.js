@@ -58,7 +58,7 @@ async function readStock(symbol, rules, fx, now, watched) {
   const carry = p?.carry || null;
   return { symbol, watched, price: r2(q.price), iv30: q.iv30 == null ? null : r2(q.iv30 * 100), as_of: q.as_of, ...dropCheck(hist, q, rules),
     expiries_this_week: soon, cadence, often, next_expiry: soon[0] || ch.expiries.find((e) => daysTo(e, now) > 0) || null,
-    carry, qualifies: !!(often && carry && carry.gap != null && carry.gap > 0 && carry.gap * (fx?.rate || 1) >= rules.min_carry) };
+    carry, day_play: p?.day_play || null, qualifies: !!(often && carry && carry.gap != null && carry.gap > 0 && carry.gap * (fx?.rate || 1) >= rules.min_carry) };
 }
 
 // The wider list, swept in the background (Cboe's free feed refuses a burst of 50 chains: 429s, Nov 17).
@@ -95,6 +95,11 @@ export async function scan(rulesIn = null, now = new Date()) {
     rules, as_of: now.toISOString(), fx,
     stocks,
     wide: wide.filter((r) => r.qualifies).sort((a, b) => b.carry.gap - a.carry.gap),
+    // The day's five (Nov 19): every stock read, watchlist and wider list, by what its call expiring today or the next trading
+    // day pays a trading day less its long-horizon put and the margin interest, for one lot; only ones that come out ahead.
+    today_five: [...stocks, ...wide].filter((r) => !r.error && r.day_play && r.day_play.net_per_day > 0)
+      .sort((a, b) => b.day_play.net_per_day - a.day_play.net_per_day).slice(0, 5)
+      .map((r) => ({ symbol: r.symbol, watched: !!r.watched, iv30: r.iv30, day_pct: r.day_pct ?? null, ...r.day_play })),
     call_otm: rules.call_otm, put_otm: rules.put_otm,
     wide_checked: wide.length + (rules.wide ? wideState.unread.length : 0),
     wide_unread: rules.wide ? wideState.unread : [],
