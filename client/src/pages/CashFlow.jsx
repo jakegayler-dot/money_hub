@@ -2,7 +2,6 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import CashFlowTerminal from '../components/CashFlowTerminal.jsx';
 import WhatIf from '../components/WhatIf.jsx';
 import MonthBreakdown from '../components/MonthBreakdown.jsx';
-import CashFlowPeriods, { GRAINS } from '../components/CashFlowPeriods.jsx';
 import { money } from '../format.js';
 import { OwnerFields, ownerPayload, ownerSummary, emptyOwnerFields } from '../owners.jsx';
 
@@ -271,8 +270,8 @@ export default function CashFlow() {
   const [whatIf, setWhatIf] = useState(() => readPref('whatif', null)); // { scenario, name, id } shown on the chart
   const [whatIfResult, setWhatIfResult] = useState(null);
   const [openMonth, setOpenMonth] = useState(null); // "2026-11" while its breakdown is open
-  // By day, week, month, quarter or year (Jake, Nov 19).
-  const [grain, setGrain] = useState(() => { const g = readPref('grain', 'month'); return GRAINS.some(([k]) => k === g) ? g : 'month'; });
+  // The chart by day, week, month, quarter or year (Jake, Nov 19), remembered here.
+  const [grain, setGrain] = useState(() => { const g = readPref('grain', 'month'); return ['day', 'week', 'month', 'quarter', 'year'].includes(g) ? g : 'month'; });
   useEffect(() => { writePref('grain', grain); }, [grain]);
   const [editing, setEditing] = useState(false);
 
@@ -350,7 +349,7 @@ export default function CashFlow() {
         <button type="button" className="cf-whatif-btn" onClick={() => setEditing(true)}>What-if analysis</button>
       </div>
 
-      <CashFlowTerminal liquidity={data} scenario={whatIfResult} scenarioName={whatIf?.name}
+      <CashFlowTerminal liquidity={data} scenario={whatIfResult} scenarioName={whatIf?.name} grain={grain} onGrain={setGrain}
         onOpenWhatIf={() => setEditing(true)} onClearScenario={() => setWhatIf(null)} />
 
       {editing && (
@@ -359,14 +358,7 @@ export default function CashFlow() {
       )}
 
       <div className="panel">
-        <div className="panel-header spend-header cfp-header">
-          <span>{{ day: 'Day by day', week: 'Week by week', month: 'Month by month', quarter: 'By quarter', year: 'By year' }[grain]}</span>
-          <span className="seg-toggle" role="group" aria-label="Show the forecast by">
-            {GRAINS.map(([k, l]) => <button key={k} type="button" aria-pressed={grain === k} className={grain === k ? 'on' : ''} onClick={() => setGrain(k)}>{l}</button>)}
-          </span>
-          <span className="split-lines">Click a {grain === 'month' ? 'month' : grain === 'day' ? 'day' : grain} for everything behind it</span>
-        </div>
-        {grain !== 'month' ? <CashFlowPeriods data={data} grain={grain} /> : (
+        <div className="panel-header spend-header"><span>Month by month</span><span className="split-lines">Click a month for everything behind it</span></div>
         <div style={{ overflowX: 'auto' }}>
           <table>
             <thead>
@@ -410,7 +402,6 @@ export default function CashFlow() {
             </tbody>
           </table>
         </div>
-        )}
       </div>
 
       <div className="panel">

@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { money } from '../format.js';
 import { cents } from './SplitEditor.jsx';
 import MonthBreakdown from './MonthBreakdown.jsx';
+import { GRAINS, periodSeries } from './cashflowPeriods.js';
 
 // ---------------------------------------------------------------------------
 // Cash flow terminal: the forecast as an instrument.
@@ -20,8 +21,9 @@ import MonthBreakdown from './MonthBreakdown.jsx';
 // ---------------------------------------------------------------------------
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const short = (t, i) => (i === 0 || t.month === 1 ? `${MONTHS[t.month - 1]} ’${String(t.year).slice(2)}` : MONTHS[t.month - 1]);
-const full = (t) => `${MONTHS[t.month - 1]} ${t.year}`;
+// A month of the trajectory, or a day, week, quarter or year (cashflowPeriods.js), which carries its own labels.
+const short = (t, i) => (t.short ? t.short : i === 0 || t.month === 1 ? `${MONTHS[t.month - 1]} ’${String(t.year).slice(2)}` : MONTHS[t.month - 1]);
+const full = (t) => (t.full ? t.full : `${MONTHS[t.month - 1]} ${t.year}`);
 const kfmt = (v) => {
   const a = Math.abs(v);
   const s = a >= 1e6 ? `${(a / 1e6).toFixed(a >= 1e7 ? 0 : 1)}M` : a >= 1e3 ? `${Math.round(a / 1e3)}k` : `${Math.round(a)}`;
@@ -66,16 +68,23 @@ function useGlideAnimated(targets, ms = 520) {
   return shown;
 }
 
-export default function CashFlowTerminal({ liquidity, scenario = null, scenarioName = '', onOpenWhatIf, onClearScenario }) {
+// grain (Jake, Nov 19: "i wanted the cash flow forecast with a day option ... the existing chart"): day, week, month, quarter or
+// year. Month is the trajectory as it comes; the others are built from its dated items and land on the same month-ends.
+export default function CashFlowTerminal({ liquidity, scenario = null, scenarioName = '', onOpenWhatIf, onClearScenario, grain = 'month', onGrain }) {
   const [hover, setHover] = useState(null);
   const [picked, setPicked] = useState(null);
-  const base = liquidity.trajectory;
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Regina' }).format(new Date());
+  const byMonth = grain === 'month';
+  const series = (months, start) => (byMonth ? months : periodSeries(months, start, grain, { today, requiredFloor: liquidity.requiredFloor }));
+  const base = useMemo(() => series(liquidity.trajectory, liquidity.startingBalance), [liquidity, grain]);
   const n = base.length;
-  const sm = scenario?.scenario?.trajectory?.months;
+  const smRaw = scenario?.scenario?.trajectory?.months;
+  const sm = useMemo(() => (smRaw && smRaw.length === liquidity.trajectory.length ? series(smRaw, scenario?.scenario?.trajectory?.opening ?? liquidity.startingBalance) : null), [smRaw, grain, liquidity]);
   const active = !!(sm && sm.length === n);
   const what = active ? sm : base;
-  const reserve = liquidity.reserve;
-  useEffect(() => { setPicked(null); setHover(null); }, [n]);
+  const reserve = byMonth ? liquidity.reserve : null; // the reserve is worked out by month
+  const unit = { day: 'day', week: 'week', month: 'month', quarter: 'quarter', year: 'year' }[grain];
+  useEffect(() => { setPicked(null); setHover(null); }, [n, grain]);
 
   const glideWhat = useGlide(what.map((m) => m.balance));
   const glideFlows = useGlide(what.flatMap((m) => [m.inflow, m.outflow]));
@@ -148,6 +157,8 @@ export default function CashFlowTerminal({ liquidity, scenario = null, scenarioN
   const fyk = (fh / 2) / fmax;
   const bw = Math.min(22, (iw / n) * 0.34);
   const mx = (i) => x(i + 1) - iw / n / 2; // a month's bars sit between its start and end
+  // A label every so many periods, by the room there is (about 64 px a label).
+  const labelEvery = Math.max(1, Math.ceil(n / Math.max(1, Math.floor(iw / (narrow ? 52 : 64)))));
 
   const at = hover ?? picked; // a month index (0..n-1); its point is at + 1
   const tagFor = (p) => {
@@ -207,16 +218,21 @@ export default function CashFlowTerminal({ liquidity, scenario = null, scenarioN
       )}
       <div className="cft-body solo">
         <div className="cft-charts">
-          <div className="cft-legend" aria-hidden="true">
+          <div className="cft-legend">
             <span><i className="sw est" />With estimates</span>
             <span><i className="sw com" />Committed only</span>
             {active && <span><i className="sw what" />What-if</span>}
             {resPts && <span><i className="sw res" />Farm + personal reserve</span>}
             {hasFloor && <span title={`At each month-end: loan payments, bills, card statements, fees, tax and GST, and household essentials due in the next ${days} days`}><i className="sw floor" />Cash floor · due in the next {days} days</span>}
+            {onGrain && (
+              <span className="seg-toggle cft-grain" role="group" aria-label="Show the forecast by">
+                {GRAINS.map(([k, l]) => <button key={k} type="button" aria-pressed={grain === k} className={grain === k ? 'on' : ''} onClick={() => onGrain(k)}>{l}</button>)}
+              </span>
+            )}
           </div>
           <div ref={boxRef}>
           <svg ref={svgRef} viewBox={`0 0 ${W} ${H + FH}`} width={W} height={H + FH} className="cft-svg" role="img" tabIndex={0}
-            aria-label={`Projected cash for the next ${n} months with money in and out per month. Use left and right arrows to step through months.`}
+            aria-label={`Projected cash, ${n} ${unit}s, with money in and out per ${unit}. Use left and right arrows to step through them.`}
             onPointerMove={onMove} onPointerLeave={() => setHover(null)} onClick={() => at != null && setPicked(at === picked ? null : at)}
             onKeyDown={keyNav}>
             <defs>
@@ -289,7 +305,7 @@ export default function CashFlowTerminal({ liquidity, scenario = null, scenarioN
                   <g key={i} className={sel ? 'cft-bar sel' : 'cft-bar'}>
                     <rect x={mx(i) - bw / 2} y={fy0 - inn * fyk} width={bw} height={Math.max(0, inn * fyk - 1)} rx="2" className="in" />
                     <rect x={mx(i) - bw / 2} y={fy0 + 1} width={bw} height={Math.max(0, out * fyk - 1)} rx="2" className="out" />
-                    {(i % (n > 18 ? (narrow ? 4 : 2) : n > 12 ? (narrow ? 3 : 2) : narrow ? 2 : 1) === 0 || i === at) && (
+                    {((i % labelEvery === 0 && (at == null || Math.abs(i - at) >= labelEvery / 2)) || i === at) && (
                       <text x={mx(i)} y={FH - 4} textAnchor="middle" className={`cft-axis${i === at ? ' on' : ''}`}>{short(m, i)}</text>
                     )}
                   </g>
@@ -302,21 +318,21 @@ export default function CashFlowTerminal({ liquidity, scenario = null, scenarioN
           {at != null && (
             <div className="cft-readout" aria-live="polite">
               <strong>{full(base[at])}</strong>
-              <span>Month-end, with estimates <b>{money(Math.round(estPts[at + 1]))}</b></span>
+              <span>{byMonth ? 'Month-end' : `End of the ${unit}`}, with estimates <b>{money(Math.round(estPts[at + 1]))}</b></span>
               <span>Committed <b>{money(Math.round(comPts[at + 1]))}</b></span>
               {active && <span>What-if <b>{money(Math.round(what[at].balance))}</b></span>}
               {resPts && <span>With personal reserve <b>{money(Math.round(resPts[at + 1]))}</b></span>}
-              <span title={floorTitle(base[at].floorParts)}>Floor, next {days} days <b className={room(what[at]) < 0 ? 'neg' : ''}>{money(Math.round(floorOf(what[at])))}</b></span>
+              <span title={byMonth ? floorTitle(base[at].floorParts) : undefined}>Floor, next {days} days <b className={room(what[at]) < 0 ? 'neg' : ''}>{money(Math.round(floorOf(what[at])))}</b></span>
               <span>In <b className="pos">{signed(what[at].inflow)}</b></span>
               <span>Out <b className="neg">{signed(what[at].outflow)}</b></span>
-              {picked == null && <em>Click to open the month</em>}
+              {picked == null && <em>Click to open the {unit}</em>}
             </div>
           )}
         </div>
 
       </div>
 
-      {picked != null && <MonthLedger m={what[picked]} b={base[picked]} active={active} onClose={() => setPicked(null)} floor={floorOf(what[picked])} floorDays={days} />}
+      {picked != null && <MonthLedger m={what[picked]} b={base[picked]} active={active} onClose={() => setPicked(null)} floor={byMonth ? floorOf(what[picked]) : null} floorDays={days} />}
     </div>
   );
 }
