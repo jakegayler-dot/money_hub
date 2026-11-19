@@ -2042,3 +2042,16 @@ button:active { transform: none !important; }
   .gst-actions { min-width: 140px; }
   .gst-inline input:not([type]) { width: 130px; }
 }
+
+/* Cash flow by day, week, quarter, year (Nov 19) */
+.cfp-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.cfp-header > .split-lines { margin-left: auto; }
+.cfp-chart { margin: 4px 0 12px; --cft-est: #c98500; --cft-com: #3987e5; }
+.cfp-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; font-size: 12px; color: var(--text-muted); margin: 0 2px 6px; }
+.cfp-legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+.cfp-legend i.cfp-dash { background: repeating-linear-gradient(90deg, var(--text-faint) 0 4px, transparent 4px 7px); }
+.cfp-legend .cfp-read { margin-left: auto; font-family: var(--font-mono); color: var(--text); }
+.cfp-ax { font-size: 11px; fill: var(--text-faint); font-family: var(--font-mono); }
+.cfp-items { width: 100%; margin: 0; }
+.cfp-items td { padding: 6px 12px; font-size: 13px; }
+@media (max-width: 640px) { .cfp-header > .split-lines { margin-left: 0; width: 100%; } .cfp-legend .cfp-read { margin-left: 0; width: 100%; } }
