@@ -119,16 +119,17 @@ test('his 105 NVDA with one call and one put: 5 shares neither covers, said (Nov
   assert.equal(r.call_strike, 165);
   near(r.gain_at_call, 643.14, 1);
   assert.equal(r.shares_without_put, 5);
-  // 100 shares from US$159.84 to the put's 150 (984), the put (1,055) less the call (530), 5 bare shares to zero (799), and the
-  // put's time left on Nov 20 (worth a little under its full payoff then).
-  near(r.max_loss, -2372.7, 1);
-  assert.ok(r.max_loss < -(984 + 1055 - 530 + 799) && r.max_loss > -(984 + 1055 - 530 + 799) - 100);
+  // Held to the put's expiry (Nov 19: "the real worst case of holding to Dec 31"): 100 shares from US$159.84 to the put's 150
+  // (984), the put (1,055) less the call (530), 5 bare shares to zero (799); nothing left in the put.
+  near(r.max_loss, -(984 + 1055 - 530 + 799), 1);
+  assert.equal(r.risk_horizon, '2026-12-31');
+  near(r.loss_at_put, -(984 + 1055 - 530 + 5 * 9.84), 1, 'at the put strike, the 5 bare shares down to 150 too');
   const round = evaluate({ price: 152.86, shares: 100, cost: 159.84, legs }, { now });
   assert.equal(round.shares_not_called, 0);
   assert.equal(round.shares_without_put, 0);
   near(round.max_gain, 617.34, 1);
   assert.equal(round.max_gain_at, 165);
-  assert.ok(round.floor_from > 90 && round.floor_from < 150, `floor from ${round.floor_from}`);
+  near(round.floor_from, 150, 0.5, 'held to the put’s expiry, the floor starts at its strike');
 });
 
 test('on margin (Nov 17: "required capital at 30% margin, factor in interest costs"): capital, interest a day, interest in the figures', () => {
@@ -301,4 +302,31 @@ test('option revenue a trading day (Nov 18): each open option over the days from
   assert.equal(r.days_to_earn_max_loss, Math.ceil(Math.abs(r.max_loss) / r.revenue_per_day));
   assert.deepEqual(playValue(10, 1000, -500), { revenue_per_day: 10, on_capital_pct_day: 1, on_capital_pct_year: 252, vs_max_loss_pct_day: 2, days_to_earn_max_loss: 50 });
   assert.equal(playValue(-5, 1000, -500).days_to_earn_max_loss, null);
+});
+
+test('held to the last expiry (Nov 19): max loss and break-even with nothing left in the put, interest to then', () => {
+  const legs = [
+    { type: 'call', side: 'short', strike: 160, expiry: '2026-11-18', premium: 1.5, contracts: 1 },
+    { type: 'put', side: 'long', strike: 135, expiry: '2026-12-31', premium: 4, contracts: 1, iv: 0.5 },
+  ];
+  const r = evaluate({ price: 150, shares: 100, cost: 150, legs }, { now: NOW, margin: { pct: 30, rate: 5.85 } });
+  near(r.max_loss, -(150 - 135 - 1.5 + 4) * 100 - r.interest_to_risk, 0.5);
+  near(r.breakevens[0], 150 + 4 - 1.5 + r.interest_to_risk / 100, 0.05);
+  assert.ok(r.interest_to_risk > r.interest_to_horizon);
+});
+
+test('calls at or above the put (Nov 19: "any strike at or above the put"), by time value a trading day', () => {
+  const now = new Date('2026-11-17T15:00:00Z');
+  const c = (strike, bid, expiry = '2026-11-18') => ({ type: 'call', strike, expiry, bid, ask: bid + 0.05, iv: 0.5, delta: 0.5 });
+  const ch = { quote: { price: 152 }, contracts: [c(145, 7.5), c(150, 3.4), c(155, 1.0), c(160, 0.3), c(145, 8.4, '2026-11-20'), c(155, 2.2, '2026-11-20')] };
+  const p = pick(ch, { call_max_days: 3, protect: false }, { now, putStrike: 145 });
+  assert.equal(p.call_floor, 145);
+  assert.ok(p.call_choices.every((x) => x.strike >= 145));
+  const k145 = p.call_choices.find((x) => x.strike === 145 && x.expiry === '2026-11-18');
+  assert.equal(k145.time_value, 0.5, 'a strike under the price keeps only its time value: 7.50 − (152 − 145)');
+  const k150 = p.call_choices.find((x) => x.strike === 150 && x.expiry === '2026-11-18');
+  assert.equal(k150.time_value, 1.4);
+  assert.equal(p.call.strike, 150, 'the 150 keeps the most a day');
+  const old = pick(ch, { call_max_days: 3, call_otm: 5, protect: false }, { now });
+  assert.ok(old.call_choices.every((x) => x.strike >= 157), 'with no put held, the old rule');
 });

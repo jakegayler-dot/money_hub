@@ -92,7 +92,10 @@ export async function optionCash({ symbols = [] } = {}) {
        LEFT JOIN expense_categories pc ON pc.id = c.parent_id
        LEFT JOIN options_cash_tags g ON g.transaction_id = t.id
       WHERE NOT COALESCE(t.is_transfer, false)
-        AND (c.name ILIKE '%invest%' OR pc.name ILIKE '%invest%' OR t.account_id = ANY($1::int[]))
+        AND (c.name ILIKE '%invest%' OR pc.name ILIKE '%invest%' OR t.account_id = ANY($1::int[])
+             -- An option fill wherever it was filed (Nov 19: the desk "can't see your option fills"): it names a call or put.
+             OR (CONCAT_WS(' ', t.description, p.name, t.review_note) ~* '\\m(calls?|puts?)\\M' AND CONCAT_WS(' ', t.description, p.name, t.review_note) ~ '\\m[A-Z]{2,6}\\M')
+             OR CONCAT_WS(' ', t.description, p.name, t.review_note) ~ '([A-Z]{1,6} ?[0-9]{6}[CP][0-9]{8}|[0-9] ?[CP]\\M)')
       ORDER BY t.date DESC, t.id DESC
       LIMIT 3000`, [src.account_ids]);
   const known = await knownSymbols(symbols);
@@ -257,4 +260,35 @@ export async function sessionEarnings({ sessions = 5, now = new Date(), list: gi
       by_stock, usd_cad: fx?.rate || null, note: 'US$; shares at what he holds now, from the day each position opened; options from his Money Hub entries dated that day' };
   });
   return rows;
+}
+
+/**
+ * The options he holds, at what his fills say they cost (Jake, Nov 19: "NVDA put cost shows US$1,055, but you actually paid
+ * US$966 net. It's using Wealthsimple's lumped cost basis"). The broker's average price lumps every trade in a contract
+ * together; his Money Hub entries are the real cash. Pure, US$.
+ *   A put he holds: what the puts on that stock have cost net (bought, less any sold back), over the puts held; from the
+ *   first put entry.
+ *   The call he has sold (one at a time): what the latest call sale brought, from the day it was sold, so its premium a day is
+ *   that call's alone, not every call before it spread over this one's few days.
+ * Legs the entries can't speak for keep the broker's figure (broker_premium is kept either way).
+ */
+export function legsAtFills(legs = [], entries = [], symbol, { today = null } = {}) {
+  const mine = entries.filter((e) => e.symbol === symbol && (!today || e.date <= today));
+  const putEntries = mine.filter((e) => e.kind === 'put');
+  const callSales = mine.filter((e) => e.kind === 'call' && e.amount > 0).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.id - a.id));
+  const longPuts = legs.filter((l) => l.type === 'put' && l.side === 'long');
+  const shortCalls = legs.filter((l) => l.type === 'call' && l.side === 'short');
+  const putNet = -putEntries.reduce((a, e) => a + e.usd, 0);
+  const putContracts = longPuts.reduce((a, l) => a + Number(l.contracts), 0);
+  const putFrom = putEntries.map((e) => e.date).sort()[0] || null;
+  return legs.map((l) => {
+    if (l.type === 'put' && l.side === 'long' && putNet > 0 && putContracts > 0) {
+      return { ...l, broker_premium: Number(l.premium), premium: r2(putNet / (putContracts * 100) * 10000) / 10000, ...(putFrom ? { since: putFrom } : {}), from_fills: true };
+    }
+    if (l.type === 'call' && l.side === 'short' && shortCalls.length === 1 && callSales[0] && callSales[0].date <= l.expiry) {
+      const sale = callSales[0];
+      return { ...l, broker_premium: Number(l.premium), premium: Math.round((sale.usd / (Number(l.contracts) * 100)) * 10000) / 10000, since: sale.date, from_fills: true };
+    }
+    return l;
+  });
 }

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { pool } from '../db.js';
-import { classify, optionCash, tagEntry, untagEntry, saveSource, insurance, sessionEarnings } from '../lib/options/cash.js';
+import { classify, optionCash, tagEntry, untagEntry, saveSource, insurance, sessionEarnings, legsAtFills } from '../lib/options/cash.js';
 import { marketCalendar, expiryClose } from '../lib/options/strategy.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -86,9 +86,12 @@ test('calls in, puts net, by stock; what the words don’t say waits for him; hi
   assert.equal((await optionCash()).unsorted.length, 1);
 });
 
-test('another account he picks is read too; the currency is his to set', async () => {
+test('an option fill is read wherever it was filed (Nov 19); another account he picks is read in full; the currency is his to set', async () => {
   await tx('2026-11-15', 90, 'Sold 1 TSLA Nov 20 400 Call', { account: other, category: null });
-  assert.equal((await optionCash({ symbols: ['TSLA'] })).stocks.some((s) => s.symbol === 'TSLA'), false);
+  await tx('2026-11-15', -33, 'Rogers phone call plan', { account: other, category: null });
+  const seen = await optionCash({ symbols: ['TSLA'] });
+  assert.equal(seen.stocks.find((s) => s.symbol === 'TSLA').calls, 90, 'a call fill in the chequing account still counts');
+  assert.ok(!seen.entries.some((e) => /Rogers/.test(e.words)), 'a phone bill that says "call" is not a fill');
   await saveSource({ account_ids: [other], currency: 'CAD' });
   const c = await optionCash({ symbols: ['TSLA'] });
   assert.equal(c.stocks.find((s) => s.symbol === 'TSLA').calls, 90);
@@ -178,4 +181,22 @@ test('the market calendar for the page clock: holidays, early closes at 1 p.m.',
   // An option expiring on an early close stops at 1 p.m. New York (18:00 UTC in November).
   assert.equal(expiryClose('2026-11-27').toISOString(), '2026-11-27T18:00:00.000Z');
   assert.equal(expiryClose('2026-11-20').toISOString(), '2026-11-20T21:00:00.000Z');
+});
+
+test('the options he holds at what his fills cost (Nov 19: "NVDA put cost shows US$1,055, but you actually paid US$966 net")', () => {
+  const legs = [
+    { type: 'put', side: 'long', strike: 150, expiry: '2026-12-31', premium: 10.55, contracts: 1 },
+    { type: 'call', side: 'short', strike: 165, expiry: '2026-11-20', premium: 4.4, contracts: 1 },
+  ];
+  const e = (id, date, kind, usd) => ({ id, date, kind, symbol: 'NVDA', amount: usd, usd });
+  const entries = [e(1, '2026-11-05', 'put', -387), e(2, '2026-11-07', 'put', 450), e(3, '2026-11-07', 'put', -544), e(4, '2026-11-12', 'put', -485),
+    e(5, '2026-11-04', 'call', 182), e(6, '2026-11-18', 'call', 120), e(7, '2026-11-10', 'call', 376)];
+  const out = legsAtFills(legs, entries, 'NVDA', { today: '2026-11-19' });
+  const put = out.find((l) => l.type === 'put'); const call = out.find((l) => l.type === 'call');
+  assert.equal(put.premium, 9.66, '387 − 450 + 544 + 485 = 966 net');
+  assert.equal(put.broker_premium, 10.55);
+  assert.equal(put.since, '2026-11-05');
+  assert.equal(call.premium, 1.2, 'the latest call sale, not every call before it');
+  assert.equal(call.since, '2026-11-18');
+  assert.deepEqual(legsAtFills(legs, [], 'NVDA'), legs, 'no fills: the broker’s figures');
 });

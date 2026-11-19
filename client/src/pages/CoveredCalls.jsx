@@ -344,7 +344,7 @@ function Desk({ symbol, rules, onSaved, loaded, onClose }) {
                   ? `if it went to zero; ${cad(figs.shares_without_put * figs.cost)} of it is the ${figs.shares_without_put} share${figs.shares_without_put === 1 ? '' : 's'} the put doesn’t cover`
                   : figs.put_strike && figs.loss_at_put != null && figs.max_loss_at < 1 ? `if it went to zero; ${cad(figs.loss_at_put)} at the put’s ${usd(figs.put_strike, 2)}`
                   : figs.floor_from ? `about this from ${usd(figs.floor_from, 2)} down` : figs.max_loss_at != null ? (figs.max_loss_at < 1 ? 'if it went to zero' : `at ${usd(figs.max_loss_at, 2)} or below`) : ''}</span></div>
-              <div><span className="cc-k">Breakeven</span><b>{figs.breakevens.length ? figs.breakevens.map((b) => usd(b, 2)).join(', ') : '—'}</b><span className="cc-faint">at the call’s expiry</span></div>
+              <div><span className="cc-k">Breakeven</span><b>{figs.breakevens.length ? figs.breakevens.map((b) => usd(b, 2)).join(', ') : '—'}</b><span className="cc-faint">{figs.risk_horizon ? `held to ${short(figs.risk_horizon)}` : ''}</span></div>
               <div><span className="cc-k">Called away</span><b>{figs.called_away_chance == null ? '—' : `≈${Math.round(figs.called_away_chance)}%`}</b><span className="cc-faint">the call’s delta</span></div>
               {figs.margin_pct < 100
                 ? <div><span className="cc-k">Capital needed</span><b>{cad(figs.capital_needed)}</b>
@@ -352,7 +352,7 @@ function Desk({ symbol, rules, onSaved, loaded, onClose }) {
                 : <div><span className="cc-k">Money in</span><b>{cad(figs.money_in)}</b><span className="cc-faint">{figs.put_cost ? `${cad(figs.put_cost)} of it the put` : 'the shares'}</span></div>}
             </div>
             <Payoff curve={figs.curve} price={plan.price} breakevens={figs.breakevens} strikes={pos.legs.map((l) => Number(l.strike))} />
-            <p className="cc-faint">Profit or loss on {short(figs.horizon)} (the nearest expiry); a longer put is valued at what it would still be worth then.</p>
+            <p className="cc-faint">The chart: profit or loss on {short(figs.horizon)} (the nearest expiry), a longer put at what it would still be worth then. Max loss, break-even and the loss at the put are held to {short(figs.risk_horizon || figs.horizon)}, with nothing left in the put and the interest to then.</p>
             <div className="table-scroll">
               <table className="cc-table cc-scen">
                 <thead><tr><th>If {symbol} is</th>{figs.scenarios.map((s) => <th key={s.pct} className="num">{pctS(s.pct)}</th>)}</tr></thead>
@@ -470,7 +470,7 @@ function Earnings({ positions, cash, ins }) {
               <Tile k="Puts, net of what you sold back" v={signed(puts)} cls={sign(puts)} sub={putTo ? `cover you to ${day(putTo)}` : 'none held now'} />
               <Tile k="Options so far" v={signed(optNet)} cls={sign(optNet)} sub="calls less puts" />
             </>
-          : <Tile k="Options cash so far" v={signed(optNet)} cls={sign(optNet)} sub="premiums in, less puts and buy-backs" />}
+          : <Tile k="Options cash so far" v={signed(optNet)} cls={sign(optNet)} sub="your broker sync’s figure: no option trades in your Money Hub entries yet" />}
         <Tile k="Coming in now" v={`${cad(netDay)} a trading day`} cls={sign(netDay)}
           sub={`calls ${cad(callsDay)}${putsDay ? ` − puts ${cad(putsDay)}` : ''}${interestDay ? ` − interest ${cad(interestDay, 2)}` : ''}`} />
         <Tile k="Shares" v={cad(sharesValue)} sub={<span className={sign(sharesPnl)}>{signed(sharesPnl)} since you bought</span>} />
@@ -553,21 +553,23 @@ function NextCall({ p, onLoad }) {
     { type: 'call', side: 'short', strike: c.strike, expiry: c.expiry, premium: c.bid, contracts: Math.max(1, lots), iv: c.iv, delta: c.delta }]);
   return (
     <div className="cc-next">
-      <span className="cc-k">Next call <span className="cc-faint">by your rule: at least US${r.call_otm} above {usd(plan.price, 2)}, expiring within {r.call_max_days} days, most a trading day first{lots > 1 ? `; for your ${lots} contracts` : ''}</span></span>
+      <span className="cc-k">Next call <span className="cc-faint">{plan.call_floor
+        ? `by your rule: any strike at or above your ${plan.call_floor} put, expiring within ${r.call_max_days} days; most time value a trading day first (the bid less what the shares give up below ${usd(plan.price, 2)} if called)`
+        : `by your rule: at least US$${r.call_otm} above ${usd(plan.price, 2)}, expiring within ${r.call_max_days} days, most a trading day first`}{lots > 1 ? `; for your ${lots} contracts` : ''}</span></span>
       {!lots ? <span className="cc-faint">Under 100 shares: no call can be covered.</span>
-        : !plan.call_choices.length ? <span className="cc-faint">No call within {r.call_max_days} days at least US${r.call_otm} above the price has a bid.</span> : (
+        : !plan.call_choices.length ? <span className="cc-faint">{plan.call_floor ? `No call within ${r.call_max_days} days at or above the ${plan.call_floor} put has time value left.` : `No call within ${r.call_max_days} days at least US$${r.call_otm} above the price has a bid.`}</span> : (
           <div className="table-scroll">
             <table className="cc-table cc-nexttable">
-              <thead><tr><th>Expires</th><th className="num">Strike</th><th className="num">Bid</th><th className="num">Trading days</th><th className="num">A trading day</th><th className="num">Premium</th>
+              <thead><tr><th>Expires</th><th className="num">Strike</th><th className="num">Bid</th><th className="num" title="The bid less what the shares give up below today's price if called there">Time value</th><th className="num">Trading days</th><th className="num">A trading day</th><th className="num">Premium</th>
                 <th className="num" title="The call's delta: roughly the chance the stock ends above the strike">Chance called</th>
                 <th className="num" title="What the shares make or lose against your cost if they're called away at the strike">Shares if called</th><th /></tr></thead>
               <tbody>
                 {plan.call_choices.map((c, i) => {
                   const called = (c.strike - p.cost) * lots * 100;
                   return (
-                    <tr key={c.expiry} className={i === 0 ? 'cc-best' : ''}>
+                    <tr key={`${c.expiry}-${c.strike}`} className={i === 0 ? 'cc-best' : ''}>
                       <td>{short(c.expiry)}{i === 0 && <span className="badge"> MOST A DAY</span>}</td>
-                      <td className="num">{c.strike}</td><td className="num">{c.bid.toFixed(2)}</td><td className="num">{c.days}</td>
+                      <td className="num">{c.strike}</td><td className="num">{c.bid.toFixed(2)}</td><td className="num">{(c.time_value ?? c.bid).toFixed(2)}</td><td className="num">{c.days}</td>
                       <td className="num pos">{cad(c.per_day * lots)}</td><td className="num">{cad(c.bid * 100 * lots)}</td>
                       <td className="num">{c.delta == null ? '—' : `≈${Math.round(Math.abs(c.delta) * 100)}%`}</td>
                       <td className={`num ${sign(called)}`}>{signed(called)}</td>
@@ -736,7 +738,8 @@ export default function CoveredCalls() {
   const [alerts, setAlerts] = useState([]);
   const [fx, setFx] = useState(null);
   const [loaded, setLoaded] = useState(null); // a position sent to the calculator (a fresh object each time, so a second tap reloads it)
-  const loadPosition = (p, legs) => { setSelected(p.symbol); setLoaded(legs ? { ...p, legs } : { ...p }); };
+  // The options he holds at what his fills say they cost (Nov 19), not the broker's lumped average.
+  const loadPosition = (p, legs) => { setSelected(p.symbol); setLoaded({ ...p, legs: legs || (p.open_legs?.length ? p.open_legs : p.legs) }); };
   const pickStock = (s) => { setLoaded(null); setSelected(s); }; // a stock from the list or an alert: the rules' pick
   FX = fx?.rate || null;
   const loadScan = () => send('GET', '/api/options/scan').then((s) => { setScan(s); setScanErr(null); }).catch((e) => setScanErr(e.message));

@@ -107,9 +107,16 @@ export async function scan(rulesIn = null, now = new Date()) {
 export async function plan(symbol, overrides = {}, now = new Date()) {
   const rules = cleanRules({ ...(await getRules()), ...overrides });
   const ch = await chain(symbol);
-  const [hist, fx] = await Promise.all([history(symbol, rules.high_days + 10), usdCad()]);
-  const p = pick(ch, rules, { now, fx: fx?.rate });
+  const [hist, fx, held] = await Promise.all([history(symbol, rules.high_days + 10), usdCad(), heldPutStrike(symbol, now)]);
+  const p = pick(ch, rules, { now, fx: fx?.rate, putStrike: held });
   return { symbol, as_of: ch.as_of, quote: ch.quote, drop: dropCheck(hist, ch.quote, rules), ...p, fx };
+}
+
+/** The highest strike of the puts he holds on a stock (open, not expired), or null: his calls go at or above it (Nov 19). */
+async function heldPutStrike(symbol, now = new Date()) {
+  const { rows } = await pool.query(`SELECT legs FROM options_positions WHERE symbol = $1 AND status = 'open'`, [symbol]).catch(() => ({ rows: [] }));
+  const strikes = rows.flatMap((r) => r.legs || []).filter((l) => l.type === 'put' && l.side === 'long' && daysTo(l.expiry, now) > 0).map((l) => Number(l.strike));
+  return strikes.length ? Math.max(...strikes) : null;
 }
 
 /** One expiry's strikes for the calculator's pickers (nearest `n` each side of the price). */
@@ -195,6 +202,13 @@ export function positionFields(b = {}, current = {}) {
 /** His positions, each valued at today's price: the stock's gain or loss, premium in, and the figures for the legs it holds now. */
 export async function positions(now = new Date()) {
   const { rows } = await pool.query(`SELECT * FROM options_positions ORDER BY (status = 'closed'), opened_on DESC, id DESC`);
+  // His fills (Nov 19): the options he holds at what his Money Hub entries say they cost, not the broker's lumped average.
+  const { optionCash, legsAtFills } = await import('./cash.js');
+  const cash = await optionCash({ symbols: rows.map((r) => r.symbol) }).catch(() => null);
+  const fxRate = cash?.currency === 'CAD' ? (await usdCad().catch(() => null))?.rate : null;
+  const entries = (cash?.entries || []).filter((e) => e.kind && e.symbol)
+    .map((e) => ({ ...e, usd: cash.currency === 'CAD' && fxRate ? e.amount / fxRate : e.amount }));
+  const todayNy = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(now);
   const prices = new Map();
   const rules = await getRules();
   const margin = { pct: rules.margin_pct, rate: rules.margin_rate }; // his margin rule, on what each position cost
@@ -205,8 +219,9 @@ export async function positions(now = new Date()) {
     // An option without the day it was opened is taken from the day the position was (Nov 18): spread over the days left, a
     // premium grew to the whole of it on its last day.
     const opened = toISODate(r.opened_on);
-    const legs = (r.legs || []).filter((l) => r.status === 'closed' || daysTo(l.expiry, now) > -1)
-      .map((l) => (l.since || !opened || opened > l.expiry || opened > new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(now) ? l : { ...l, since: opened }));
+    const rawLegs = (r.legs || []).filter((l) => r.status === 'closed' || daysTo(l.expiry, now) > -1);
+    const legs = (r.status === 'closed' ? rawLegs : legsAtFills(rawLegs.filter((l) => daysTo(l.expiry, now) > 0), entries, r.symbol, { today: todayNy }))
+      .map((l) => (l.since || !opened || opened > l.expiry || opened > todayNy ? l : { ...l, since: opened }));
     const figures = price ? evaluate({ price, shares, cost, legs }, { now, margin: r.status === 'closed' ? null : margin }) : null;
     const stockPnl = price ? r2((price - cost) * shares) : null;
     return {
