@@ -92,6 +92,18 @@ test('an option fill is read wherever it was filed (Nov 19); another account he 
   const seen = await optionCash({ symbols: ['TSLA'] });
   assert.equal(seen.stocks.find((s) => s.symbol === 'TSLA').calls, 90, 'a call fill in the chequing account still counts');
   assert.ok(!seen.entries.some((e) => /Rogers/.test(e.words)), 'a phone bill that says "call" is not a fill');
+  // Nov 19 ("why on earth does the covered call page now show ive collected -5000 of option premium"): a hauling payment with an
+  // invoice number before a C was a "call on C", and every Wealthsimple trade, flagged a transfer, had dropped out.
+  const spcxBefore = (await optionCash({ symbols: ['TSLA', 'SPCX'] })).stocks.find((x) => x.symbol === 'SPCX')?.calls || 0;
+  await tx('2026-10-13', -3780.79, 'e-Transfer sent — C and E Transport (canola hauling) — inv 13119 C and E Transport', { account: other, category: null });
+  await tx('2026-11-17', 164.43, 'Sell to open 1 SPCX Nov 18 $144 call @ US$1.15', { transfer: true });
+  await tx('2026-11-19', 43918.5, 'Market value adjustment (unrealized, not cash): holdings valued', { transfer: true,
+    category: (await db.query(`INSERT INTO expense_categories (name, class, ledger, kind) VALUES ('Investment market value (unrealized)', 'variable_seasonal', 'personal', 'expense') RETURNING id`)).rows[0].id });
+  await tx('2026-11-17', 6500, 'Transfer from RBC Farm Business — Interac e-Transfer deposit', { transfer: true, category: null });
+  const fixed = await optionCash({ symbols: ['TSLA', 'SPCX'] });
+  assert.ok(!fixed.entries.some((e) => /Transport/.test(e.words)), 'an invoice number is not a strike');
+  assert.equal(Math.round(((fixed.stocks.find((s) => s.symbol === 'SPCX')?.calls || 0) - spcxBefore) * 100) / 100, 164.43, 'a trade flagged a transfer still counts');
+  assert.ok(!fixed.entries.some((e) => /Market value|Interac/.test(e.words)), 'the unrealized revaluation and a real transfer stay out');
   await saveSource({ account_ids: [other], currency: 'CAD' });
   const c = await optionCash({ symbols: ['TSLA'] });
   assert.equal(c.stocks.find((s) => s.symbol === 'TSLA').calls, 90);

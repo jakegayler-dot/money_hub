@@ -91,11 +91,24 @@ export async function optionCash({ symbols = [] } = {}) {
        LEFT JOIN expense_categories c ON c.id = t.category_id
        LEFT JOIN expense_categories pc ON pc.id = c.parent_id
        LEFT JOIN options_cash_tags g ON g.transaction_id = t.id
-      WHERE NOT COALESCE(t.is_transfer, false)
-        AND (c.name ILIKE '%invest%' OR pc.name ILIKE '%invest%' OR t.account_id = ANY($1::int[])
-             -- An option fill wherever it was filed (Nov 19: the desk "can't see your option fills"): it names a call or put.
-             OR (CONCAT_WS(' ', t.description, p.name, t.review_note) ~* '\\m(calls?|puts?)\\M' AND CONCAT_WS(' ', t.description, p.name, t.review_note) ~ '\\m[A-Z]{2,6}\\M')
-             OR CONCAT_WS(' ', t.description, p.name, t.review_note) ~ '([A-Z]{1,6} ?[0-9]{6}[CP][0-9]{8}|[0-9] ?[CP]\\M)')
+      WHERE NOT COALESCE(t.is_noncash, false) AND COALESCE(c.name, '') NOT ILIKE '%unrealized%'
+        AND (
+          -- His brokerage entries, transfer flag or not (Nov 19: every Wealthsimple trade had been marked a transfer, which keeps
+          -- investing out of the budget, and the desk read none of them: "collected -5000 of option premium").
+          ((c.name ILIKE '%invest%' OR pc.name ILIKE '%invest%')
+            -- ...but money moved in or out (a deposit from chequing) is still a transfer, not a trade.
+            AND (NOT COALESCE(t.is_transfer, false) OR CONCAT_WS(' ', t.description, p.name, t.review_note) !~* '\\m(deposit|transfer|withdraw|contribut)'
+                 OR CONCAT_WS(' ', t.description, p.name, t.review_note) ~* '\\m(buy|bought|sell|sold|call|put|roll|open|close)'))
+          OR (NOT COALESCE(t.is_transfer, false) AND (
+            t.account_id = ANY($1::int[])
+            -- An option fill wherever it was filed (Nov 19: the desk "can't see your option fills"): it names a call or put and a
+            -- ticker, or carries an OCC option symbol.
+            OR (CONCAT_WS(' ', t.description, p.name, t.review_note) ~* '\\m(calls?|puts?)\\M' AND CONCAT_WS(' ', t.description, p.name, t.review_note) ~ '\\m[A-Z]{2,6}\\M')
+            OR CONCAT_WS(' ', t.description, p.name, t.review_note) ~ '\\m[A-Z]{1,6} ?[0-9]{6}[CP][0-9]{8}\\M'
+            -- A bare strike and C or P ("165C") only in a brokerage account (one with Investment entries): elsewhere an invoice
+            -- number before a C ("inv 13119 C and E Transport", a canola hauling payment) was read as a call on Citigroup.
+            OR (CONCAT_WS(' ', t.description, p.name, t.review_note) ~ '[0-9] ?[CP]\\M'
+                AND t.account_id IN (SELECT DISTINCT t2.account_id FROM transactions t2 JOIN expense_categories c2 ON c2.id = t2.category_id WHERE c2.name ILIKE '%invest%')))))
       ORDER BY t.date DESC, t.id DESC
       LIMIT 3000`, [src.account_ids]);
   const known = await knownSymbols(symbols);
