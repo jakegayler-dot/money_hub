@@ -5,6 +5,7 @@ import { quote, history, chain, parseOcc, cboeBusy } from './market.js';
 import { cleanRules, dropCheck, soonExpiries, pick, evaluate, daysTo, expiryCadence, legDays } from './strategy.js';
 import { toISODate } from '../dates.js';
 import { usdCad } from './fx.js';
+import { nextEarnings, inside } from './earnings.js';
 
 const RULES_KEY = 'covered_call_rules';
 const ALERTS_KEY = 'covered_call_alerts';
@@ -90,16 +91,33 @@ export async function scan(rulesIn = null, now = new Date()) {
     sweepWide(rules).catch((e) => console.error(`  !! Covered calls, the wider list: ${e.message}`));
   }
   const watch = new Set(rules.watchlist);
-  const wide = rules.wide ? wideState.rows.filter((r) => !watch.has(r.symbol)) : [];
+  // Earnings (Nov 19, Jake: "factor in earnings for the stocks in the list ... ie. earnings report calendar"): each row says its
+  // next report, and whether it falls before the call it was priced on expires, or while the put is held.
+  const cal = await nextEarnings({ now }).catch((e) => ({ map: new Map(), error: e.message }));
+  const withEarnings = (r) => {
+    if (r.error) return r;
+    const e = cal.map.get(r.symbol) || null;
+    const callExp = r.day_play?.call?.expiry || r.carry?.call?.expiry || null;
+    const putExp = r.day_play?.put?.expiry || r.carry?.put?.expiry || null;
+    return { ...r, earnings: e && { ...e, before_call: inside(e, callExp), before_put: inside(e, putExp), call_expiry: callExp } };
+  };
+  const all = stocks.map(withEarnings);
+  const wide = (rules.wide ? wideState.rows.filter((r) => !watch.has(r.symbol)) : []).map(withEarnings);
+  const ahead = [...all, ...wide].filter((r) => !r.error && r.day_play && r.day_play.net_per_day > 0);
+  const reportsFirst = (r) => inside(r.earnings, r.day_play.call.expiry);
   return {
     rules, as_of: now.toISOString(), fx,
-    stocks,
+    stocks: all,
+    earnings: { through: cal.through || null, days_read: cal.days_read || 0, running: !!cal.running, error: cal.error || null },
     wide: wide.filter((r) => r.qualifies).sort((a, b) => b.carry.gap - a.carry.gap),
     // The day's five (Nov 19): every stock read, watchlist and wider list, by what its call expiring today or the next trading
     // day pays a trading day less its long-horizon put and the margin interest, for one lot; only ones that come out ahead.
-    today_five: [...stocks, ...wide].filter((r) => !r.error && r.day_play && r.day_play.net_per_day > 0)
+    // A stock reporting before its call expires is left out (its premium is the market pricing the report), and said.
+    today_five: ahead.filter((r) => !reportsFirst(r))
       .sort((a, b) => b.day_play.net_per_day - a.day_play.net_per_day).slice(0, 5)
-      .map((r) => ({ symbol: r.symbol, watched: !!r.watched, iv30: r.iv30, day_pct: r.day_pct ?? null, ...r.day_play })),
+      .map((r) => ({ symbol: r.symbol, watched: !!r.watched, iv30: r.iv30, day_pct: r.day_pct ?? null, earnings: r.earnings, ...r.day_play })),
+    left_out_earnings: ahead.filter(reportsFirst).sort((a, b) => b.day_play.net_per_day - a.day_play.net_per_day)
+      .map((r) => ({ symbol: r.symbol, earnings: r.earnings, call: r.day_play.call, net_per_day: r.day_play.net_per_day })),
     call_otm: rules.call_otm, put_otm: rules.put_otm,
     wide_checked: wide.length + (rules.wide ? wideState.unread.length : 0),
     wide_unread: rules.wide ? wideState.unread : [],

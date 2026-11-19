@@ -219,5 +219,11 @@ app.listen(port, () => {
       .catch((e) => console.error('Covered-call watch failed:', e.message));
     setTimeout(optionsWatch, 60000);
     setInterval(optionsWatch, 15 * 60 * 1000);
+    // The earnings calendar for the desk (lib/options/earnings.js, Nov 19): read in the background, a weekday at a time.
+    const earningsRead = () => import('./lib/options/earnings.js').then((m) => m.refresh())
+      .then(() => import('./lib/options/earnings.js')).then((m) => m._state.error && console.error('Earnings calendar:', m._state.error))
+      .catch((e) => console.error('Earnings calendar failed:', e.message));
+    setTimeout(earningsRead, 90000);
+    setInterval(earningsRead, 12 * 60 * 60 * 1000);
   }
 });

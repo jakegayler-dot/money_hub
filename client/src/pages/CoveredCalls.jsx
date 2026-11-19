@@ -102,6 +102,15 @@ function OptLine({ o, kind }) {
 // cost long term"): from every stock the page reads, 100 shares with the call expiring today or the next trading day by his
 // rule and the cheapest long-horizon put by his rule, ranked by what the call pays a trading day less the put and the margin
 // interest. His rules applied to today's prices; the trade is his. Tap one to open it in the calculator.
+// A stock's next earnings report (Nov 19: "factor in earnings ... ie. earnings report calendar"), from Nasdaq's calendar.
+function EarningsLine({ e, put = true }) {
+  if (!e) return null;
+  const when = `${optDay(e.date)}, ${e.time}`;
+  return <span className={`cc-earn-line${e.before_call ? ' warn' : ''}`}>
+    Reports {when}{e.before_call ? ': before the call expires' : put && e.before_put ? ': the put covers it' : ''}
+  </span>;
+}
+
 function TodayFive({ scan, onLoad }) {
   const five = scan?.today_five || [];
   if (!scan) return null;
@@ -127,7 +136,8 @@ function TodayFive({ scan, onLoad }) {
                 {five.map((f, i) => (
                   <tr key={f.symbol} onClick={() => onLoad({ symbol: f.symbol, shares: 100, cost: f.price, legs: f.legs, idea: true })} title="Open it in the calculator">
                     <td className="cc-faint">{i + 1}</td>
-                    <td><b>{f.symbol}</b><span className="cc-opt"><span>{usd(f.price, 2)}{f.day_pct != null ? ` · ${pctS(f.day_pct)} today` : ''}</span></span></td>
+                    <td><b>{f.symbol}</b><span className="cc-opt"><span>{usd(f.price, 2)}{f.day_pct != null ? ` · ${pctS(f.day_pct)} today` : ''}</span>
+                      {f.earnings ? <EarningsLine e={f.earnings} /> : <span>no report in the calendar{scan.earnings?.through ? ` to ${optDay(scan.earnings.through)}` : ''}</span>}</span></td>
                     <td>{f.call.strike} C {when(f.call.expiry)} at {usd(f.call.bid, 2)}
                       <span className="cc-opt"><span>{cad(f.call.per_day)} a trading day{f.called_away_chance != null ? ` · ${f.called_away_chance}% chance called` : ''}</span></span></td>
                     <td>{f.put.strike} P {optDay(f.put.expiry)} at {usd(f.put.ask, 2)}
@@ -144,6 +154,13 @@ function TodayFive({ scan, onLoad }) {
             </table>
           </div>
         )}
+      {scan.left_out_earnings?.length > 0 && (
+        <p className="cc-pad cc-left-out"><b>Left out, reporting before the call expires</b> (the premium is the market pricing the report, and the shares can gap):{' '}
+          {scan.left_out_earnings.map((x, i) => <span key={x.symbol}>{i ? '; ' : ''}<b>{x.symbol}</b> {optDay(x.earnings.date)} {x.earnings.time}, its {x.call.strike} call would pay {cad(x.net_per_day)} a day</span>)}.</p>
+      )}
+      {scan.earnings && (scan.earnings.error || !scan.earnings.days_read) && (
+        <p className="cc-pad review-error">{scan.earnings.error || (scan.earnings.running ? 'Reading the earnings calendar: the five may still include a stock that reports before its call expires.' : 'The earnings calendar hasn’t been read yet.')}</p>
+      )}
       <p className="cc-faint cc-pad">Your rules applied to 15-minute-delayed Cboe prices: the call at least US${scan.call_otm} above the price, the put at least US${scan.put_otm} below. Not advice; the trade is yours. Tap one to work it in the calculator.</p>
     </div>
   );
@@ -174,12 +191,12 @@ function Watchlist({ scan, err, selected, onPick, rules, saveRules }) {
               <th className="num" title={`The average, over the expiries within ${rules.call_max_days} days, of the first call at least US$${rules.call_otm} above the price, at the bid, for each trading day to its expiry. Under it: the call that pays the most a trading day, its bid and delta.`}>Calls US${rules.call_otm} out</th>
               <th className="num" title={`The average, over the expiries ${rules.put_days_min} to ${rules.put_days_max} days out, of the first put at least US$${rules.put_otm} below the price, at the ask, for each trading day to its expiry. Under it: the cheapest put a trading day, its ask and delta.`}>Puts US${rules.put_otm} out</th>
               <th className="num" title="Calls less puts, a trading day, for 100 shares">Difference</th>
-              <th>Options expire</th><th className="num cc-wide-only">Today</th><th className="num cc-wide-only">From high</th><th /><th /></tr></thead>
+              <th>Options expire</th><th title="The next earnings report (Nasdaq's calendar)">Earnings</th><th className="num cc-wide-only">Today</th><th className="num cc-wide-only">From high</th><th /><th /></tr></thead>
             <tbody>
               {rows.map((s) => (
                 <tr key={s.symbol} className={`${selected === s.symbol ? 'on' : ''} ${s.triggered && s.qualifies ? 'dropped' : ''} ${!s.error && !s.qualifies ? 'cc-dim' : ''}`} onClick={() => !s.error && onPick(s.symbol)}>
                   <td><b>{s.symbol}</b></td>
-                  {s.error ? <td colSpan={7} className="cc-faint">{s.error}</td> : <>
+                  {s.error ? <td colSpan={8} className="cc-faint">{s.error}</td> : <>
                     <td className="num">{usd(s.price, 2)}</td>
                     <td className="num" title={s.carry ? `average of ${s.carry.calls} expir${s.carry.calls === 1 ? 'y' : 'ies'}, a trading day` : ''}>
                       {s.carry ? cad(s.carry.call_per_day) : '—'}<OptLine o={s.carry?.call} kind="call" /></td>
@@ -189,6 +206,7 @@ function Watchlist({ scan, err, selected, onPick, rules, saveRules }) {
                       {s.carry?.on_capital_pct_year != null && <span className="cc-opt"><span>{s.carry.on_capital_pct_year.toFixed(0)}% a year on capital</span>
                         <span>{s.carry.days_to_earn_max_loss != null ? `max loss back in ${s.carry.days_to_earn_max_loss} days` : 'not earning after interest'}</span></span>}</td>
                     <td>{cadenceLabel(s.cadence)}{!s.often && <span className="cc-faint"> · not often enough</span>}</td>
+                    <td>{s.earnings ? <>{optDay(s.earnings.date)}{s.earnings.before_call ? <span className="badge warn" title={`Reports ${s.earnings.time}, before the call priced here expires: its premium is inflated by the report`}> BEFORE CALL</span> : null}<span className="cc-opt"><span>{s.earnings.time}</span></span></> : <span className="cc-faint">—</span>}</td>
                     <td className="num cc-wide-only">{pctS(s.day_pct)}</td>
                     <td className="num cc-wide-only">{pctS(s.from_high_pct)}</td>
                   </>}

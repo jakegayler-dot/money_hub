@@ -149,3 +149,8 @@
 .cc-table .cc-opt > span { display: block; white-space: nowrap; }
 .cc-table tbody tr.cc-dim .cc-opt { color: var(--text-faint); }
 @media (max-width: 760px) { .cc-table .cc-wide-only { display: none; } }
+
+/* Earnings (Nov 19): the next report under a stock; amber when it falls before the call expires */
+.cc-earn-line { display: block; color: var(--text-muted); }
+.cc-earn-line.warn { color: var(--gold-bright); }
+.cc-left-out { font-size: 12.5px; color: var(--text-muted); }
