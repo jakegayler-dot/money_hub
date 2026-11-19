@@ -203,7 +203,7 @@ export function positionFields(b = {}, current = {}) {
 export async function positions(now = new Date()) {
   const { rows } = await pool.query(`SELECT * FROM options_positions ORDER BY (status = 'closed'), opened_on DESC, id DESC`);
   // His fills (Nov 19): the options he holds at what his Money Hub entries say they cost, not the broker's lumped average.
-  const { optionCash, legsAtFills } = await import('./cash.js');
+  const { optionCash, legsAtFills, bankedCalls } = await import('./cash.js');
   const cash = await optionCash({ symbols: rows.map((r) => r.symbol) }).catch(() => null);
   const fxRate = cash?.currency === 'CAD' ? (await usdCad().catch(() => null))?.rate : null;
   const entries = (cash?.entries || []).filter((e) => e.kind && e.symbol)
@@ -222,7 +222,9 @@ export async function positions(now = new Date()) {
     const rawLegs = (r.legs || []).filter((l) => r.status === 'closed' || daysTo(l.expiry, now) > -1);
     const legs = (r.status === 'closed' ? rawLegs : legsAtFills(rawLegs.filter((l) => daysTo(l.expiry, now) > 0), entries, r.symbol, { today: todayNy }))
       .map((l) => (l.since || !opened || opened > l.expiry || opened > todayNy ? l : { ...l, since: opened }));
-    const figures = price ? evaluate({ price, shares, cost, legs }, { now, margin: r.status === 'closed' ? null : margin }) : null;
+    // Everything the calls have brought in counts, not only the open call's own sale (Nov 19).
+    const banked = r.status === 'closed' ? null : bankedCalls(legs, entries, r.symbol, { today: todayNy });
+    const figures = price ? evaluate({ price, shares, cost, legs, banked }, { now, margin: r.status === 'closed' ? null : margin }) : null;
     const stockPnl = price ? r2((price - cost) * shares) : null;
     return {
       id: r.id, symbol: r.symbol, shares, cost, status: r.status, source: r.source || 'manual', synced_at: r.synced_at || null, opened_on: toISODate(r.opened_on), closed_on: toISODate(r.closed_on), notes: r.notes,
@@ -230,7 +232,7 @@ export async function positions(now = new Date()) {
       open_legs: r.status === 'closed' ? [] : legs.filter((l) => daysTo(l.expiry, now) > 0).map((l) => ({ ...l, days: legDays(l, now), per_day: r2((Number(l.premium) * Number(l.contracts) * 100) / legDays(l, now)), ...(l.since && !(r.legs || []).find((o) => o.strike === l.strike && o.expiry === l.expiry && o.type === l.type)?.since ? { since_from_position: true } : {}) })),
       stock_pnl: stockPnl, total_pnl: stockPnl == null ? null : r2(stockPnl + Number(r.premium_collected)),
       days_held: Math.max(1, Math.round((now - new Date(`${toISODate(r.opened_on)}T12:00:00Z`)) / 86400e3)),
-      figures: figures && { max_gain: figures.max_gain, max_loss: figures.max_loss, breakevens: figures.breakevens, horizon: figures.horizon, income_per_day: figures.income_per_day,
+      figures: figures && { banked: figures.banked, premium_in: figures.premium_in, put_cost: figures.put_cost, max_gain: figures.max_gain, max_loss: figures.max_loss, breakevens: figures.breakevens, horizon: figures.horizon, income_per_day: figures.income_per_day,
         protection_per_day: figures.protection_per_day, net_per_day: figures.net_per_day,
         interest_per_day: figures.interest_per_day, net_after_interest_per_day: figures.net_after_interest_per_day, capital_needed: figures.capital_needed,
         revenue_per_day: figures.revenue_per_day, on_capital_pct_day: figures.on_capital_pct_day, on_capital_pct_year: figures.on_capital_pct_year,

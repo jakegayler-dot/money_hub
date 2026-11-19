@@ -172,12 +172,17 @@ export function evaluate(position, { now = new Date(), testPcts = [], margin = n
   // expiry, every leg at what it's worth then (no time value left), the interest to that day.
   const riskHorizon = legs.length ? legs.map((l) => l.expiry).sort().at(-1) : null;
   const interestToRisk = riskHorizon ? interestPerDay * calendarSpan(riskHorizon, now) : 0;
-  const pnlHeld = (S) => (S - cost) * shares - interestToRisk + legs.reduce((a, l) => a + legSign(l) * (intrinsic(l.type, S, l.strike) - l.premium) * l.contracts * 100, 0);
+  // Call premium already banked from calls closed, rolled or expired (Nov 19, Jake: daily income and max loss "only count your
+  // last roll's credit, not everything you've collected ... These need to use total premium against total puts"): a fixed credit
+  // in every figure, whatever the price does. position.banked = { usd, since } (desk.js, from his fills).
+  const banked = Number(position.banked?.usd) || 0;
+  const bankedSince = /^\d{4}-\d{2}-\d{2}$/.test(String(position.banked?.since || '')) ? position.banked.since : null;
+  const pnlHeld = (S) => banked + (S - cost) * shares - interestToRisk + legs.reduce((a, l) => a + legSign(l) * (intrinsic(l.type, S, l.strike) - l.premium) * l.contracts * 100, 0);
   // A trading day's share of the interest (Nov 18: "then interest comes off after that"): the year's interest over the year's
   // 252 trading days, the same every day (it had been the interest to the nearest expiry over its sessions, so a Friday took
   // a weekend's worth).
   const interestPerSession = interestPerDay * 365 / TRADING_DAYS_A_YEAR;
-  const pnl = (S) => (S - cost) * shares - interestToHorizon + legs.reduce((a, l) => a + legSign(l) * (valueAt(l, S) - l.premium) * l.contracts * 100, 0);
+  const pnl = (S) => banked + (S - cost) * shares - interestToHorizon + legs.reduce((a, l) => a + legSign(l) * (valueAt(l, S) - l.premium) * l.contracts * 100, 0);
 
   const top = Math.max(price, cost, ...legs.map((l) => l.strike)) * 3;
   const points = new Set([0, cost, price, top, ...legs.map((l) => l.strike)]);
@@ -199,13 +204,20 @@ export function evaluate(position, { now = new Date(), testPcts = [], margin = n
   const longCalls = legs.filter((l) => l.type === 'call' && l.side === 'long').reduce((a, l) => a + l.contracts * 100, 0);
   const uncovered = shortCalls > shares + longCalls;
   const rising = vals[vals.length - 1][1] - vals[vals.length - 2][1] > 1e-6;
-  const credit = legs.reduce((a, l) => a - legSign(l) * l.premium * l.contracts * 100, 0);
-  const premiumIn = legs.filter((l) => l.side === 'short').reduce((a, l) => a + l.premium * l.contracts * 100, 0);
+  const credit = banked + legs.reduce((a, l) => a - legSign(l) * l.premium * l.contracts * 100, 0);
+  const premiumIn = banked + legs.filter((l) => l.side === 'short').reduce((a, l) => a + l.premium * l.contracts * 100, 0);
   // Option revenue a trading day (Nov 18: "look at call premium currently on the trades, the date they expire and the date they
   // were made, that is the call premium/day, then the same for the put options to determine the put cost, and then interest
   // comes off"): each option still open, its premium over the trading days from when it was opened to its expiry.
   const live = legs;
-  const perDay = live.filter((l) => l.side === 'short').reduce((a, l) => a + (l.premium * l.contracts * 100) / legDays(l, now), 0);
+  // With premium banked, the calls' income is everything collected (banked plus the open calls) over the trading days from the
+  // first call to the open call's expiry (today, with none open): what the calls have actually been earning a day.
+  const shortsOpen = live.filter((l) => l.side === 'short');
+  const callsEnd = [nyDate(now), ...shortsOpen.map((l) => l.expiry)].sort().at(-1);
+  const callDays = bankedSince ? Math.max(1, tradingDaysBetween(bankedSince, callsEnd)) : null;
+  const perDay = banked && callDays
+    ? (banked + shortsOpen.reduce((a, l) => a + l.premium * l.contracts * 100, 0)) / callDays
+    : shortsOpen.reduce((a, l) => a + (l.premium * l.contracts * 100) / legDays(l, now), 0);
   const costPerDay = live.filter((l) => l.side === 'long').reduce((a, l) => a + (l.premium * l.contracts * 100) / legDays(l, now), 0);
   const stockIn = cost * shares;
   const paidOut = legs.filter((l) => l.side === 'long').reduce((a, l) => a + l.premium * l.contracts * 100, 0);
@@ -225,6 +237,7 @@ export function evaluate(position, { now = new Date(), testPcts = [], margin = n
   for (let i = 0; i <= 80; i++) { const S = price * (0.55 + (0.9 * i) / 80); curve.push({ price: r2(S), pnl: r2(pnl(S)) }); }
   return {
     horizon, risk_horizon: riskHorizon, interest_to_risk: r2(interestToRisk), shares, cost: r2(cost), price: r2(price),
+    banked: banked ? { usd: r2(banked), since: bankedSince, call_days: callDays } : null,
     money_in: r2(stockIn + paidOut), stock_in: r2(stockIn), premium_in: r2(premiumIn), put_cost: r2(paidOut), net_credit: r2(credit),
     income_per_day: r2(perDay), protection_per_day: r2(costPerDay), net_per_day: r2(perDay - costPerDay),
     margin_pct: m.pct, margin_rate: m.rate, capital_needed: r2(stockIn * m.pct / 100 + paidOut), borrowed: r2(borrowed),

@@ -56,6 +56,12 @@ export function classify(text, known = new Set(), aliases = {}) {
   }
   const call = /\bCALLS?\b/.test(U) || /\b\d+(?:\.\d+)?\s?C\b/.test(U) || /\bC\d+(?:\.\d+)?\b/.test(U);
   const put = /\bPUTS?\b/.test(U) || /\b\d+(?:\.\d+)?\s?P\b/.test(U) || /\bP\d+(?:\.\d+)?\b/.test(U);
+  if (!symbol) {
+    // A share trade written "Buy 1,000 T at $12.53": a one-letter ticker counts there (Nov 19: TELUS is T on the TSX, and its
+    // two trades sat unsorted).
+    const m = /\b(?:[Bb]uy|[Ss]ell|[Bb]ought|[Ss]old|BUY|SELL|BOUGHT|SOLD)\s+[\d,]+(?:\.\d+)?\s+(?:shares?\s+(?:of\s+)?)?([A-Z]{1,5})\b/.exec(raw);
+    if (m && !NOT_A_SYMBOL.has(m[1])) symbol = m[1];
+  }
   if (!symbol && (call || put || STOCK.test(U))) {
     // A trade on a stock the desk doesn't know yet: the first capital-letter word that isn't a trading word.
     symbol = (raw.match(/\b[A-Z]{2,5}\b/g) || []).find((t) => !NOT_A_SYMBOL.has(t)) || null;
@@ -210,7 +216,9 @@ export async function insurance({ now = new Date(), list: given = null, fx: give
     const callPremiumNow = calls.reduce((a, l) => a + Number(l.premium) * Number(l.contracts) * 100, 0);
     return {
       symbol, from: basis, calendar_days_left: expiry ? Math.max(0, Math.ceil(daysTo(expiry, now))) : null,
-      call_premium_now: r2(callPremiumNow), call_less_put: r2(callPremiumNow - paid), puts_paid: r2(paid), calls_collected: collected == null ? null : r2(collected), left: r2(left),
+      // Calls against puts is everything the calls have brought in (Nov 19: "total premium against total puts"); the open
+      // call's own premium only when no call entries are known.
+      call_premium_now: r2(callPremiumNow), calls_total: r2(collected ?? callPremiumNow), call_less_put: r2((collected ?? callPremiumNow) - paid), puts_paid: r2(paid), calls_collected: collected == null ? null : r2(collected), left: r2(left),
       puts_in_entries: c ? r2(entryPaid) : null, puts_held_cost: r2(heldCost), call_entries: c ? c.call_entries : 0, put_entries: c ? c.put_entries : 0,
       put_expiry: expiry, trading_days_left: daysLeft, needed_per_day: daysLeft ? r2(left / daysLeft) : null,
       call_now_per_day: r2(callNow), days_to_even: daysToEven, even_on: daysToEven ? sessionDate(daysToEven, now) : null,
@@ -230,7 +238,7 @@ export async function insurance({ now = new Date(), list: given = null, fx: give
       call_entries: rows.reduce((a, r) => a + r.call_entries, 0), put_entries: rows.reduce((a, r) => a + r.put_entries, 0),
       trading_days_left: expiry ? incomeDays(expiry, now) : null, needed_per_day: sum('needed_per_day'), call_now_per_day: callNow,
       calendar_days_left: expiry ? Math.max(0, Math.ceil(daysTo(expiry, now))) : null,
-      call_premium_now: sum('call_premium_now'), call_less_put: sum('call_less_put'),
+      call_premium_now: sum('call_premium_now'), calls_total: sum('calls_total'), call_less_put: sum('call_less_put'),
       days_to_even: daysToEven, even_on: daysToEven ? sessionDate(daysToEven, now) : null,
     } : null,
   };
@@ -310,4 +318,17 @@ export function legsAtFills(legs = [], entries = [], symbol, { today = null } = 
     }
     return l;
   });
+}
+
+/**
+ * Call premium banked from calls already closed, rolled or expired (Jake, Nov 19: "These need to use total premium against
+ * total puts"): every call entry on the stock (sales in, buybacks out, US$), less what the calls still open are counted at
+ * (legsAtFills: the latest sale), so the open call isn't counted twice. since: the first call entry. Pure.
+ */
+export function bankedCalls(legs = [], entries = [], symbol, { today = null } = {}) {
+  const calls = entries.filter((e) => e.symbol === symbol && e.kind === 'call' && (!today || e.date <= today));
+  if (!calls.length) return null;
+  const total = calls.reduce((a, e) => a + e.usd, 0);
+  const open = legs.filter((l) => l.type === 'call' && l.side === 'short').reduce((a, l) => a + Number(l.premium) * Number(l.contracts) * 100, 0);
+  return { usd: r2(total - open), total: r2(total), since: calls.map((e) => e.date).sort()[0] };
 }

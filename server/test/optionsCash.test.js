@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { pool } from '../db.js';
-import { classify, optionCash, tagEntry, untagEntry, saveSource, insurance, sessionEarnings, legsAtFills } from '../lib/options/cash.js';
+import { classify, optionCash, tagEntry, untagEntry, saveSource, insurance, sessionEarnings, legsAtFills, bankedCalls } from '../lib/options/cash.js';
 import { marketCalendar, expiryClose } from '../lib/options/strategy.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -211,4 +211,36 @@ test('the options he holds at what his fills cost (Nov 19: "NVDA put cost shows 
   assert.equal(call.premium, 1.2, 'the latest call sale, not every call before it');
   assert.equal(call.since, '2026-11-18');
   assert.deepEqual(legsAtFills(legs, [], 'NVDA'), legs, 'no fills: the broker’s figures');
+});
+
+// Nov 19 (Jake): daily income and max loss "only count your last roll's credit, not everything you've collected. SPCX uses
+// US$70 instead of US$340 ... These need to use total premium against total puts".
+test('everything the calls have collected counts against the puts, not just the open call', async () => {
+  const { evaluate } = await import('../lib/options/strategy.js');
+  const now = new Date('2026-11-19T20:00:00Z');
+  const legs = [
+    { type: 'put', side: 'long', strike: 130, expiry: '2026-12-31', premium: 5.85, contracts: 1, since: '2026-11-17' },
+    { type: 'call', side: 'short', strike: 145, expiry: '2026-11-23', premium: 0.7, contracts: 1, since: '2026-11-18' },
+  ];
+  const e = (id, date, usd) => ({ id, date, kind: 'call', symbol: 'SPCX', amount: usd, usd });
+  const entries = [e(1, '2026-11-17', 115), e(2, '2026-11-18', 155), e(3, '2026-11-18', 70)];
+  const banked = bankedCalls(legs, entries, 'SPCX', { today: '2026-11-19' });
+  assert.deepEqual(banked, { usd: 270, total: 340, since: '2026-11-17' }, 'US$340 collected, US$70 of it on the open call');
+  const before = evaluate({ price: 138, shares: 100, cost: 140.69, legs }, { now });
+  const after = evaluate({ price: 138, shares: 100, cost: 140.69, legs, banked }, { now });
+  // Held to the put's expiry at or under its strike: (130 − 140.69) × 100 − 585 + 340 = −1,314.
+  assert.equal(after.max_loss, -1314);
+  assert.equal(Math.round(after.max_loss - before.max_loss), 270, 'the banked premium comes off the worst case');
+  assert.ok(after.breakevens.length > 0 && after.breakevens[0] < before.breakevens[0] || !before.breakevens.length);
+  assert.ok(after.income_per_day > before.income_per_day, 'income counts all US$340, not the last roll');
+  assert.ok(after.net_per_day > 0, 'calls a day now beat the puts a day');
+  assert.equal(after.premium_in, 340);
+  assert.equal(bankedCalls(legs, [], 'SPCX'), null, 'no call entries: nothing banked');
+  // No call open (NVDA after today's trades): every call still counts.
+  assert.equal(bankedCalls([legs[0]], entries, 'SPCX').usd, 340);
+});
+
+test('a one-letter ticker in a share trade (TELUS is T)', () => {
+  assert.deepEqual(classify('Buy 1,000 T at $12.53 (Limit Buy filled; Wealthsimple Margin)'), { kind: 'stock', symbol: 'T' });
+  assert.deepEqual(classify('Sell 1,000 T at $12.08 (Limit Sell filled; Wealthsimple Margin)'), { kind: 'stock', symbol: 'T' });
 });

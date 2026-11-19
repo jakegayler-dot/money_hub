@@ -523,8 +523,8 @@ function Insurance({ x }) {
       <div className="cc-tiles cc-tiles-sm">
         <Tile k="Price floor left" v={x.trading_days_left == null ? '—' : `${x.trading_days_left} trading day${x.trading_days_left === 1 ? '' : 's'}`}
           sub={x.put_expiry ? `${x.calendar_days_left} calendar days, to ${day(x.put_expiry)}` : 'no put held'} />
-        <Tile k="Open call − puts" v={signed(x.call_less_put)} cls={sign(x.call_less_put)}
-          sub={`call ${cad(x.call_premium_now)} − puts ${cad(x.puts_paid)}`} />
+        <Tile k="Calls − puts" v={signed(x.call_less_put)} cls={sign(x.call_less_put)}
+          sub={`calls collected ${cad(x.calls_total ?? x.call_premium_now)} − puts ${cad(x.puts_paid)}`} />
         <Tile k="Call premium to break even" v={even ? 'covered' : x.needed_per_day == null ? '—' : `${cad(x.needed_per_day, 2)} a day`}
           cls={!even && x.needed_per_day != null && x.call_now_per_day < x.needed_per_day ? 'neg' : ''}
           sub={even ? 'the calls have paid for the puts' : `a trading day to the put’s expiry; the open call pays ${cad(x.call_now_per_day, 2)}`} />
