@@ -205,6 +205,12 @@ app.listen(port, () => {
     .catch((e) => console.error('Clothes sweep failed:', e.message));
   setTimeout(clothesSweep, 120000);
   setInterval(clothesSweep, 6 * 60 * 60 * 1000);
+  // Spending insights (lib/spendingInsights.js): the month just ended, read once, on the first run of a new month.
+  const insightsRead = () => import('./lib/spendingInsights.js').then((m) => m.monthlyRead())
+    .then((r) => r && console.log(`Spending insights read for ${r.month}.`))
+    .catch((e) => console.error('Spending insights failed:', e.message));
+  setTimeout(insightsRead, 180000);
+  setInterval(insightsRead, 6 * 60 * 60 * 1000);
   // The covered-call desk's watcher: his watchlist every 15 minutes while the US market is open; a drop by his rule is noted
   // once a stock a day (lib/options/desk.js watch). Off on a local copy with no database.
   if (process.env.DATABASE_URL) {

@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { money } from '../format.js';
+import { Pie } from '../components/Pie.jsx';
+import { SERIES, foldSlices } from '../chartColors.js';
 import './personalBudget.css';
 
 // Spending & budget (Jake, Nov 1): the budget month by month against what was spent, where it went by category, and the
@@ -182,6 +184,45 @@ function FindPayment() {
   );
 }
 
+// Spending insights (Nov 19: "spending insights on wasteful purchases or savings opportunities"): Claude's read of the month,
+// done once at the start of the next one (lib/spendingInsights.js). Each finding opens to the purchases behind it.
+function Insights({ month }) {
+  const [x, setX] = useState(undefined);
+  const [open, setOpen] = useState(null);
+  useEffect(() => { setX(undefined); fetch(`/api/personal/insights?month=${month}`).then((r) => r.json()).then((v) => setX(v && !v.error ? v : null)).catch(() => setX(null)); }, [month]);
+  if (x === undefined) return null;
+  const saveAll = (x?.findings || []).reduce((a, f) => a + (f.save_per_month || 0), 0);
+  return (
+    <section className="panel">
+      <div className="panel-header pb-ph">
+        <span>Spending insights{x ? ` · ${longMonth(x.month)}` : ''}</span>
+        <span className="pb-sum">{x ? (saveAll > 0 ? `about ${money(saveAll)} a month to be had` : 'read at the start of the month') : 'the month is read once it ends'}</span>
+      </div>
+      {!x ? <p className="pb-empty pb-pad">Claude reads each month once it ends, on the 1st; the first read is on its way.</p> : (
+        <div className="pb-ins">
+          {x.summary && <p className="pb-ins-sum">{x.summary}</p>}
+          {x.findings.length === 0 && <p className="pb-empty">Nothing worth raising this month.</p>}
+          {x.findings.map((f, i) => (
+            <div key={i} className={`pb-ins-card ${f.kind}`}>
+              <button type="button" className="pb-ins-head" aria-expanded={open === i} onClick={() => setOpen(open === i ? null : i)}>
+                <span className="pb-ins-kind">{f.kind === 'waste' ? 'Waste' : 'Saving'}</span>
+                <b>{f.title}</b>
+                {f.save_per_month ? <span className="pb-ins-save">save ~{money(f.save_per_month)}/mo</span> : null}
+              </button>
+              <p>{f.detail}</p>
+              {open === i && f.purchases?.length > 0 && (
+                <table className="pb-entries" data-nostack=""><tbody>
+                  {f.purchases.map((p) => <tr key={p.id}><td>{p.date}</td><td>{p.name}</td><td>{p.category}</td><td className="num">{money(p.amount)}</td></tr>)}
+                </tbody></table>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function Personal() {
   const [who, setWho] = useState('both');
   const [month, setMonth] = useState(null);
@@ -286,6 +327,28 @@ export default function Personal() {
         </section>
       </div>
 
+      {lines.some((l) => l.spent > 0.005) && (() => {
+        // Where it went as a pie (Nov 19); a slice opens its line below.
+        const slices = foldSlices(lines.filter((l) => l.spent > 0.005).map((l) => ({ key: l.key, label: l.label, amount: l.spent })), { palette: SERIES, otherLabel: (n) => `${n} more lines` });
+        const tot = slices.reduce((a, x) => a + x.amount, 0);
+        const go = (k) => { if (!k || k === '__rest') return; setOpen(k); setTimeout(() => document.getElementById(`pb-line-${k}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50); };
+        return (
+          <section className="panel pb-pie">
+            <div className="panel-header pb-ph"><span>Where the money went · {longMonth(d.month)}</span><span className="pb-sum">Tap a slice for its entries</span></div>
+            <div className="pb-pie-body">
+              <Pie slices={slices} selected={open} onSelect={go} size={220} label={`Spending by line, ${longMonth(d.month)}`} centerTitle="Spent" />
+              <ul className="pb-pie-keys">
+                {slices.map((x) => (
+                  <li key={x.key}><button type="button" onClick={() => go(x.key)} disabled={x.key === '__rest'}>
+                    <i style={{ background: x.color }} /><span>{x.label}</span><b>{money(x.amount)}</b><em>{Math.round((x.amount / tot) * 100)}%</em>
+                  </button></li>
+                ))}
+              </ul>
+            </div>
+          </section>
+        );
+      })()}
+
       <section className="panel">
         <div className="panel-header pb-ph">
           <span>Where it went</span>
@@ -299,7 +362,7 @@ export default function Personal() {
               const isOpen = open === l.key;
               return (
                 <Fragment key={l.key}>
-                  <tr className={`pb-row${isOpen ? ' on' : ''}`} onClick={() => setOpen(isOpen ? null : l.key)}>
+                  <tr id={`pb-line-${l.key}`} className={`pb-row${isOpen ? ' on' : ''}`} onClick={() => setOpen(isOpen ? null : l.key)}>
                     <td><span className="pb-caret">{isOpen ? '▾' : '▸'}</span>{l.label}
                       {both && l.farm > 0.005 && <div className="pb-subl">farm {money(l.farm)}</div>}</td>
                     <td className="pb-barcol"><ScaleBar budget={l.budget} spent={l.spent} max={lineMax} showBudget={both} /></td>
@@ -359,6 +422,8 @@ export default function Personal() {
           </details>
         </section>
       )}
+
+      <Insights month={d.month} />
 
       <FindPayment />
 

@@ -25,7 +25,7 @@ export function costOf(model, u = {}) {
 
 // Which feature made the call: the first of these files on the call's stack.
 const FEATURES = [
-  ['/advisor/', 'advisor'], ['clothes.js', 'clothes'], ['receipts.js', 'receipts'], ['paystubRead.js', 'paystubs'], ['groceries.js', 'groceries'],
+  ['/advisor/', 'advisor'], ['spendingInsights.js', 'spending insights'], ['clothes.js', 'clothes'], ['receipts.js', 'receipts'], ['paystubRead.js', 'paystubs'], ['groceries.js', 'groceries'],
 ];
 export const featureOf = (stack = '') => {
   const s = String(stack).replace(/\\/g, '/');

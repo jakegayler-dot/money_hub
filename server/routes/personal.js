@@ -66,6 +66,13 @@ router.put('/budget/share', ah(async (req, res) => {
 // The budget page (lib/householdBudget.js): ?month=YYYY-MM&who=both|jake|ashley.
 const WHO = ['both', 'jake', 'ashley'];
 const whoOf = (q) => (WHO.includes(q.who) ? q.who : 'both');
+// Spending insights (lib/spendingInsights.js): the month asked for if it's been read, else the newest before it.
+router.get('/insights', ah(async (req, res) => {
+  const { get, latest } = await import('../lib/spendingInsights.js');
+  const m = /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? req.query.month : new Date().toISOString().slice(0, 7);
+  res.json((await get(m)) || (await latest(m)) || null);
+}));
+
 router.get('/budget-view', ah(async (req, res) => {
   const [v, cats] = await Promise.all([budgetView({ month: req.query.month, who: whoOf(req.query) }), categoryBuckets()]);
   res.json({ ...v, categories: cats.map((c) => ({ id: c.id, name: c.full, line: lineFor(c.full) })).sort((a, b) => a.name.localeCompare(b.name)) });

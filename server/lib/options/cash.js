@@ -205,8 +205,12 @@ export async function insurance({ now = new Date(), list: given = null, fx: give
     const left = collected == null ? paid : Math.max(0, paid - collected);
     const callNow = calls.reduce((a, l) => a + l.per_day, 0);
     const daysToEven = left <= 0 ? 0 : callNow > 0 ? Math.ceil(left / callNow) : null;
+    // Nov 19 (Jake: "show days left of price floor insurance, and current call premium minus put premium"): the calendar days
+    // the put floor has left, and the open call's premium against the puts' cost.
+    const callPremiumNow = calls.reduce((a, l) => a + Number(l.premium) * Number(l.contracts) * 100, 0);
     return {
-      symbol, from: basis, puts_paid: r2(paid), calls_collected: collected == null ? null : r2(collected), left: r2(left),
+      symbol, from: basis, calendar_days_left: expiry ? Math.max(0, Math.ceil(daysTo(expiry, now))) : null,
+      call_premium_now: r2(callPremiumNow), call_less_put: r2(callPremiumNow - paid), puts_paid: r2(paid), calls_collected: collected == null ? null : r2(collected), left: r2(left),
       puts_in_entries: c ? r2(entryPaid) : null, puts_held_cost: r2(heldCost), call_entries: c ? c.call_entries : 0, put_entries: c ? c.put_entries : 0,
       put_expiry: expiry, trading_days_left: daysLeft, needed_per_day: daysLeft ? r2(left / daysLeft) : null,
       call_now_per_day: r2(callNow), days_to_even: daysToEven, even_on: daysToEven ? sessionDate(daysToEven, now) : null,
@@ -225,6 +229,8 @@ export async function insurance({ now = new Date(), list: given = null, fx: give
       puts_from_held: rows.filter((r) => r.from === 'held').map((r) => r.symbol),
       call_entries: rows.reduce((a, r) => a + r.call_entries, 0), put_entries: rows.reduce((a, r) => a + r.put_entries, 0),
       trading_days_left: expiry ? incomeDays(expiry, now) : null, needed_per_day: sum('needed_per_day'), call_now_per_day: callNow,
+      calendar_days_left: expiry ? Math.max(0, Math.ceil(daysTo(expiry, now))) : null,
+      call_premium_now: sum('call_premium_now'), call_less_put: sum('call_less_put'),
       days_to_even: daysToEven, even_on: daysToEven ? sessionDate(daysToEven, now) : null,
     } : null,
   };

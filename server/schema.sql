@@ -1917,3 +1917,11 @@ CREATE TABLE IF NOT EXISTS options_cash_tags (
   symbol         TEXT,
   updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Spending insights (lib/spendingInsights.js, Nov 19): Claude's read of a month's budget spending, once a month.
+CREATE TABLE IF NOT EXISTS spending_insights (
+  month       TEXT PRIMARY KEY,         -- YYYY-MM
+  body        JSONB NOT NULL,           -- { summary, findings: [...], spent }
+  model       TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
