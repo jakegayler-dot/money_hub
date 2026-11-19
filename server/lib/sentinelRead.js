@@ -599,15 +599,20 @@ def({
 // ---------- inventory ----------
 def({
   name: 'inventory', mode: 'js',
-  description: 'Inventory on hand: grain in bins, forage, market and breeding livestock, at the managers\' estimated prices. counted_value is the uncontracted share (contracted grain counts once, as the contract). Positive amounts.',
+  description: 'Inventory on hand: grain in bins, forage, market and breeding livestock, at the managers\' estimated prices. counted_value is the uncontracted share (contracted grain counts once, as the contract). forecast_sale_date: the day the Cash Flow forecast already counts it as sold (selling it sooner moves that money, it adds none); null if the forecast doesn\'t sell it. Positive amounts.',
   fields: ['id', 'commodity', 'class', 'quantity', 'unit', 'quantity_contracted_reported', 'price_per_unit', 'price_basis', 'gross_value',
-    'counted_value', 'currency', 'location', 'as_of', 'expected_sale_date', 'owner', 'source', 'notes'],
+    'counted_value', 'currency', 'location', 'as_of', 'expected_sale_date', 'forecast_sale_date', 'owner', 'source', 'notes'],
   search: ['commodity', 'location', 'notes'],
   date: 'as_of',
   filters: [f.jsEq('class', 'class', ['crop', 'forage', 'market_livestock', 'breeding_livestock', 'other']), f.jsLike('commodity', 'commodity', 'commodity (contains)'), f.jsOwner()],
   load: async () => {
     const { inventoryRows } = await loadBalanceSheet();
+    // The day Cash Flow already sells it (Nov 19, Jake: cull cows "might be double counted?!"): a sale that's already in the
+    // forecast can't also be offered as money to cover a shortfall; null when the forecast doesn't sell it.
+    const { inventorySales } = await import('./inventoryForecast.js');
+    const sold = new Map(((await inventorySales().catch(() => null))?.items || []).map((x) => [Number(x.inventory_id), x.start_date]));
     return inventoryRows.map((i) => ({
+      forecast_sale_date: sold.get(Number(i.id)) || null,
       id: i.id, commodity: i.commodity, class: i.item_class, quantity: num(i.quantity), unit: i.unit,
       quantity_contracted_reported: num(i.quantity_contracted), price_per_unit: num(i.effective_price), price_basis: i.price_basis,
       gross_value: money(i.effective_price == null ? 0 : Number(i.quantity) * i.effective_price), counted_value: money(i.counted_value),
