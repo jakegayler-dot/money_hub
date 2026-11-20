@@ -247,7 +247,7 @@ export async function insurance({ now = new Date(), list: given = null, fx: give
 /**
  * What his holdings earned each of the last sessions (Jake, Nov 18, for Andrew's stock panel: "mix in my previous days
  * earnings and show my current holdings"): for each completed US session, the shares' move (the shares he holds now, from
- * the day each position was opened, times the close's change on Cboe's daily history) and the option premium in his Money
+ * the day each position was opened, times the close's change on the stock feed's daily closes) and the option premium in his Money
  * Hub entries dated that day (calls in, puts out). US$, with the Bank of Canada rate for CAD.
  */
 export async function sessionEarnings({ sessions = 5, now = new Date(), list: given = null, fx: givenFx, historyImpl = null } = {}) {
@@ -305,12 +305,19 @@ export function legsAtFills(legs = [], entries = [], symbol, { today = null } = 
   const callSales = mine.filter((e) => e.kind === 'call' && e.amount > 0).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.id - a.id));
   const longPuts = legs.filter((l) => l.type === 'put' && l.side === 'long');
   const shortCalls = legs.filter((l) => l.type === 'call' && l.side === 'short');
-  const putNet = -putEntries.reduce((a, e) => a + e.usd, 0);
+  // Put spreads (Nov 20): a put he has SOLD and still has open is a leg of its own, at its own premium, so its credit is
+  // put back before the entries' net is laid on the puts he holds (else the bought put's cost is cut by the sold put's credit
+  // and the sold put counted again). With several puts held, the net is shared in proportion to what the broker says each
+  // cost, not evenly (a far put for a few cents didn't cost what the near one did).
+  const soldOpen = legs.filter((l) => l.type === 'put' && l.side !== 'long').reduce((a, l) => a + Number(l.premium) * Number(l.contracts) * 100, 0);
+  const putNet = -putEntries.reduce((a, e) => a + e.usd, 0) + (putEntries.length ? soldOpen : 0);
   const putContracts = longPuts.reduce((a, l) => a + Number(l.contracts), 0);
+  const brokerTotal = longPuts.reduce((a, l) => a + Number(l.premium) * Number(l.contracts) * 100, 0);
   const putFrom = putEntries.map((e) => e.date).sort()[0] || null;
   return legs.map((l) => {
     if (l.type === 'put' && l.side === 'long' && putNet > 0 && putContracts > 0) {
-      return { ...l, broker_premium: Number(l.premium), premium: r2(putNet / (putContracts * 100) * 10000) / 10000, ...(putFrom ? { since: putFrom } : {}), from_fills: true };
+      const each = brokerTotal > 0 ? Number(l.premium) * (putNet / brokerTotal) : putNet / (putContracts * 100);
+      return { ...l, broker_premium: Number(l.premium), premium: Math.round(each * 10000) / 10000, ...(putFrom && longPuts.length === 1 ? { since: putFrom } : {}), from_fills: true };
     }
     if (l.type === 'call' && l.side === 'short' && shortCalls.length === 1 && callSales[0] && callSales[0].date <= l.expiry) {
       const sale = callSales[0];

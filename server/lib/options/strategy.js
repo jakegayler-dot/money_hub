@@ -22,9 +22,18 @@ function nyOffsetMinutes(date) {
   return m ? Number(m[1]) * 60 + Math.sign(Number(m[1])) * Number(m[2] || 0) : -300;
 }
 /** When an option expiring on `expiry` stops trading: 4 p.m. in New York (1 p.m. on an early close), as a Date. */
+// Kept by date: working out New York's offset is slow, and a position's curve asks for the same few expiries thousands of
+// times (valuing two positions took two seconds before this, Nov 20).
+const closeAt = new Map();
 export function expiryClose(expiry) {
-  const off = nyOffsetMinutes(new Date(`${expiry}T12:00:00Z`));
-  return new Date(Date.parse(`${expiry}T${EARLY_CLOSES[expiry] ? '13' : '16'}:00:00Z`) - off * 60e3);
+  let ms = closeAt.get(expiry);
+  if (ms === undefined) {
+    const off = nyOffsetMinutes(new Date(`${expiry}T12:00:00Z`));
+    ms = Date.parse(`${expiry}T${EARLY_CLOSES[expiry] ? '13' : '16'}:00:00Z`) - off * 60e3;
+    if (closeAt.size > 2000) closeAt.clear();
+    closeAt.set(expiry, ms);
+  }
+  return new Date(ms);
 }
 /** Days from `now` to the close on `expiry` (fractional; negative once it has expired). */
 export const daysTo = (expiry, now = new Date()) => (expiryClose(expiry) - now) / 86400e3;
@@ -125,6 +134,63 @@ export function bsPrice(type, S, K, T, sigma, r = RATE) {
   const disc = K * Math.exp(-r * T);
   return type === 'call' ? S * normCdf(d1) - disc * normCdf(d2) : disc * normCdf(-d2) - S * normCdf(-d1);
 }
+const pdf = (x) => Math.exp(-(x * x) / 2) / Math.sqrt(2 * Math.PI);
+/**
+ * The greeks of one share's worth of option (Jake, Nov 20: "notifications on stocks, gamma, theta, etc"): delta, gamma (how
+ * much delta moves for US$1 on the stock), theta (what a calendar day takes off its price, negative) and vega (what one
+ * point of implied volatility adds). At or past expiry an option is its intrinsic value: delta 0 or ±1, the rest nothing.
+ */
+export function bsGreeks(type, S, K, T, sigma, r = RATE) {
+  if (!(T > 0) || !(sigma > 0) || !(S > 0)) {
+    const itm = type === 'call' ? S > K : S < K;
+    return { delta: itm ? (type === 'call' ? 1 : -1) : 0, gamma: 0, theta: 0, vega: 0 };
+  }
+  const sq = Math.sqrt(T); const v = sigma * sq;
+  const d1 = (Math.log(S / K) + (r + (sigma * sigma) / 2) * T) / v;
+  const d2 = d1 - v;
+  const disc = K * Math.exp(-r * T);
+  const carry = type === 'call' ? -r * disc * normCdf(d2) : r * disc * normCdf(-d2);
+  return {
+    delta: type === 'call' ? normCdf(d1) : normCdf(d1) - 1,
+    gamma: pdf(d1) / (S * v),
+    theta: (-(S * pdf(d1) * sigma) / (2 * sq) + carry) / 365,
+    vega: (S * pdf(d1) * sq) / 100,
+  };
+}
+/** The volatility that prices an option at `price` (bisection); null when the price is at or under its intrinsic value. */
+export function impliedVol(type, price, S, K, T, r = RATE) {
+  if (!(T > 0) || !(S > 0) || !(price > intrinsic(type, S, K) + 0.005)) return null;
+  let lo = 0.01; let hi = 5;
+  if (bsPrice(type, S, K, T, hi, r) < price) return null;
+  for (let i = 0; i < 60; i++) { const mid = (lo + hi) / 2; if (bsPrice(type, S, K, T, mid, r) > price) hi = mid; else lo = mid; }
+  return (lo + hi) / 2;
+}
+const yearsTo = (expiry, now) => Math.max(0, daysTo(expiry, now)) / 365;
+/**
+ * A quoted option brought to now (market.js: the Free plan's option prices are a day old, the stock's price is live). When
+ * the quote is fresh and the stock hasn't moved since, it stands as quoted. Otherwise it's priced by Black-Scholes at its own
+ * implied volatility and today's stock price, keeping the quote's bid-ask width; `modelled` says so and `quoted` keeps what
+ * the market last showed. Pure.
+ */
+export function nowFrom(c, S, now = new Date()) {
+  const T = yearsTo(c.expiry, now);
+  const at = c.as_of ? Date.parse(c.as_of) : null;
+  const und = Number(c.underlying_price) > 0 ? Number(c.underlying_price) : null;
+  const Tq = at ? Math.max(0, (expiryClose(c.expiry) - at) / (365 * 86400e3)) : T;
+  const sigma = Number(c.iv) > 0 ? Number(c.iv) : (und && c.mid > 0 ? impliedVol(c.type, c.mid, und, c.strike, Tq) : null);
+  const quoted = { bid: c.bid, ask: c.ask, mid: c.mid, delta: c.delta ?? null, as_of: c.as_of || null, underlying_price: und };
+  const age = at ? now - at : null;
+  const moved = und && S > 0 ? Math.abs(S - und) / und : 0;
+  const stale = !(T > 0) || (age != null && age > 20 * 60e3 && (moved > 0.002 || age > 2 * 3600e3));
+  if (!(S > 0) || (!sigma && T > 0) || !stale) {
+    const g = sigma && S > 0 ? bsGreeks(c.type, S, c.strike, T, sigma) : null;
+    return { ...c, iv: sigma || c.iv || null, delta: c.delta ?? g?.delta ?? null, gamma: c.gamma || g?.gamma || 0, theta: c.theta || g?.theta || 0, vega: c.vega || g?.vega || 0, quoted, modelled: false };
+  }
+  const model = bsPrice(c.type, S, c.strike, T, sigma || 0);
+  const half = c.bid > 0 && c.ask > 0 ? Math.min((c.ask - c.bid) / 2, Math.max(0.01, model * 0.25)) : 0;
+  const g = bsGreeks(c.type, S, c.strike, T, sigma || 0);
+  return { ...c, iv: sigma || null, bid: Math.max(0, r2(model - half)), ask: r2(model + half), mid: r2(model), delta: g.delta, gamma: g.gamma, theta: g.theta, vega: g.vega, quoted, modelled: true };
+}
 
 // ---------- a position ----------
 const legSign = (l) => (l.side === 'long' ? 1 : -1);
@@ -146,6 +212,84 @@ export function playValue(revenuePerDay, capital, maxLoss) {
     on_capital_pct_year: cap > 0 ? r2((rev / cap) * TRADING_DAYS_A_YEAR * 100) : null,
     vs_max_loss_pct_day: loss ? Math.round((rev / loss) * 1e6) / 1e4 : null,
     days_to_earn_max_loss: loss && rev > 0 ? Math.ceil(loss / rev) : null,
+  };
+}
+
+/**
+ * What the puts on a position are doing (Jake, Nov 20: "it now uses put spreads"; both kinds, his answer). Each sold put is
+ * paired with a bought put, same expiry first:
+ *   insurance: bought strike above the sold one. It pays for a fall from the bought strike down to the sold one and no
+ *     further; it costs the bought put less the sold one.
+ *   income: sold strike above the bought one. It's paid a credit up front; the most it can lose is the gap between the
+ *     strikes less that credit, below the bought strike.
+ * A bought put with no partner is plain insurance all the way down; a sold put with none is a promise to buy at its strike.
+ * legs: open legs ({ type, side, strike, expiry, premium, contracts }). Pure.
+ */
+export function putStructure(legs = []) {
+  const puts = legs.filter((l) => l.type === 'put' && Number(l.contracts) > 0).map((l) => ({ ...l, left: Math.round(Number(l.contracts)) }));
+  const longs = puts.filter((l) => l.side === 'long').sort((a, b) => b.strike - a.strike);
+  const shorts = puts.filter((l) => l.side !== 'long').sort((a, b) => b.strike - a.strike);
+  const spreads = [];
+  const pair = (sameExpiry) => {
+    for (const s of shorts) {
+      for (const l of longs) {
+        if (!s.left) break;
+        if (!l.left || l.strike === s.strike || (sameExpiry && l.expiry !== s.expiry)) continue;
+        const n = Math.min(s.left, l.left); s.left -= n; l.left -= n;
+        const kind = l.strike > s.strike ? 'insurance' : 'income';
+        const width = r2(Math.abs(l.strike - s.strike));
+        const net = r2(Number(s.premium) - Number(l.premium)); // per share: + a credit, − a cost
+        spreads.push({
+          kind, contracts: n, long_strike: l.strike, short_strike: s.strike, long_expiry: l.expiry, short_expiry: s.expiry, diagonal: l.expiry !== s.expiry,
+          width, net, long_premium: Number(l.premium), short_premium: Number(s.premium),
+          ...(kind === 'insurance'
+            ? { cost: r2(-net * n * 100), covers_from: l.strike, covers_to: s.strike, most_it_pays: r2((width + net) * n * 100) }
+            : { credit: r2(net * n * 100), max_loss: r2(-(width - net) * n * 100), breakeven: r2(s.strike - net), keeps_all_above: s.strike }),
+        });
+      }
+    }
+  };
+  pair(true); pair(false);
+  return {
+    spreads,
+    plain_puts: longs.filter((l) => l.left).map((l) => ({ strike: l.strike, expiry: l.expiry, contracts: l.left, premium: Number(l.premium), cost: r2(Number(l.premium) * l.left * 100) })),
+    sold_puts: shorts.filter((s) => s.left).map((s) => ({ strike: s.strike, expiry: s.expiry, contracts: s.left, premium: Number(s.premium), credit: r2(Number(s.premium) * s.left * 100), buys_shares: s.left * 100 })),
+  };
+}
+
+/**
+ * The position's greeks at today's price (pure): each open leg by Black-Scholes at its implied volatility (50% when none is
+ * known, said by `iv_assumed`), and the whole position in the units he trades in:
+ *   delta: share-equivalents (the shares plus what the options add or take): what US$1 on the stock moves the position.
+ *   gamma: how many share-equivalents that delta shifts for US$1 on the stock.
+ *   theta: what a day's time decay puts in (+) or takes out (−), US$.
+ *   vega: what one point of implied volatility does, US$.
+ */
+export function positionGreeks(position, now = new Date()) {
+  const S = Number(position.price);
+  const shares = Math.max(0, Math.round(Number(position.shares) || 0));
+  const legs = (position.legs || []).filter((l) => l && Number(l.strike) > 0 && Number(l.contracts) > 0 && daysTo(l.expiry, now) > 0).map((l) => {
+    const T = yearsTo(l.expiry, now); const sign = legSign(l); const n = Math.round(Number(l.contracts)) * 100;
+    const iv = Number(l.iv) > 0 ? Number(l.iv) : 0.5;
+    const g = bsGreeks(l.type, S, Number(l.strike), T, iv);
+    const value = bsPrice(l.type, S, Number(l.strike), T, iv);
+    const itm = l.type === 'call' ? S > l.strike : S < l.strike;
+    return {
+      type: l.type, side: l.side, strike: Number(l.strike), expiry: l.expiry, contracts: Math.round(Number(l.contracts)), premium: Number(l.premium) || 0,
+      iv: r2(iv * 100), iv_assumed: !(Number(l.iv) > 0), days: Math.max(0, Math.round(daysTo(l.expiry, now) * 10) / 10), sessions: incomeDays(l.expiry, now),
+      value: r2(value), pnl: r2(sign * (value - (Number(l.premium) || 0)) * n),
+      // Of a sold option's premium, how much time has already handed over (Nov 20: theta).
+      earned_pct: l.side !== 'long' && Number(l.premium) > 0 ? r2(Math.max(-999, (1 - value / Number(l.premium)) * 100)) : null,
+      left_to_earn: l.side !== 'long' ? r2(Math.max(0, value - intrinsic(l.type, S, Number(l.strike))) * n) : null,
+      itm, from_strike_pct: r2(((S - l.strike) / l.strike) * 100), delta_one: Math.round(g.delta * 1000) / 1000,
+      delta: r2(sign * g.delta * n), gamma: r2(sign * g.gamma * n), theta: r2(sign * g.theta * n), vega: r2(sign * g.vega * n),
+    };
+  });
+  const sum = (k) => r2(legs.reduce((a, l) => a + l[k], 0));
+  const delta = r2(shares + sum('delta'));
+  return {
+    price: r2(S), shares, delta, gamma: sum('gamma'), theta: sum('theta'), vega: sum('vega'),
+    per_dollar: delta, per_1pct: r2(delta * S * 0.01), options_pnl: sum('pnl'), iv_assumed: legs.some((l) => l.iv_assumed), legs,
   };
 }
 
@@ -212,12 +356,15 @@ export function evaluate(position, { now = new Date(), testPcts = [], margin = n
   const live = legs;
   // With premium banked, the calls' income is everything collected (banked plus the open calls) over the trading days from the
   // first call to the open call's expiry (today, with none open): what the calls have actually been earning a day.
-  const shortsOpen = live.filter((l) => l.side === 'short');
+  // A put he has sold (Nov 20: put spreads) earns over its own days, beside the calls; the banked premium is the calls' alone.
+  const shortsOpen = live.filter((l) => l.side === 'short' && l.type === 'call');
+  const soldPutsOpen = live.filter((l) => l.side === 'short' && l.type === 'put');
   const callsEnd = [nyDate(now), ...shortsOpen.map((l) => l.expiry)].sort().at(-1);
   const callDays = bankedSince ? Math.max(1, tradingDaysBetween(bankedSince, callsEnd)) : null;
-  const perDay = banked && callDays
+  const callsPerDay = banked && callDays
     ? (banked + shortsOpen.reduce((a, l) => a + l.premium * l.contracts * 100, 0)) / callDays
     : shortsOpen.reduce((a, l) => a + (l.premium * l.contracts * 100) / legDays(l, now), 0);
+  const perDay = callsPerDay + soldPutsOpen.reduce((a, l) => a + (l.premium * l.contracts * 100) / legDays(l, now), 0);
   const costPerDay = live.filter((l) => l.side === 'long').reduce((a, l) => a + (l.premium * l.contracts * 100) / legDays(l, now), 0);
   const stockIn = cost * shares;
   const paidOut = legs.filter((l) => l.side === 'long').reduce((a, l) => a + l.premium * l.contracts * 100, 0);
@@ -230,11 +377,31 @@ export function evaluate(position, { now = new Date(), testPcts = [], margin = n
   const callTop = shortCalls ? Math.max(...legs.filter((l) => l.type === 'call' && l.side === 'short').map((l) => l.strike)) : null;
   const unhedged = longPuts > 0 && shares > longPuts ? shares - longPuts : 0;
   const putTop = longPuts ? Math.max(...legs.filter((l) => l.type === 'put' && l.side === 'long').map((l) => l.strike)) : null;
+  // Put spreads (Nov 20): a sold put under a bought one ends the protection at its strike; below it the shares fall on their
+  // own again, so there's a floor only while every share still has a put under it all the way down.
+  const structure = putStructure(legs);
+  const shortPuts = legs.filter((l) => l.type === 'put' && l.side !== 'long').reduce((a, l) => a + l.contracts * 100, 0);
+  const fallsToZero = shares - longPuts + shortPuts > 0; // what's still exposed below every strike
+  const lowestShortPut = shortPuts ? Math.min(...legs.filter((l) => l.type === 'put' && l.side !== 'long').map((l) => l.strike)) : null;
+  const protectionEnds = longPuts > 0 && shortPuts > 0 && fallsToZero && lowestShortPut < putTop ? lowestShortPut : null;
   // Where the floor starts: below this, the loss grows by less than 2% more all the way down.
-  const floorAt = !uncovered && worst[1] < 0 ? held.filter(([S, v]) => S <= price && v <= worst[1] * 0.98).at(-1)?.[0] ?? null : null;
+  const floorAt = !uncovered && !fallsToZero && worst[1] < 0 ? held.filter(([S, v]) => S <= price && v <= worst[1] * 0.98).at(-1)?.[0] ?? null : null;
+  // A trading day's money by what each option is for: the calls, the insurance (plain puts and insurance spreads, net), and
+  // income spreads (net of the put bought under them).
+  const perDayOf = (l) => (l.premium * l.contracts * 100) / legDays(l, now);
+  const incomeLegs = new Set(structure.spreads.filter((s) => s.kind === 'income').flatMap((s) => [`${s.long_strike}|${s.long_expiry}|long`, `${s.short_strike}|${s.short_expiry}|short`]));
+  const isIncome = (l) => l.type === 'put' && incomeLegs.has(`${l.strike}|${l.expiry}|${l.side === 'long' ? 'long' : 'short'}`);
+  const role = { calls: 0, insurance: 0, income_spreads: 0 };
+  for (const l of live) {
+    const v = perDayOf(l) * (l.side === 'long' ? -1 : 1);
+    if (l.type === 'call') { if (l.side === 'long') role.calls += v; } else if (isIncome(l) || (l.side !== 'long' && !structure.spreads.some((s) => s.kind === 'insurance' && s.short_strike === l.strike && s.short_expiry === l.expiry))) role.income_spreads += v; else role.insurance += v;
+  }
+  role.calls += callsPerDay; // everything the calls have been earning a day (the banked premium too), as income_per_day counts it
+  // The position today, by model, beside what it's worth at the nearest expiry: for the chart's second line.
+  const pnlNow = (S) => banked + (S - cost) * shares + legs.reduce((a, l) => a + legSign(l) * (bsPrice(l.type, S, l.strike, yearsTo(l.expiry, now), l.iv || 0.5) - l.premium) * l.contracts * 100, 0);
   const scenarios = [...new Set([-30, -20, -10, -5, 0, 5, 10, 20, ...testPcts])].sort((x, y) => x - y).map((pct) => ({ pct, price: r2(price * (1 + pct / 100)), pnl: r2(pnl(price * (1 + pct / 100))) }));
   const curve = [];
-  for (let i = 0; i <= 80; i++) { const S = price * (0.55 + (0.9 * i) / 80); curve.push({ price: r2(S), pnl: r2(pnl(S)) }); }
+  for (let i = 0; i <= 80; i++) { const S = price * (0.55 + (0.9 * i) / 80); curve.push({ price: r2(S), pnl: r2(pnl(S)), now: r2(pnlNow(S)), held: r2(pnlHeld(S)) }); }
   return {
     horizon, risk_horizon: riskHorizon, interest_to_risk: r2(interestToRisk), shares, cost: r2(cost), price: r2(price),
     banked: banked ? { usd: r2(banked), since: bankedSince, call_days: callDays } : null,
@@ -254,6 +421,12 @@ export function evaluate(position, { now = new Date(), testPcts = [], margin = n
     floor_from: floorAt != null && floorAt > 1 ? r2(floorAt) : null,
     shares_not_called: extraShares, gain_at_call: extraShares && callTop ? r2(pnl(callTop)) : null, call_strike: callTop,
     shares_without_put: unhedged, put_strike: putTop, loss_at_put: putTop ? r2(pnlHeld(putTop)) : null,
+    // Put spreads (Nov 20): what each is, where an insurance spread stops paying, and the loss there.
+    put_spreads: structure.spreads, plain_puts: structure.plain_puts, sold_puts: structure.sold_puts,
+    protection_ends: protectionEnds, loss_at_protection_end: protectionEnds ? r2(pnlHeld(protectionEnds)) : null,
+    falls_to_zero: fallsToZero, loss_at_zero: r2(pnlHeld(0)),
+    per_day_by_role: { calls: r2(role.calls), insurance: r2(role.insurance), income_spreads: r2(role.income_spreads) },
+    pnl_now: r2(pnlNow(price)), greeks: positionGreeks({ price, shares, legs }, now),
     breakevens,
     called_away_chance: call?.delta != null ? r2(Math.abs(call.delta) * 100) : null,
     put_pays_chance: put?.delta != null ? r2(Math.abs(put.delta) * 100) : null,
@@ -284,7 +457,18 @@ export const DEFAULT_RULES = {
   wide: true,               // also look through about 50 large stocks, not only the watchlist (his pick, Nov 17)
   min_carry: 0,             // a stock counts only when its calls pay more a trading day than the puts cost, by at least this (CAD, 100 shares)
   expiry_every_days: 3,     // and only when its options expire at least this often (Mon/Wed/Fri or daily), not weekly
+  // Put spreads (Nov 20: "it now uses put spreads"). A starting width; his to set on the page.
+  spread_width: 10,         // the spread's two strikes, this many US dollars apart
+  // What he's told about (Nov 20: "notifications on stocks, gamma, theta, etc. any big moves"). Starting levels; his to set.
+  alert_move_pct: 3,        // a stock he holds or watches moves this much in a day, up or down (again at twice and three times it)
+  alert_swing_pct: 1.5,     // a stock he holds moves this much within half an hour
+  alert_near_strike_pct: 1, // the price comes within this of a strike he's sold
+  alert_gamma: 15,          // the position's gamma: its share-equivalents shift by at least this many for US$1 on the stock
+  alert_earned_pct: 80,     // a sold option has given up this much of its premium to time
+  alert_iv_points: 5,       // an option's implied volatility moves this many points between readings
+  alerts_off: [],           // kinds he's turned off
 };
+export const ALERT_KINDS = ['drop', 'move', 'swing', 'call', 'put', 'spread', 'gamma', 'theta', 'expiry', 'iv', 'earnings'];
 const num = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
 export function cleanRules(r = {}) {
   const d = DEFAULT_RULES;
@@ -310,7 +494,52 @@ export function cleanRules(r = {}) {
     wide: r.wide == null ? d.wide : !!r.wide,
     min_carry: num(r.min_carry, -1e5, 1e5, d.min_carry),
     expiry_every_days: Math.round(num(r.expiry_every_days, 1, 31, d.expiry_every_days)),
+    spread_width: num(r.spread_width, 0.5, 500, d.spread_width),
+    alert_move_pct: num(r.alert_move_pct, 0.5, 50, d.alert_move_pct),
+    alert_swing_pct: num(r.alert_swing_pct, 0.25, 25, d.alert_swing_pct),
+    alert_near_strike_pct: num(r.alert_near_strike_pct, 0.1, 20, d.alert_near_strike_pct),
+    alert_gamma: num(r.alert_gamma, 1, 1000, d.alert_gamma),
+    alert_earned_pct: num(r.alert_earned_pct, 10, 99, d.alert_earned_pct),
+    alert_iv_points: num(r.alert_iv_points, 1, 100, d.alert_iv_points),
+    alerts_off: Array.isArray(r.alerts_off) ? ALERT_KINDS.filter((k) => r.alerts_off.includes(k)) : d.alerts_off,
   };
+}
+
+/**
+ * Put spreads from one expiry's puts (Nov 20), each bought at the ask and sold at the bid, the strikes `width` apart (the
+ * nearest listed strike at least that far below). His choice of width and how far below the price; every row is arithmetic
+ * on today's prices, not a recommendation.
+ *   insurance: buy the higher strike, sell the lower. Costs the difference; pays for a fall between the two strikes.
+ *   income: sell the higher strike, buy the lower. Pays a credit; can lose the gap between the strikes less the credit.
+ * puts: rows { strike, bid, ask, delta, iv } of one expiry. Pure.
+ */
+export function spreadChoices(puts, { price, kind = 'insurance', width = 10, otm = 0, expiry, now = new Date() } = {}) {
+  const rows = [...puts].filter((p) => p.type !== 'call').sort((a, b) => b.strike - a.strike);
+  const days = incomeDays(expiry, now);
+  const out = [];
+  for (const top of rows) {
+    if (top.strike > price - otm + 1e-9) continue;
+    const low = rows.find((p) => p.strike <= top.strike - width + 1e-9);
+    if (!low) continue;
+    const gap = r2(top.strike - low.strike);
+    const base = { expiry, days, high_strike: top.strike, low_strike: low.strike, width: gap, below_price_pct: r2(((top.strike - price) / price) * 100), low_below_price_pct: r2(((low.strike - price) / price) * 100) };
+    if (kind === 'insurance') {
+      if (!(top.ask > 0)) continue;
+      const debit = r2(top.ask - (low.bid || 0));
+      if (!(debit > 0)) continue;
+      out.push({ ...base, kind, buy: { strike: top.strike, ask: top.ask, delta: top.delta ?? null, iv: top.iv ?? null }, sell: { strike: low.strike, bid: low.bid || 0, delta: low.delta ?? null, iv: low.iv ?? null },
+        debit, cost: r2(debit * 100), per_day: r2((debit * 100) / days), most_it_pays: r2((gap - debit) * 100), pays_per_dollar: r2((gap - debit) / debit),
+        plain_put_cost: r2(top.ask * 100), saves: r2((low.bid || 0) * 100), protection_ends: low.strike });
+    } else {
+      if (!(top.bid > 0) || !(low.ask > 0)) continue;
+      const credit = r2(top.bid - low.ask);
+      if (!(credit > 0)) continue;
+      out.push({ ...base, kind, sell: { strike: top.strike, bid: top.bid, delta: top.delta ?? null, iv: top.iv ?? null }, buy: { strike: low.strike, ask: low.ask, delta: low.delta ?? null, iv: low.iv ?? null },
+        credit, income: r2(credit * 100), per_day: r2((credit * 100) / days), max_loss: r2(-(gap - credit) * 100), breakeven: r2(top.strike - credit),
+        return_on_risk_pct: r2((credit / (gap - credit)) * 100), chance_tested: top.delta != null ? Math.round(Math.abs(top.delta) * 100) : null });
+    }
+  }
+  return out.slice(0, 10);
 }
 
 /** Has the stock dropped by his rule? history: daily closes oldest first (may include today); q: today's quote. */

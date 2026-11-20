@@ -1,30 +1,32 @@
-// The covered-call desk (Jake, Nov 17): his rules, the watchlist scan for drops, the watcher that notes a drop once a day
-// during US market hours, and his positions. Money Hub only reads the market and keeps his records; it never places a trade.
+// The options desk (Jake, Nov 17; rebuilt Nov 20 for put spreads, live greeks and alerts): his rules, his positions valued
+// live, the stocks he watches, what his rules pick on one, and the watcher that notes what he'd want to know. Money Hub only
+// reads the market and keeps his records; it never places a trade.
+//
+// Prices (market.js): stocks live from Yahoo's chart feed; options from MarketData.app on his token, which bills each option
+// price. His Free plan is 100 a day, a day old. So: a leg he holds is read by itself; a stock's plan is about PLAN_COST prices
+// (the few calls and puts his rules could pick) and is kept (in settings too, so a restart doesn't pay twice); a day-old
+// option price is brought to now by model (strategy.nowFrom) and marked. On a paid plan the watcher prices his list itself.
 import { pool, getSetting } from '../../db.js';
-import { quote, history, chain, parseOcc, cboeBusy } from './market.js';
-import { cleanRules, dropCheck, soonExpiries, pick, evaluate, daysTo, expiryCadence, legDays } from './strategy.js';
+import { quote, day, days, history, parseOcc, optionQuotes, optionSlice, expirations, strikeList, chainOf, room, creditLimit, planOf, optionsStatus, hasToken, tryToken, forgetToken } from './market.js';
+import { cleanRules, dropCheck, soonExpiries, pick, evaluate, daysTo, expiryCadence, legDays, nowFrom, spreadChoices, incomeDays } from './strategy.js';
+import { moveAlerts, swingAlerts, positionAlerts, ivAlerts } from './alerts.js';
 import { toISODate } from '../dates.js';
 import { usdCad } from './fx.js';
 import { nextEarnings, inside } from './earnings.js';
 
 const RULES_KEY = 'covered_call_rules';
 const ALERTS_KEY = 'covered_call_alerts';
+const PRICED_KEY = 'covered_call_priced';
 const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+const put = (key, value) => pool.query(`INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`, [key, JSON.stringify(value)]);
+const nyDay = (now = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(now);
+const addDays = (iso, n) => new Date(Date.parse(`${iso}T12:00:00Z`) + n * 86400e3).toISOString().slice(0, 10);
 
 export async function getRules() { return cleanRules(await getSetting(RULES_KEY, {})); }
 export async function saveRules(input) {
   const rules = cleanRules({ ...(await getRules()), ...input });
-  await pool.query(`INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`, [RULES_KEY, JSON.stringify(rules)]);
+  await put(RULES_KEY, rules);
   return rules;
-}
-
-const expiryCache = new Map(); // symbol → { at, expiries } (the expiry list barely changes in a day)
-async function expiriesOf(symbol) {
-  const hit = expiryCache.get(symbol);
-  if (hit && Date.now() - hit.at < 6 * 3600e3) return hit.expiries;
-  const ch = await chain(symbol);
-  expiryCache.set(symbol, { at: Date.now(), expiries: ch.expiries });
-  return ch.expiries;
 }
 
 async function inTurn(items, n, fn) {
@@ -35,62 +37,222 @@ async function inTurn(items, n, fn) {
   return out;
 }
 
-/** Every stock on his watchlist: today's move, how far below its recent high, the expiries in the next week, and his drop rule. */
+// ---------- where the prices come from ----------
+/** About what pricing one stock's plan takes: three calls an expiry in his call days, one put an expiry in his put window, the spread's sold put, the expiry list. */
+export const PLAN_COST = 16;
+export async function dataStatus() { return { ...(await optionsStatus()), plan_cost: PLAN_COST }; }
+/** Keep his MarketData.app token after one real request with it (never sent back to the page); '' forgets it. */
+export async function saveToken(tk) {
+  const t = String(tk || '').trim();
+  if (!t) { await put('market_data', {}); forgetToken(); return dataStatus(); }
+  if (!/^[A-Za-z0-9_.\-]{16,300}$/.test(t)) throw Object.assign(new Error('That doesn’t look like a MarketData.app token: copy the whole token from your MarketData.app dashboard.'), { status: 422 });
+  await tryToken(t);
+  await put('market_data', { token: t, saved_at: new Date().toISOString() });
+  forgetToken();
+  return dataStatus();
+}
+
+// ---------- a stock's options, priced ----------
+// symbol → { at (ms), key, rows (as quoted), expiries, price_then }. In settings too (PRICED_KEY).
+const priced = new Map();
+let pricedLoaded = false;
+async function loadPriced() {
+  if (pricedLoaded) return;
+  pricedLoaded = true;
+  const kept = await getSetting(PRICED_KEY, {}).catch(() => ({}));
+  for (const [s, c] of Object.entries(kept || {})) if (c?.rows?.length && !priced.has(s)) priced.set(s, c);
+}
+const savePriced = () => {
+  const recent = [...priced.entries()].filter(([, c]) => Date.now() - c.at < 3 * 86400e3).sort((a, b) => b[1].at - a[1].at).slice(0, 80);
+  return put(PRICED_KEY, Object.fromEntries(recent)).catch((e) => console.error(`  !! Options desk, keeping the priced plans: ${e.message}`));
+};
+export const _priced = priced; // tests
+const ruleKey = (r, floor) => [r.call_otm, r.call_max_days, r.put_otm, r.put_days_min, r.put_days_max, r.spread_width, floor || ''].join('|');
+const strikeNum = (n) => Math.max(0.5, Math.round(n * 100) / 100);
+
+/** Ask MarketData.app for the options his rules could pick on a stock at this price (see PLAN_COST). */
+async function priceStock(symbol, rules, price, floor, now, purpose = 'plans') {
+  const today = nyDay(now);
+  const pad = Math.max(6, price * 0.04);
+  const lo = price + rules.call_otm;
+  const window = { side: 'call', from: today, to: addDays(today, rules.call_max_days) };
+  const rows = [];
+  rows.push(...await optionSlice(symbol, { ...window, strike: `${strikeNum(lo)}-${strikeNum(lo + pad)}`, strikeLimit: 3 }, { purpose }));
+  // With a put held, his call can be any strike at or above it (Nov 19): those too.
+  if (floor && floor < lo) rows.push(...await optionSlice(symbol, { ...window, strike: `${strikeNum(floor)}-${strikeNum(lo)}`, strikeLimit: 4 }, { purpose }));
+  const top = price - rules.put_otm;
+  const puts = await optionSlice(symbol, { side: 'put', dte: `${rules.put_days_min}-${rules.put_days_max}`, strike: `${strikeNum(top - Math.max(10, price * 0.08))}-${strikeNum(top)}`, strikeLimit: 1 }, { purpose });
+  rows.push(...puts);
+  // The put spread's sold strike (Nov 20), under the put his rule would pick: the cheapest a trading day.
+  // (the same choice strategy.pick makes: the least a trading day, each put brought to today's stock price first)
+  const cheapest = puts.map((p) => nowFrom(p, price, now)).filter((p) => p.ask > 0 && p.strike <= top + 1e-9).map((p) => ({ p, per: p.ask / incomeDays(p.expiry, now) })).sort((a, b) => a.per - b.per)[0]?.p;
+  if (cheapest) {
+    const under = cheapest.strike - rules.spread_width;
+    rows.push(...await optionSlice(symbol, { side: 'put', expiration: cheapest.expiry, strike: `${strikeNum(under - Math.max(8, price * 0.06))}-${strikeNum(under)}`, strikeLimit: 1 }, { purpose }).catch(() => []));
+  }
+  const expiries = await expirations(symbol, { purpose }).catch(() => []);
+  const seen = new Set();
+  const c = { at: Date.now(), key: ruleKey(rules, floor), rows: rows.filter((r) => !seen.has(r.occ) && seen.add(r.occ)), expiries, price_then: price };
+  priced.set(symbol, c);
+  savePriced();
+  return c;
+}
+
+/** How old the option prices behind a figure are, and whether they were brought to now by model. */
+function pricesNote(contracts, at = null) {
+  const times = contracts.map((c) => c.quoted?.as_of || c.as_of).filter(Boolean).sort();
+  return { quoted_at: times[0] || null, read_at: at ? new Date(at).toISOString() : null, modelled: contracts.some((c) => c.modelled), delay: planOf(creditLimit()).delay };
+}
+
+/** What his rules pick from a priced stock at today's price (no request): the plan, and the same lot with a put spread. */
+function pickFrom(symbol, q, c, rules, { now, fx, floor }) {
+  const contracts = c.rows.map((r) => nowFrom(r, q.price, now));
+  const ch = chainOf(symbol, q, contracts);
+  ch.expiries = [...new Set([...(c.expiries || []), ...ch.expiries])].sort();
+  const p = pick(ch, rules, { now, fx: fx?.rate, putStrike: floor });
+  let spread = null;
+  if (p.put) {
+    const row = spreadChoices(contracts.filter((x) => x.type === 'put' && x.expiry === p.put.expiry), { price: q.price, kind: 'insurance', width: rules.spread_width, otm: rules.put_otm, expiry: p.put.expiry, now })
+      .find((s) => s.high_strike === p.put.strike);
+    if (row) {
+      const low = contracts.find((x) => x.type === 'put' && x.expiry === p.put.expiry && x.strike === row.low_strike);
+      const legs = [
+        p.call && { type: 'call', side: 'short', strike: p.call.strike, expiry: p.call.expiry, premium: p.call.bid, contracts: 1, iv: p.call.iv, delta: p.call.delta },
+        { type: 'put', side: 'long', strike: p.put.strike, expiry: p.put.expiry, premium: p.put.ask, contracts: 1, iv: p.put.iv, delta: p.put.delta },
+        { type: 'put', side: 'short', strike: row.low_strike, expiry: p.put.expiry, premium: row.sell.bid, contracts: 1, iv: low?.iv, delta: low?.delta },
+      ].filter(Boolean);
+      const lot = evaluate({ price: q.price, shares: 100, cost: q.price, legs }, { now, margin: { pct: rules.margin_pct, rate: rules.margin_rate } });
+      spread = { ...row, legs, lot: { net_per_day: lot.net_after_interest_per_day, protection_per_day: lot.protection_per_day, max_loss: lot.max_loss, loss_at_zero: lot.loss_at_zero,
+        loss_at_protection_end: lot.loss_at_protection_end, protection_ends: lot.protection_ends, capital_needed: lot.capital_needed, breakevens: lot.breakevens },
+        single_put: { cost: r2(p.put.ask * 100), per_day: p.put.cost_per_day, max_loss: p.lot.max_loss, net_per_day: p.lot.net_after_interest_per_day } };
+    }
+  }
+  const cadence = expiryCadence(ch.expiries, now);
+  return { ...p, put_spread: spread, as_of: ch.as_of, expiries: ch.expiries, cadence, often: !!cadence && cadence.max <= rules.expiry_every_days,
+    priced_at: new Date(c.at).toISOString(), option_prices: pricesNote(contracts, c.at) };
+}
+
+/** What his rules pick on one stock today: the call, the put, the lots, the put spread, with the figures for one lot. */
+// onlyCached: answer from what was priced before (however old, at today's stock price) or say it needs pricing; never spends.
+// force: price it again now.
+export async function plan(symbol, overrides = {}, now = new Date(), { force = false, onlyCached = false } = {}) {
+  await loadPriced();
+  const rules = cleanRules({ ...(await getRules()), ...overrides });
+  const [d, hist, fx, held] = await Promise.all([day(symbol), history(symbol, rules.high_days + 10).catch(() => []), usdCad(), heldPutStrike(symbol, now)]);
+  const q = d.quote;
+  const base = { symbol, quote: q, bars: d.bars, drop: dropCheck(hist, q, rules), fx, plan_cost: PLAN_COST };
+  let c = priced.get(symbol);
+  const same = c && c.key === ruleKey(rules, held);
+  const fresh = same && Date.now() - c.at < planOf(creditLimit()).keep_ms;
+  if (onlyCached && !same) return { ...base, rules, price: q.price, needs_pricing: true, data: await dataStatus() };
+  if (!onlyCached && (force || !fresh)) c = await priceStock(symbol, rules, q.price, held, now);
+  let p = pickFrom(symbol, q, c, rules, { now, fx, floor: held });
+  // Priced before the stock moved off those strikes: once more, when there's room for it.
+  if (!p.call && !onlyCached && !force && Math.abs(q.price - c.price_then) / c.price_then > 0.01 && Date.now() - c.at > 60e3 && room(PLAN_COST, 10)) {
+    c = await priceStock(symbol, rules, q.price, held, now);
+    p = pickFrom(symbol, q, c, rules, { now, fx, floor: held });
+  }
+  return { ...base, ...p, fx };
+}
+
+/** The highest strike of the puts he holds on a stock (open, not expired), or null: his calls go at or above it (Nov 19). */
+async function heldPutStrike(symbol, now = new Date()) {
+  const { rows } = await pool.query(`SELECT legs FROM options_positions WHERE symbol = $1 AND status = 'open'`, [symbol]).catch(() => ({ rows: [] }));
+  const strikes = rows.flatMap((r) => r.legs || []).filter((l) => l.type === 'put' && l.side === 'long' && daysTo(l.expiry, now) > 0).map((l) => Number(l.strike));
+  return strikes.length ? Math.max(...strikes) : null;
+}
+
+/** The calculator's pickers: the stock's expiries and one expiry's strikes near the price. No prices (each would be billed):
+ *  a strike's price comes when it's chosen (legPrice). */
+export async function strikes(symbol, expiry, now = new Date()) {
+  const [d, exps] = await Promise.all([day(symbol), expirations(symbol).catch(() => [])]);
+  const open = exps.filter((e) => daysTo(e, now) > 0);
+  const exp = expiry && open.includes(expiry) ? expiry : open[0] || null;
+  const list = exp ? (await strikeList(symbol, exp).catch(() => [])).filter((k) => Math.abs(k - d.quote.price) / d.quote.price <= 0.35) : [];
+  const blank = (type) => list.map((strike) => ({ strike, type, expiry: exp, bid: null, ask: null, delta: null, iv: null }));
+  return { symbol, quote: d.quote, expiries: open, expiry: exp, calls: blank('call'), puts: blank('put'), priced: false };
+}
+/** One option's price now (one price billed; kept): as quoted, and brought to today's stock price. */
+export async function legPrice(symbol, leg, now = new Date()) {
+  const type = leg.type === 'put' ? 'put' : 'call';
+  const strike = Number(leg.strike); const expiry = String(leg.expiry || '').slice(0, 10);
+  if (!(strike > 0) || !/^\d{4}-\d{2}-\d{2}$/.test(expiry)) throw Object.assign(new Error('Which strike and expiry?'), { status: 422 });
+  const [d, rows] = await Promise.all([day(symbol), optionQuotes(symbol, [{ type, strike, expiry }], { purpose: 'the calculator' })]);
+  if (!rows.length) throw Object.assign(new Error(`MarketData.app has no price for the ${symbol} ${strike} ${type} of ${expiry}.`), { status: 404 });
+  return { ...nowFrom(rows[0], d.quote.price, now), price: d.quote.price };
+}
+
+/** Put spreads on one stock (Nov 20): one expiry's puts under the price, paired `width` apart; kind insurance or income. */
+export async function spreads(symbol, { kind = 'insurance', expiry = null, width = null, otm = null } = {}, now = new Date()) {
+  const rules = await getRules();
+  const [d, exps] = await Promise.all([day(symbol), expirations(symbol, { purpose: 'put spreads' }).catch(() => [])]);
+  const price = d.quote.price;
+  const open = exps.filter((e) => daysTo(e, now) > 0);
+  const inWindow = open.filter((e) => daysTo(e, now) >= rules.put_days_min && daysTo(e, now) <= rules.put_days_max + 1);
+  const exp = expiry && open.includes(expiry) ? expiry : (kind === 'income' ? open.find((e) => daysTo(e, now) >= 5) : inWindow.at(-1)) || open[0];
+  if (!exp) throw Object.assign(new Error(`No expiry dates for ${symbol}.`), { status: 404 });
+  const w = Number(width) > 0 ? Number(width) : rules.spread_width;
+  const below = Number.isFinite(Number(otm)) && otm !== null && otm !== '' ? Math.max(0, Number(otm)) : rules.put_otm;
+  const top = price - below;
+  // Two bands of strikes, six prices each: the higher strikes from his distance under the price, and the ones his width
+  // below them (one band wide enough for both would spend the dozen on the strikes in between).
+  const band = Math.max(5, price * 0.04);
+  const upper = await optionSlice(symbol, { side: 'put', expiration: exp, strike: `${strikeNum(top - band)}-${strikeNum(top)}`, strikeLimit: 6 }, { purpose: 'put spreads' });
+  const lower = await optionSlice(symbol, { side: 'put', expiration: exp, strike: `${strikeNum(top - w - band)}-${strikeNum(top - w)}`, strikeLimit: 6 }, { purpose: 'put spreads' });
+  const had = new Set();
+  const rows = [...upper, ...lower].filter((r) => !had.has(r.occ) && had.add(r.occ));
+  const contracts = rows.map((r) => nowFrom(r, price, now));
+  return { symbol, quote: d.quote, kind: kind === 'income' ? 'income' : 'insurance', expiry: exp, expiries: open.map((e) => ({ date: e, days: Math.round(daysTo(e, now)) })).filter((e) => e.days <= 400),
+    width: w, otm: below, rows: spreadChoices(contracts, { price, kind, width: w, otm: below, expiry: exp, now }), prices_read: rows.length, option_prices: pricesNote(contracts, Date.now()) };
+}
+
+// ---------- the stocks he watches ----------
 // The wider list (Nov 17, his pick: "the stock watcher needs to look for stocks that have 3 day options or less"): large US
-// stocks and ETFs; only those whose options expire at least every expiry_every_days (Mon/Wed/Fri or daily), whose call pays more a day than the put costs, show.
+// stocks and ETFs. Their prices and moves are read with his watchlist; their options are priced when he taps one, or by the
+// watcher on a paid MarketData.app plan.
 export const WIDE = ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA', 'AVGO', 'AMD', 'NFLX', 'PLTR', 'COIN', 'MSTR', 'ORCL',
   'CRM', 'ADBE', 'INTC', 'MU', 'QCOM', 'SMCI', 'ARM', 'UBER', 'SHOP', 'JPM', 'BAC', 'WFC', 'GS', 'C', 'XOM', 'CVX', 'BA', 'DIS',
   'WMT', 'COST', 'HD', 'UNH', 'LLY', 'JNJ', 'PFE', 'MRK', 'KO', 'PEP', 'NKE', 'HOOD', 'SOFI', 'RIVN', 'BABA', 'PYPL', 'SPY', 'QQQ', 'IWM'];
-const SCAN_CHAIN_TTL = 15 * 60e3; // ~1 MB a chain: his watchlist's read at most every 15 minutes
-const WIDE_EVERY = 30 * 60e3;      // the wider list: one stock at a time, a pause between, at most every 30 minutes
-const WIDE_PAUSE = 1500;
+// Daily closes for the drop rule's recent high: the watchlist's are read with the page; the wider list's one at a time behind it.
+const closes = new Map(); // symbol → { at, hist }
+const closesOf = (s) => { const h = closes.get(s); return h && Date.now() - h.at < 6 * 3600e3 ? h.hist : null; };
+async function readCloses(symbol, n) { const hist = await history(symbol, n); closes.set(symbol, { at: Date.now(), hist }); return hist; }
+const wideState = { running: null };
+function fillCloses(symbols, n) {
+  if (wideState.running) return;
+  const need = symbols.filter((s) => !closesOf(s));
+  if (!need.length) return;
+  wideState.running = (async () => { for (const s of need) { await readCloses(s, n).catch(() => {}); await new Promise((r) => setTimeout(r, 400)); } })().finally(() => { wideState.running = null; });
+}
 
-/** One stock: today's move, the drop rule, how often its options expire, and the gap between what his rules' call brings in a
- *  day and what the put costs a day (US$ a lot). qualifies = options at least every expiry_every_days, a gap above 0 and at
- *  least his min_carry (CAD). */
-async function readStock(symbol, rules, fx, now, watched) {
-  const [q, hist, ch] = await Promise.all([quote(symbol), history(symbol, rules.high_days + 10), chain(symbol, { ttl: SCAN_CHAIN_TTL })]);
-  expiryCache.set(symbol, { at: Date.now(), expiries: ch.expiries });
-  // How often its options expire (Nov 17: "options expiring at most every 3 days, not an option expiring within 3 days").
-  const cadence = expiryCadence(ch.expiries, now);
-  const often = !!cadence && cadence.max <= rules.expiry_every_days;
-  const soon = soonExpiries(ch.expiries, 7, now);
-  const p = watched || often ? pick(ch, rules, { now, fx: fx?.rate }) : null;
+/** One stock's row: today's move and bars, his drop rule, and, when its options have been priced, what his rules make of them. */
+function stockRow(symbol, d, hist, rules, fx, now, watched, floor) {
+  const q = d.quote;
+  const c = priced.get(symbol);
+  const p = c && c.key === ruleKey(rules, floor) ? pickFrom(symbol, q, c, rules, { now, fx, floor }) : null;
   const carry = p?.carry || null;
-  return { symbol, watched, price: r2(q.price), iv30: q.iv30 == null ? null : r2(q.iv30 * 100), as_of: q.as_of, ...dropCheck(hist, q, rules),
-    expiries_this_week: soon, cadence, often, next_expiry: soon[0] || ch.expiries.find((e) => daysTo(e, now) > 0) || null,
-    carry, day_play: p?.day_play || null, qualifies: !!(often && carry && carry.gap != null && carry.gap > 0 && carry.gap * (fx?.rate || 1) >= rules.min_carry) };
+  const soon = p ? soonExpiries(p.expiries, 7, now) : [];
+  return { symbol, watched, price: r2(q.price), change: q.change, as_of: q.as_of, spark: d.bars.map((b) => b.price), prev_close: q.prev_close,
+    ...dropCheck(hist || [], q, rules), from_high_known: !!hist,
+    priced: !!p, priced_at: p?.priced_at || null, option_prices: p?.option_prices || null,
+    expiries_this_week: soon, cadence: p?.cadence || null, often: p ? p.often : null, next_expiry: p ? soon[0] || p.expiries.find((e) => daysTo(e, now) > 0) || null : null,
+    carry, day_play: p?.day_play || null, put_spread: p?.put_spread ? { high_strike: p.put_spread.high_strike, low_strike: p.put_spread.low_strike, expiry: p.put_spread.expiry, per_day: p.put_spread.per_day, cost: p.put_spread.cost } : null,
+    qualifies: p ? !!(p.often && carry && carry.gap != null && carry.gap > 0 && carry.gap * (fx?.rate || 1) >= rules.min_carry) : null };
 }
 
-// The wider list, swept in the background (Cboe's free feed refuses a burst of 50 chains: 429s, Nov 17).
-const wideState = { at: 0, rows: [], unread: [], running: null, key: '' };
-export async function sweepWide(rules, { now = new Date(), pause = WIDE_PAUSE } = {}) {
-  if (wideState.running) return wideState.running;
-  wideState.running = (async () => {
-    const fx = await usdCad();
-    const watch = new Set(rules.watchlist);
-    const rows = []; const unread = [];
-    for (const symbol of WIDE.filter((s) => !watch.has(s))) {
-      if (cboeBusy()) await new Promise((r) => setTimeout(r, 125e3)); // wait out Cboe's pause, then go on
-      try { rows.push(await readStock(symbol, rules, fx, now, false)); } catch (e) { unread.push({ symbol, error: e.message }); }
-      if (pause) await new Promise((r) => setTimeout(r, pause));
-    }
-    Object.assign(wideState, { at: Date.now(), rows, unread, key: JSON.stringify(rules) });
-  })().finally(() => { wideState.running = null; });
-  return wideState.running;
-}
-
-/** His watchlist, read now, and the wider list as last swept (a new sweep starts behind it when that's over 30 minutes old
- *  or his rules changed). */
+/** His watchlist and the wider list: every stock's move now; the options figures for the ones priced. */
 export async function scan(rulesIn = null, now = new Date()) {
+  await loadPriced();
   const rules = rulesIn || await getRules();
   const fx = await usdCad();
-  const rows = await inTurn(rules.watchlist, 2, (symbol) => readStock(symbol, rules, fx, now, true));
-  const stocks = rows.map((r, i) => (r.error ? { symbol: rules.watchlist[i], watched: true, error: r.error } : r));
-  if (rules.wide && !wideState.running && (Date.now() - wideState.at > WIDE_EVERY || wideState.key !== JSON.stringify(rules))) {
-    sweepWide(rules).catch((e) => console.error(`  !! Covered calls, the wider list: ${e.message}`));
-  }
   const watch = new Set(rules.watchlist);
+  const wideList = rules.wide ? WIDE.filter((s) => !watch.has(s)) : [];
+  const dmap = await days([...rules.watchlist, ...wideList]);
+  const { rows: heldRows } = await pool.query(`SELECT symbol, legs FROM options_positions WHERE status = 'open'`).catch(() => ({ rows: [] }));
+  const floorOf = (s) => { const ks = heldRows.filter((r) => r.symbol === s).flatMap((r) => r.legs || []).filter((l) => l.type === 'put' && l.side === 'long' && daysTo(l.expiry, now) > 0).map((l) => Number(l.strike)); return ks.length ? Math.max(...ks) : null; };
+  await inTurn(rules.watchlist.filter((s) => dmap.has(s) && !closesOf(s)), 3, (s) => readCloses(s, rules.high_days + 10));
+  fillCloses(wideList.filter((s) => dmap.has(s)), rules.high_days + 10);
+  const row = (s, watched) => (dmap.has(s) ? stockRow(s, dmap.get(s), closesOf(s), rules, fx, now, watched, floorOf(s)) : { symbol: s, watched, error: 'No price on the stock feed.' });
   // Earnings (Nov 19, Jake: "factor in earnings for the stocks in the list ... ie. earnings report calendar"): each row says its
   // next report, and whether it falls before the call it was priced on expires, or while the put is held.
   const cal = await nextEarnings({ now }).catch((e) => ({ map: new Map(), error: e.message }));
@@ -101,55 +263,29 @@ export async function scan(rulesIn = null, now = new Date()) {
     const putExp = r.day_play?.put?.expiry || r.carry?.put?.expiry || null;
     return { ...r, earnings: e && { ...e, before_call: inside(e, callExp), before_put: inside(e, putExp), call_expiry: callExp } };
   };
-  const all = stocks.map(withEarnings);
-  const wide = (rules.wide ? wideState.rows.filter((r) => !watch.has(r.symbol)) : []).map(withEarnings);
+  const all = rules.watchlist.map((s) => withEarnings(row(s, true)));
+  const wide = wideList.map((s) => withEarnings(row(s, false))).filter((r) => !r.error);
   const ahead = [...all, ...wide].filter((r) => !r.error && r.day_play && r.day_play.net_per_day > 0);
   const reportsFirst = (r) => inside(r.earnings, r.day_play.call.expiry);
+  const everything = [...all, ...wide].filter((r) => !r.error);
   return {
-    rules, as_of: now.toISOString(), fx,
+    rules, as_of: now.toISOString(), fx, data: await dataStatus(),
     stocks: all,
     earnings: { through: cal.through || null, days_read: cal.days_read || 0, running: !!cal.running, error: cal.error || null },
-    wide: wide.filter((r) => r.qualifies).sort((a, b) => b.carry.gap - a.carry.gap),
-    // The day's five (Nov 19): every stock read, watchlist and wider list, by what its call expiring today or the next trading
-    // day pays a trading day less its long-horizon put and the margin interest, for one lot; only ones that come out ahead.
-    // A stock reporting before its call expires is left out (its premium is the market pricing the report), and said.
+    wide,
+    priced_count: everything.filter((r) => r.priced).length, stock_count: everything.length,
+    // The day's five (Nov 19): every stock priced, by what its call expiring today or the next trading day pays a trading
+    // day less its long-horizon put and the margin interest, for one lot; only ones that come out ahead. A stock reporting
+    // before its call expires is left out (its premium is the market pricing the report), and said.
     today_five: ahead.filter((r) => !reportsFirst(r))
       .sort((a, b) => b.day_play.net_per_day - a.day_play.net_per_day).slice(0, 5)
-      .map((r) => ({ symbol: r.symbol, watched: !!r.watched, iv30: r.iv30, day_pct: r.day_pct ?? null, earnings: r.earnings, ...r.day_play })),
+      .map((r) => ({ symbol: r.symbol, watched: !!r.watched, day_pct: r.day_pct ?? null, earnings: r.earnings, option_prices: r.option_prices, ...r.day_play })),
     left_out_earnings: ahead.filter(reportsFirst).sort((a, b) => b.day_play.net_per_day - a.day_play.net_per_day)
       .map((r) => ({ symbol: r.symbol, earnings: r.earnings, call: r.day_play.call, net_per_day: r.day_play.net_per_day })),
     call_otm: rules.call_otm, put_otm: rules.put_otm,
-    wide_checked: wide.length + (rules.wide ? wideState.unread.length : 0),
-    wide_unread: rules.wide ? wideState.unread : [],
-    wide_as_of: rules.wide && wideState.at ? new Date(wideState.at).toISOString() : null,
+    movers: [...everything].filter((r) => r.day_pct != null).sort((a, b) => Math.abs(b.day_pct) - Math.abs(a.day_pct)).slice(0, 8).map((r) => ({ symbol: r.symbol, price: r.price, day_pct: r.day_pct, watched: r.watched })),
     wide_running: !!wideState.running,
   };
-}
-
-/** What his rules pick on one stock today: the call, the put, the lots, with the figures for one lot. */
-export async function plan(symbol, overrides = {}, now = new Date()) {
-  const rules = cleanRules({ ...(await getRules()), ...overrides });
-  const ch = await chain(symbol);
-  const [hist, fx, held] = await Promise.all([history(symbol, rules.high_days + 10), usdCad(), heldPutStrike(symbol, now)]);
-  const p = pick(ch, rules, { now, fx: fx?.rate, putStrike: held });
-  return { symbol, as_of: ch.as_of, quote: ch.quote, drop: dropCheck(hist, ch.quote, rules), ...p, fx };
-}
-
-/** The highest strike of the puts he holds on a stock (open, not expired), or null: his calls go at or above it (Nov 19). */
-async function heldPutStrike(symbol, now = new Date()) {
-  const { rows } = await pool.query(`SELECT legs FROM options_positions WHERE symbol = $1 AND status = 'open'`, [symbol]).catch(() => ({ rows: [] }));
-  const strikes = rows.flatMap((r) => r.legs || []).filter((l) => l.type === 'put' && l.side === 'long' && daysTo(l.expiry, now) > 0).map((l) => Number(l.strike));
-  return strikes.length ? Math.max(...strikes) : null;
-}
-
-/** One expiry's strikes for the calculator's pickers (nearest `n` each side of the price). */
-export async function strikes(symbol, expiry, n = 20) {
-  const ch = await chain(symbol);
-  const exp = expiry && ch.expiries.includes(expiry) ? expiry : ch.expiries.find((e) => daysTo(e) > 0) || ch.expiries[0];
-  const price = ch.quote.price;
-  const near = (type) => ch.contracts.filter((c) => c.expiry === exp && c.type === type)
-    .sort((a, b) => Math.abs(a.strike - price) - Math.abs(b.strike - price)).slice(0, n * 2).sort((a, b) => a.strike - b.strike);
-  return { symbol, as_of: ch.as_of, quote: ch.quote, expiries: ch.expiries.filter((e) => daysTo(e) > 0), expiry: exp, calls: near('call'), puts: near('put') };
 }
 
 // ---------- the watcher ----------
@@ -161,40 +297,116 @@ export function marketOpen(now = new Date()) {
   const m = Number(parts.hour) * 60 + Number(parts.minute);
   return m >= 9 * 60 + 30 && m < 16 * 60;
 }
-export async function alerts() { const a = await getSetting(ALERTS_KEY, []); return Array.isArray(a) ? a : []; }
+/** What the watcher has noted, newest first. An older drop (before Nov 20) had no id, kind or words: given here. */
+export async function alerts() {
+  const a = await getSetting(ALERTS_KEY, []);
+  return (Array.isArray(a) ? a : []).map((x) => (x.id ? x : { ...x, id: `${x.symbol}:${x.date}`, kind: 'drop', level: 'high', title: `${x.symbol} dropped by your rule`, text: null }));
+}
+export async function alertsSeen() { await put('covered_call_alerts_seen', { at: new Date().toISOString() }); return { ok: true }; }
+/** The page's feed: the notes, and which came since he last looked. */
+export async function alertFeed() {
+  const [list, seen] = await Promise.all([alerts(), getSetting('covered_call_alerts_seen', null)]);
+  const since = seen?.at || null;
+  return { alerts: list.slice(0, 120), seen_at: since, unseen: list.filter((a) => !since || a.at > since).length };
+}
 
-/** Scan, and note each stock that drops by his rule (once a stock a day), with what his rules would pick on it. */
-export async function watch(now = new Date()) {
-  if (!marketOpen(now)) return [];
-  const rules = await getRules();
-  if (!rules.watchlist.length && !rules.wide) return [];
-  const s = await scan(rules, now);
-  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(now);
-  const list = await alerts();
-  const fresh = [];
-  // A drop counts only on a stock whose options expire often enough and whose call pays more than the put costs (Nov 17).
-  for (const st of [...s.stocks, ...s.wide]) {
-    if (!st.triggered || !st.qualifies || list.some((a) => a.symbol === st.symbol && a.date === today)) continue;
-    let picked = null;
+// On a small plan (the Free one: 100 option prices a day) the watcher prices at most two dropped stocks a day by itself, and
+// only while 45 prices are left for his own positions and what he asks for: on Nov 20 ten of his stocks dropped at once.
+const autoPriced = { day: null, n: 0 };
+const mayAutoPrice = (date) => {
+  if (creditLimit() >= 1000) return room(PLAN_COST, creditLimit() * 0.15);
+  if (autoPriced.day !== date) { autoPriced.day = date; autoPriced.n = 0; }
+  return autoPriced.n < 2 && room(PLAN_COST, 45);
+};
+/** A drop by his rule, with what his rules pick on it when its options can be priced. */
+async function dropAlert(st, rules, now, date) {
+  let picked = null; let note = null;
+  if (await hasToken() && (st.priced || mayAutoPrice(date))) {
+    if (!st.priced) autoPriced.n += 1;
     try {
       const p = await plan(st.symbol, {}, now);
+      // His rule (Nov 17): a drop counts on a stock whose options expire often enough and whose call pays more than the put costs.
+      const gap = p.carry?.gap;
+      if (!(p.often && gap != null && gap > 0 && gap * (p.usd_cad || 1) >= rules.min_carry)) return null;
       picked = {
         call: p.call && { strike: p.call.strike, expiry: p.call.expiry, bid: p.call.bid, delta: r2(p.call.delta) },
         put: p.put && { strike: p.put.strike, expiry: p.put.expiry, ask: p.put.ask },
+        spread: p.put_spread && { buy: p.put_spread.high_strike, sell: p.put_spread.low_strike, debit: p.put_spread.debit },
         lots: p.sizing.lots, income_per_day: p.lot.income_per_day, net_per_day: p.lot.net_per_day, max_loss_per_lot: p.lot.max_loss,
-        gap_per_day: p.carry?.gap ?? null, interest_per_day: p.lot.interest_per_day, capital_per_lot: p.lot.capital_needed,
-        usd_cad: p.usd_cad,
+        gap_per_day: gap, interest_per_day: p.lot.interest_per_day, capital_per_lot: p.lot.capital_needed,
+        usd_cad: p.usd_cad, modelled: !!p.option_prices?.modelled,
       };
-    } catch { /* the alert stands without the picks */ }
-    fresh.push({ symbol: st.symbol, date: today, at: now.toISOString(), price: st.price, day_pct: st.day_pct, from_high_pct: st.from_high_pct,
-      why: st.why, expiries_this_week: st.expiries_this_week.length, picked });
+    } catch (e) { note = e.message; }
+  } else note = (await hasToken()) ? 'Its options aren’t priced yet: tap it on the Covered calls page to see what your rules pick.' : 'Its options aren’t priced: MarketData.app needs your token.';
+  // A drop his rules could be worked through on goes to his phone; one whose options weren't priced stays on the page (his
+  // rule counts a drop only where the options expire often enough and the call beats the put, which isn't known without them).
+  return { id: `${st.symbol}:${date}`, kind: 'drop', level: picked ? 'high' : 'info', symbol: st.symbol, title: `${st.symbol} dropped by your rule`, text: null,
+    price: st.price, day_pct: st.day_pct, from_high_pct: st.from_high_pct, why: st.why, expiries_this_week: st.expiries_this_week?.length || 0, picked, note };
+}
+
+/** On a paid MarketData.app plan (10,000 prices a day or more) the watcher prices his list itself, a few stocks a round. */
+async function autoPrice(rules, now) {
+  const limit = creditLimit();
+  if (!(limit >= 10000) || !(await hasToken())) return 0;
+  const keepMs = Math.max(planOf(limit).keep_ms, limit >= 100000 ? 10 * 60e3 : 60 * 60e3);
+  const due = [...rules.watchlist, ...(rules.wide ? WIDE : [])].filter((s, i, a) => a.indexOf(s) === i).filter((s) => { const c = priced.get(s); return !c || Date.now() - c.at > keepMs; });
+  let n = 0;
+  for (const s of due.slice(0, 12)) {
+    if (!room(PLAN_COST, limit * 0.15)) break;
+    try { await plan(s, {}, now, { force: true }); n += 1; } catch { /* next round */ }
+    await new Promise((r) => setTimeout(r, 300));
   }
-  if (fresh.length) {
-    await pool.query(`INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2`,
-      [ALERTS_KEY, JSON.stringify([...fresh, ...list].slice(0, 60))]);
+  return n;
+}
+
+/**
+ * The watcher's round (every five minutes in US market hours): his positions and the stocks he watches against his alert
+ * levels (lib/options/alerts.js) and his drop rule; each new note is kept once (by its id) and returned.
+ */
+export async function tick(now = new Date(), { force = false } = {}) {
+  if (!force && !marketOpen(now)) return [];
+  const rules = await getRules();
+  const date = nyDay(now);
+  const fx = (await usdCad().catch(() => null))?.rate || null;
+  const list = await alerts();
+  const have = new Set(list.map((a) => a.id));
+  const fresh = [];
+  const note = (a) => { if (a && !have.has(a.id)) { have.add(a.id); fresh.push({ ...a, date, at: now.toISOString() }); } };
+
+  const open = (await positions(now).catch((e) => { console.error(`  !! Options desk, positions: ${e.message}`); return []; })).filter((p) => p.status === 'open');
+  const held = new Set(open.map((p) => p.symbol));
+  let ivSeen = await getSetting('covered_call_iv', {}).catch(() => ({}));
+  let ivChanged = false;
+  for (const p of open) {
+    if (!(p.price > 0)) continue;
+    positionAlerts(p, rules, { date, fx }).forEach(note);
+    moveAlerts({ symbol: p.symbol, price: p.price, day_pct: p.day?.change_pct, change: p.day?.change }, rules, { date, held: { shares: p.shares, delta: p.greeks?.delta ?? null }, fx }).forEach(note);
+    swingAlerts(p.symbol, p.bars, rules, { date, now }).forEach(note);
+    if (p.option_prices?.quoted_at) {
+      const iv = ivAlerts(p.symbol, p.greeks?.legs, ivSeen, rules, { date });
+      iv.alerts.forEach(note);
+      if (JSON.stringify(iv.seen) !== JSON.stringify(ivSeen)) { ivSeen = iv.seen; ivChanged = true; }
+    }
   }
+  if (ivChanged) await put('covered_call_iv', Object.fromEntries(Object.entries(ivSeen).slice(-200)));
+
+  if (rules.watchlist.length || rules.wide) {
+    await autoPrice(rules, now).catch(() => 0);
+    const s = await scan(rules, now);
+    for (const st of s.stocks) {
+      if (st.error) continue;
+      const dropOn = st.triggered && !(rules.alerts_off || []).includes('drop');
+      if (dropOn && !have.has(`${st.symbol}:${date}`)) note(await dropAlert(st, rules, now, date));
+      // A stock that dropped by his rule has its note already: the day's move isn't said again.
+      if (!held.has(st.symbol) && !(dropOn && have.has(`${st.symbol}:${date}`))) moveAlerts(st, rules, { date, fx }).forEach(note);
+    }
+    // The wider list: a drop counts when its options are already priced and it qualifies by his rule.
+    for (const st of s.wide) if (st.triggered && st.qualifies && !(rules.alerts_off || []).includes('drop') && !have.has(`${st.symbol}:${date}`)) note(await dropAlert(st, rules, now, date));
+  }
+  if (fresh.length) await put(ALERTS_KEY, [...fresh.reverse(), ...list].slice(0, 250));
   return fresh;
 }
+export const watch = tick; // the name it had (index.js)
 
 // ---------- his positions ----------
 const cleanLegs = (legs) => (Array.isArray(legs) ? legs : []).map((l) => ({
@@ -222,45 +434,79 @@ export function positionFields(b = {}, current = {}) {
   };
 }
 
-/** His positions, each valued at today's price: the stock's gain or loss, premium in, and the figures for the legs it holds now. */
+const sameLeg = (a, b) => a.type === b.type && Number(a.strike) === Number(b.strike) && a.expiry === b.expiry;
+/**
+ * His positions, each valued at the price now: the stock's gain or loss and today's move, the options he holds at what
+ * they're worth now (quoted by MarketData.app, brought to today's stock price), the greeks, put spreads and what's worth
+ * knowing right now (signals), with the figures for the legs it holds.
+ */
 export async function positions(now = new Date()) {
   const { rows } = await pool.query(`SELECT * FROM options_positions ORDER BY (status = 'closed'), opened_on DESC, id DESC`);
   // His fills (Nov 19): the options he holds at what his Money Hub entries say they cost, not the broker's lumped average.
   const { optionCash, legsAtFills, bankedCalls } = await import('./cash.js');
   const cash = await optionCash({ symbols: rows.map((r) => r.symbol) }).catch(() => null);
-  const fxRate = cash?.currency === 'CAD' ? (await usdCad().catch(() => null))?.rate : null;
+  const fxNow = (await usdCad().catch(() => null))?.rate || null;
+  const fxRate = cash?.currency === 'CAD' ? fxNow : null;
   const entries = (cash?.entries || []).filter((e) => e.kind && e.symbol)
     .map((e) => ({ ...e, usd: cash.currency === 'CAD' && fxRate ? e.amount / fxRate : e.amount }));
-  const todayNy = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(now);
-  const prices = new Map();
+  const todayNy = nyDay(now);
   const rules = await getRules();
   const margin = { pct: rules.margin_pct, rate: rules.margin_rate }; // his margin rule, on what each position cost
-  await inTurn([...new Set(rows.filter((r) => r.status !== 'closed').map((r) => r.symbol))], 4, async (s) => prices.set(s, (await quote(s)).price));
+  const live = rows.filter((r) => r.status !== 'closed');
+  const dmap = await days([...new Set(live.map((r) => r.symbol))]).catch(() => new Map());
+  const tokened = await hasToken();
+  const cal = await nextEarnings({ now }).catch(() => ({ map: new Map() }));
+  // The options he holds, priced: one price a leg, kept (market.js).
+  const quotes = new Map(); const quoteErr = new Map();
+  if (tokened) {
+    await inTurn([...new Set(live.map((r) => r.symbol))], 2, async (s) => {
+      const legs = live.filter((r) => r.symbol === s).flatMap((r) => r.legs || []).filter((l) => daysTo(l.expiry, now) > 0);
+      if (!legs.length) return;
+      try { quotes.set(s, await optionQuotes(s, legs)); } catch (e) { quoteErr.set(s, e.message); }
+    });
+  }
   return rows.map((r) => {
     const cost = Number(r.cost); const shares = Number(r.shares);
-    const price = r.status === 'closed' ? Number(r.closed_price) || null : prices.get(r.symbol) ?? null;
+    const d = r.status === 'closed' ? null : dmap.get(r.symbol) || null;
+    const price = r.status === 'closed' ? Number(r.closed_price) || null : d?.quote.price ?? null;
     // An option without the day it was opened is taken from the day the position was (Nov 18): spread over the days left, a
     // premium grew to the whole of it on its last day.
     const opened = toISODate(r.opened_on);
     const rawLegs = (r.legs || []).filter((l) => r.status === 'closed' || daysTo(l.expiry, now) > -1);
+    const qs = (quotes.get(r.symbol) || []).map((q) => (price ? nowFrom(q, price, now) : q));
     const legs = (r.status === 'closed' ? rawLegs : legsAtFills(rawLegs.filter((l) => daysTo(l.expiry, now) > 0), entries, r.symbol, { today: todayNy }))
-      .map((l) => (l.since || !opened || opened > l.expiry || opened > todayNy ? l : { ...l, since: opened }));
+      .map((l) => (l.since || !opened || opened > l.expiry || opened > todayNy ? l : { ...l, since: opened }))
+      .map((l) => { const q = qs.find((x) => sameLeg(x, l)); return q ? { ...l, iv: q.iv || l.iv, now: q.mid, bid_now: q.bid, ask_now: q.ask, quoted: q.quoted, modelled: q.modelled } : l; });
     // Everything the calls have brought in counts, not only the open call's own sale (Nov 19).
     const banked = r.status === 'closed' ? null : bankedCalls(legs, entries, r.symbol, { today: todayNy });
     const figures = price ? evaluate({ price, shares, cost, legs, banked }, { now, margin: r.status === 'closed' ? null : margin }) : null;
     const stockPnl = price ? r2((price - cost) * shares) : null;
-    return {
+    const openLegs = r.status === 'closed' ? [] : legs.filter((l) => daysTo(l.expiry, now) > 0);
+    const base = {
       id: r.id, symbol: r.symbol, shares, cost, status: r.status, source: r.source || 'manual', synced_at: r.synced_at || null, opened_on: toISODate(r.opened_on), closed_on: toISODate(r.closed_on), notes: r.notes,
       legs: r.legs || [], premium_collected: Number(r.premium_collected), price: price == null ? null : r2(price),
-      open_legs: r.status === 'closed' ? [] : legs.filter((l) => daysTo(l.expiry, now) > 0).map((l) => ({ ...l, days: legDays(l, now), per_day: r2((Number(l.premium) * Number(l.contracts) * 100) / legDays(l, now)), ...(l.since && !(r.legs || []).find((o) => o.strike === l.strike && o.expiry === l.expiry && o.type === l.type)?.since ? { since_from_position: true } : {}) })),
+      open_legs: openLegs.map((l) => ({ ...l, days: legDays(l, now), per_day: r2((Number(l.premium) * Number(l.contracts) * 100) / legDays(l, now)), ...(l.since && !(r.legs || []).find((o) => o.strike === l.strike && o.expiry === l.expiry && o.type === l.type)?.since ? { since_from_position: true } : {}) })),
       stock_pnl: stockPnl, total_pnl: stockPnl == null ? null : r2(stockPnl + Number(r.premium_collected)),
       days_held: Math.max(1, Math.round((now - new Date(`${toISODate(r.opened_on)}T12:00:00Z`)) / 86400e3)),
-      figures: figures && { banked: figures.banked, premium_in: figures.premium_in, put_cost: figures.put_cost, max_gain: figures.max_gain, max_loss: figures.max_loss, breakevens: figures.breakevens, horizon: figures.horizon, income_per_day: figures.income_per_day,
-        protection_per_day: figures.protection_per_day, net_per_day: figures.net_per_day,
+      figures: figures && { banked: figures.banked, premium_in: figures.premium_in, put_cost: figures.put_cost, max_gain: figures.max_gain, max_gain_at: figures.max_gain_at, max_loss: figures.max_loss, max_loss_at: figures.max_loss_at,
+        unlimited_gain: figures.unlimited_gain, uncovered: figures.uncovered, breakevens: figures.breakevens, horizon: figures.horizon, risk_horizon: figures.risk_horizon, income_per_day: figures.income_per_day,
+        protection_per_day: figures.protection_per_day, net_per_day: figures.net_per_day, per_day_by_role: figures.per_day_by_role,
         interest_per_day: figures.interest_per_day, net_after_interest_per_day: figures.net_after_interest_per_day, capital_needed: figures.capital_needed,
         revenue_per_day: figures.revenue_per_day, on_capital_pct_day: figures.on_capital_pct_day, on_capital_pct_year: figures.on_capital_pct_year,
-        vs_max_loss_pct_day: figures.vs_max_loss_pct_day, days_to_earn_max_loss: figures.days_to_earn_max_loss },
+        vs_max_loss_pct_day: figures.vs_max_loss_pct_day, days_to_earn_max_loss: figures.days_to_earn_max_loss,
+        put_spreads: figures.put_spreads, plain_puts: figures.plain_puts, sold_puts: figures.sold_puts, protection_ends: figures.protection_ends,
+        loss_at_protection_end: figures.loss_at_protection_end, falls_to_zero: figures.falls_to_zero, loss_at_zero: figures.loss_at_zero,
+        put_strike: figures.put_strike, loss_at_put: figures.loss_at_put, call_strike: figures.call_strike, floor_from: figures.floor_from, pnl_now: figures.pnl_now, curve: figures.curve },
     };
+    if (r.status !== 'open' || !price) return base;
+    const p = { ...base, day: d ? { change: d.quote.change, change_pct: d.quote.change_pct, prev_close: d.quote.prev_close, high: d.quote.high, low: d.quote.low, as_of: d.quote.as_of } : null, bars: d?.bars || [],
+      greeks: figures.greeks, earnings: cal.map.get(r.symbol) || null,
+      option_prices: openLegs.length ? (qs.length ? pricesNote(qs) : { quoted_at: null, modelled: false, delay: null, error: quoteErr.get(r.symbol) || (tokened ? 'No option prices came back.' : 'No option prices: MarketData.app needs your token.') }) : null };
+    // What's worth knowing right now, by his alert levels: the same notes the watcher raises, whether or not they've been said.
+    p.signals = [...positionAlerts(p, rules, { date: todayNy, fx: fxNow }),
+      ...moveAlerts({ symbol: p.symbol, price: p.price, day_pct: p.day?.change_pct, change: p.day?.change }, rules, { date: todayNy, held: { shares, delta: p.greeks?.delta ?? null }, fx: fxNow })]
+      .map(({ id, kind, level, title, text }) => ({ id, kind, level, title, text }));
+    return p;
   });
 }
 

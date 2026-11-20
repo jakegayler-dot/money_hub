@@ -135,12 +135,15 @@ Returns the plan and the scenario side by side (lowest month, tightest month aga
   // Nov 17 (Jake: "a covered call strategist ... have Andrew or Mike offer guidance"): the covered-call desk (lib/options).
   {
     name: 'covered_calls',
-    description: "Jake's covered-call desk (the Covered calls page): large stocks whose options expire at least every few days, bought to write short-dated calls against, with long-dated puts bought as insurance. Cboe's quotes, 15 minutes delayed. Every 'a day' is a TRADING day. action scan: his watchlist and a wider list of large stocks: today's move, how far below the recent high, how often the options expire (cadence), and carry: call_per_day (the average, over the expiries within call_max_days, of the first call at least call_otm US dollars above the price, at the bid, a trading day), put_per_day (the average, over the expiries put_days_min to put_days_max days out, of the first put at least put_otm below, at the ask, a trading day), gap (calls less puts, 100 shares) and after_interest; qualifies = options often enough and a gap above his minimum. action plan (symbol): his rules on that stock today: call_choices (each short expiry's call at least call_otm out, most a trading day first: the first is the one that pays the most), put_choices (cheapest a trading day first), the lots his capital and loss limits allow, and one lot's max gain, max loss, breakeven, income a trading day and scenarios, with his margin rule (capital_needed, interest). action evaluate (position): any position's figures (price, shares, cost, legs [{type call|put, side short|long, strike, expiry, premium, contracts, iv}]). action positions: his recorded positions, valued now, with each open leg's trading days and per_day. action cash: his option profit and loss from the brokerage entries in Money Hub, by stock: call premium collected, puts net of what he sold back, and entries the desk couldn't sort. action insurance: the puts as a fixed cost, by stock and in total (US$): puts_paid, calls_collected, left, trading_days_left to the put's expiry, needed_per_day to break even by then, call_now_per_day from the calls open, days_to_even and even_on. action rules / alerts: his rules; the drops the watcher noted.",
+    description: "Jake's covered-call desk (the Covered calls page): large stocks whose options expire at least every few days, bought to write short-dated calls against, with long-dated puts or put spreads bought as insurance, and put spreads sold for income (Nov 20). Stock prices are live (Yahoo's chart feed). Option prices come from MarketData.app on his token, which bills every option price: his Free plan is 100 a day, a day old, so an old option price is brought to the stock's price now by model and marked modelled (option_prices says how old the quotes are); action data has today's allowance. Every 'a day' is a TRADING day. action scan: his watchlist and a wider list of large stocks: today's move and how far below the recent high for every one; for the ones whose options have been priced (priced true), how often the options expire (cadence), and carry: call_per_day (the average, over the expiries within call_max_days, of the first call at least call_otm US dollars above the price, at the bid, a trading day), put_per_day (the average, over the expiries put_days_min to put_days_max days out, of the first put at least put_otm below, at the ask, a trading day), gap (calls less puts, 100 shares) and after_interest; qualifies = options often enough and a gap above his minimum. action plan (symbol): his rules on that stock today (prices its options when they haven't been priced lately: about 16 of the day's option prices, so not for browsing): call_choices (each short expiry's call at least call_otm out, most a trading day first: the first is the one that pays the most), put_choices (cheapest a trading day first), the lots his capital and loss limits allow, and one lot's max gain, max loss, breakeven, income a trading day and scenarios, with his margin rule (capital_needed, interest); put_spread: the same lot with the put his rule picks bought and a put spread_width lower sold (what it saves, where its protection ends, the lot's max loss with it beside the single put's). action spreads (symbol, kind insurance|income, expiry?, width?): put spreads on one expiry, each bought at the ask and sold at the bid: insurance (buy the higher strike, sell the lower: its cost, the most it pays, where protection ends) or income (sell the higher, buy the lower: the credit, max loss, breakeven, return on risk); about a dozen option prices. action evaluate (position): any position's figures (price, shares, cost, legs [{type call|put, side short|long, strike, expiry, premium, contracts, iv}]). action positions: his recorded positions, valued now, with each open leg's trading days, per_day and worth now; figures.put_spreads (kind insurance or income), protection_ends, per_day_by_role; greeks (delta in share-equivalents, gamma share-equivalents per US$1, theta US$ a day with + coming in, vega US$ a volatility point, and each leg's earned_pct); signals (what his alert levels flag right now). action cash: his option profit and loss from the brokerage entries in Money Hub, by stock: call premium collected, puts net of what he sold back, and entries the desk couldn't sort. action insurance: the puts as a fixed cost, by stock and in total (US$): puts_paid, calls_collected, left, trading_days_left to the put's expiry, needed_per_day to break even by then, call_now_per_day from the calls open, days_to_even and even_on. action rules / alerts: his rules (the alert_* levels are what he's told about); what the watcher has noted (drops, big moves, strikes reached, gamma, theta, expiry). action data: where prices come from and today's option-price allowance.",
     input_schema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['scan', 'plan', 'evaluate', 'positions', 'cash', 'insurance', 'rules', 'alerts'] },
-        symbol: { type: 'string', description: 'plan: the stock, e.g. NVDA' },
+        action: { type: 'string', enum: ['scan', 'plan', 'spreads', 'evaluate', 'positions', 'cash', 'insurance', 'rules', 'alerts', 'data'] },
+        symbol: { type: 'string', description: 'plan, spreads: the stock, e.g. NVDA' },
+        kind: { type: 'string', enum: ['insurance', 'income'], description: 'spreads: which kind' },
+        expiry: { type: 'string', description: 'spreads: the expiry (YYYY-MM-DD); left out, the longest in his put window (insurance) or the first a week out (income)' },
+        width: { type: 'number', description: 'spreads: US dollars between the strikes; left out, his spread_width' },
         overrides: { type: 'object', description: 'plan: rules to try instead of his (call_otm, call_max_days, protect, put_otm, put_days_min, put_days_max, capital, max_position_pct, max_loss_pct, margin_pct, margin_rate)' },
         position: { type: 'object', description: 'evaluate: { price, shares, cost, legs }' },
       },
@@ -292,10 +295,14 @@ export async function runTool(name, input = {}, run = {}) {
       const clipFx = (v) => clip(Array.isArray(v) ? { money, rows: v } : { money, ...v });
       try {
         switch (input.action) {
-          case 'scan': return clipFx(await desk.scan());
+          case 'scan': {
+            const { stocks, wide, ...rest } = await desk.scan();
+            const slim = ({ spark, ...r }) => r;
+            return clipFx({ ...rest, stocks: stocks.map(slim), wide: wide.filter((r) => r.priced || r.triggered).map(slim) });
+          }
           case 'plan': {
             if (!input.symbol) throw new AdvisorToolError('plan needs a symbol');
-            const { lot, ...p } = await desk.plan(String(input.symbol).toUpperCase(), input.overrides || {});
+            const { lot, bars, ...p } = await desk.plan(String(input.symbol).toUpperCase(), input.overrides || {});
             const { curve, ...figures } = lot;
             return clipFx({ ...p, one_lot: figures });
           }
@@ -306,7 +313,12 @@ export async function runTool(name, input = {}, run = {}) {
             const { curve, ...figures } = evaluate(input.position, { margin: { pct: input.position.margin_pct ?? r.margin_pct, rate: input.position.margin_rate ?? r.margin_rate } });
             return clipFx(figures);
           }
-          case 'positions': return clipFx(await desk.positions());
+          case 'positions': return clipFx((await desk.positions()).map(({ bars, figures, ...p }) => ({ ...p, figures: figures && (({ curve, ...x }) => x)(figures) })));
+          case 'spreads': {
+            if (!input.symbol) throw new AdvisorToolError('spreads needs a symbol');
+            return clipFx(await desk.spreads(String(input.symbol).toUpperCase(), { kind: input.kind === 'income' ? 'income' : 'insurance', expiry: input.expiry || null, width: input.width ?? null }));
+          }
+          case 'data': return clipFx(await desk.dataStatus());
           case 'cash': {
             const { optionCash } = await import('../options/cash.js');
             const r = await desk.getRules();
@@ -319,7 +331,7 @@ export async function runTool(name, input = {}, run = {}) {
           }
           case 'rules': return clipFx({ rules: await desk.getRules() });
           case 'alerts': return clipFx(await desk.alerts());
-          default: throw new AdvisorToolError('action: scan, plan, evaluate, positions, cash, insurance, rules or alerts');
+          default: throw new AdvisorToolError('action: scan, plan, spreads, evaluate, positions, cash, insurance, rules, alerts or data');
         }
       } catch (err) {
         if (err instanceof AdvisorToolError) throw err;

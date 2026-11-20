@@ -211,14 +211,15 @@ app.listen(port, () => {
     .catch((e) => console.error('Spending insights failed:', e.message));
   setTimeout(insightsRead, 180000);
   setInterval(insightsRead, 6 * 60 * 60 * 1000);
-  // The covered-call desk's watcher: his watchlist every 15 minutes while the US market is open; a drop by his rule is noted
-  // once a stock a day (lib/options/desk.js watch). Off on a local copy with no database.
+  // The options desk's watcher: every five minutes while the US market is open, his positions and the stocks he watches
+  // against his alert levels and his drop rule (lib/options/desk.js tick, alerts.js); each new note is kept once. Off on a
+  // local copy with no database.
   if (process.env.DATABASE_URL) {
-    const optionsWatch = () => import('./lib/options/desk.js').then((d) => d.watch())
-      .then((a) => a.length && console.log(`Covered-call desk: ${a.map((x) => x.symbol).join(', ')} dropped by the rule.`))
-      .catch((e) => console.error('Covered-call watch failed:', e.message));
+    const optionsWatch = () => import('./lib/options/desk.js').then((d) => d.tick())
+      .then((a) => a.length && console.log(`Options desk: ${a.map((x) => x.title || `${x.symbol} ${x.kind}`).join('; ')}.`))
+      .catch((e) => console.error('Options desk watch failed:', e.message));
     setTimeout(optionsWatch, 60000);
-    setInterval(optionsWatch, 15 * 60 * 1000);
+    setInterval(optionsWatch, 5 * 60 * 1000);
     // The earnings calendar for the desk (lib/options/earnings.js, Nov 19): read in the background, a weekday at a time.
     const earningsRead = () => import('./lib/options/earnings.js').then((m) => m.refresh())
       .then(() => import('./lib/options/earnings.js')).then((m) => m._state.error && console.error('Earnings calendar:', m._state.error))

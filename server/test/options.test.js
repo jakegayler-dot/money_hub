@@ -2,27 +2,41 @@
 // calls and puts ... recommend call and puts and position sizing"). Pure: no market, no database.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseOcc, chainFrom } from '../lib/options/market.js';
+import { parseOcc, occSymbol, rowsFrom, dayFrom, planOf, chainOf } from '../lib/options/market.js';
 import { evaluate, bsPrice, dropCheck, cleanRules, pick, expiryClose, incomeDays, soonExpiries, calendarDays, daysTo, expiryCadence, tradingDaysBetween, sessionDate, isTradingDay, playValue } from '../lib/options/strategy.js';
 import { positionFields } from '../lib/options/desk.js';
 
 const NOW = new Date('2026-11-17T15:30:00Z'); // a Tuesday, 10:30 in New York
 const near = (a, b, d = 0.01) => assert.ok(Math.abs(a - b) <= d, `${a} ≈ ${b}`);
 
-test('OCC symbols and the chain: the stock’s own contracts only, near the price', () => {
+test('OCC symbols, MarketData.app’s option rows, the stock feed’s day, and the plan by its credits', () => {
   assert.deepEqual(parseOcc('NVDA261118C00170000'), { root: 'NVDA', expiry: '2026-11-18', type: 'call', strike: 170 });
   assert.deepEqual(parseOcc('NVDA261218P00142500'), { root: 'NVDA', expiry: '2026-12-18', type: 'put', strike: 142.5 });
-  const j = { timestamp: '2026-11-17 15:27:18', data: { symbol: 'NVDA', current_price: 150, prev_day_close: 155, price_change_percent: -3.2, iv30: 60,
-    options: [
-      { option: 'NVDA261118C00160000', bid: 1, ask: 1.1, delta: 0.2, iv: 0.6 },
-      { option: 'B1VDA261118C00160000', bid: 1, ask: 1.1, delta: 0.2 }, // an adjusted contract
-      { option: 'NVDA261118C00400000', bid: 0, ask: 0.01, delta: 0 },  // far away
-    ] } };
-  const ch = chainFrom(j, 'NVDA');
-  assert.equal(ch.contracts.length, 1);
-  assert.equal(ch.quote.iv30, 0.6);
-  assert.equal(ch.as_of, '2026-11-17T15:27:18Z');
-  assert.equal(ch.contracts[0].mid, 1.05);
+  assert.equal(occSymbol('NVDA', '2026-11-20', 'call', 144), 'NVDA261120C00144000');
+  assert.equal(occSymbol('NVDA', '2026-12-18', 'put', 142.5), 'NVDA261218P00142500');
+  // MarketData.app answers in columns (the shape its AAPL demo returned, Nov 20).
+  const rows = rowsFrom({ s: 'ok', optionSymbol: ['AAPL261218C00350000', 'AAPL261218P00340000'], underlying: ['AAPL', 'AAPL'], side: ['call', 'put'], strike: [350, 340],
+    updated: [1795122000, 1795122000], bid: [9.95, 5.9], ask: [10.3, 6.25], mid: [10.125, 6.075], last: [10.13, 6], openInterest: [27614, 17768], volume: [3350, 4489],
+    underlyingPrice: [349.17, 349.17], iv: [0.2561, 0.2697], delta: [0.5179, -0.3337], gamma: [0.0159, 0.0134], theta: [-0.1916, -0.15], vega: [0.3906, 0.36] });
+  assert.equal(rows.length, 2);
+  assert.deepEqual([rows[0].type, rows[0].strike, rows[0].expiry, rows[0].bid, rows[0].ask, rows[0].mid, rows[0].iv, rows[0].underlying_price], ['call', 350, '2026-12-18', 9.95, 10.3, 10.13, 0.2561, 349.17]);
+  assert.equal(rows[1].delta, -0.3337);
+  assert.equal(rows[0].as_of, '2026-11-19T21:00:00.000Z');
+  assert.deepEqual(rowsFrom({ s: 'no_data' }), []);
+  const ch = chainOf('AAPL', { price: 349 }, rows);
+  assert.deepEqual(ch.expiries, ['2026-12-18']);
+  // The stock feed's day: the price, the move against yesterday's close, the five-minute bars.
+  const d = dayFrom({ meta: { regularMarketPrice: 135.245, chartPreviousClose: 145.98, regularMarketDayHigh: 143.725, regularMarketDayLow: 135.06, regularMarketTime: 1795195230 },
+    timestamp: [1795185000, 1795185300, 1795185600], indicators: { quote: [{ open: [143.5, 142, 141], close: [142, null, 135.2], high: [143.7, 142, 141], low: [141, 140, 135.06] }] } }, 'NVDA');
+  assert.equal(d.quote.price, 135.25);
+  assert.equal(d.quote.change_pct, -7.35);
+  assert.equal(d.quote.open, 143.5);
+  assert.deepEqual(d.bars.map((b) => b.price), [142, 135.2]);
+  // The plan is told by the credits a day its own replies report.
+  assert.deepEqual([planOf(100).name, planOf(100).delay], ['Free', '24 hours']);
+  assert.deepEqual([planOf(10000).name, planOf(10000).delay], ['Starter', '15 minutes']);
+  assert.equal(planOf(100000).delay, 'real time');
+  assert.equal(planOf(null).name, null);
 });
 
 test('expiry is 4 p.m. in New York; a 0DTE call earns over one day', () => {

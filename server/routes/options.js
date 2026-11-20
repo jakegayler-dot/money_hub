@@ -13,7 +13,7 @@ import { SYMBOL } from '../lib/options/market.js';
 import { evaluate, marketCalendar } from '../lib/options/strategy.js';
 import { toISODate } from '../lib/dates.js';
 import { usdCad } from '../lib/options/fx.js';
-import { getRules, saveRules, scan, plan, strikes, alerts, positions, positionFields, lastSync, WIDE } from '../lib/options/desk.js';
+import { getRules, saveRules, scan, plan, strikes, legPrice, spreads, alertFeed, alertsSeen, dataStatus, saveToken, positions, positionFields, lastSync, WIDE } from '../lib/options/desk.js';
 import { optionCash, saveSource, tagEntry, untagEntry, insurance } from '../lib/options/cash.js';
 
 const router = Router();
@@ -29,16 +29,27 @@ router.get('/hours', (req, res) => res.json(marketCalendar()));
 router.get('/rules', ah(async (req, res) => res.json(await getRules())));
 router.put('/rules', ah(async (req, res) => res.json(await saveRules(req.body || {}))));
 router.get('/scan', ah(async (req, res) => { try { res.json(await scan()); } catch (e) { fail(res, e); } }));
-router.get('/alerts', ah(async (req, res) => res.json(await alerts())));
+router.get('/alerts', ah(async (req, res) => res.json(await alertFeed())));
+router.post('/alerts/seen', ah(async (req, res) => res.json(await alertsSeen())));
+// Where the prices come from, today's option-price allowance, and his MarketData.app token (kept, never sent back).
+router.get('/data', ah(async (req, res) => res.json(await dataStatus())));
+router.put('/data/token', ah(async (req, res) => { try { res.json(await saveToken(req.body?.token)); } catch (e) { fail(res, e); } }));
 router.get('/plan/:symbol', ah(async (req, res) => {
   try {
+    // ?cached=1: only what was priced before, at today's stock price (spends nothing). ?force=1: price it again.
+    const { cached, force, ...rest } = req.query;
     const o = {};
-    for (const [k, v] of Object.entries(req.query)) o[k] = v === 'true' ? true : v === 'false' ? false : Number(v);
-    res.json(await plan(sym(req.params.symbol), o));
+    for (const [k, v] of Object.entries(rest)) o[k] = v === 'true' ? true : v === 'false' ? false : Number(v);
+    res.json(await plan(sym(req.params.symbol), o, new Date(), { onlyCached: cached === '1', force: force === '1' }));
   } catch (e) { fail(res, e); }
 }));
 router.get('/strikes/:symbol', ah(async (req, res) => {
   try { res.json(await strikes(sym(req.params.symbol), req.query.expiry ? String(req.query.expiry) : null)); } catch (e) { fail(res, e); }
+}));
+// One option's price (one billed price, kept), and put spreads on a stock (Nov 20).
+router.get('/leg/:symbol', ah(async (req, res) => { try { res.json(await legPrice(sym(req.params.symbol), req.query)); } catch (e) { fail(res, e); } }));
+router.get('/spreads/:symbol', ah(async (req, res) => {
+  try { res.json(await spreads(sym(req.params.symbol), { kind: req.query.kind === 'income' ? 'income' : 'insurance', expiry: req.query.expiry ? String(req.query.expiry) : null, width: req.query.width, otm: req.query.otm ?? null })); } catch (e) { fail(res, e); }
 }));
 router.post('/evaluate', ah(async (req, res) => {
   const p = req.body?.position || {};

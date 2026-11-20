@@ -1318,22 +1318,23 @@ def({
 // ---------- the covered-call desk (Nov 17, lib/options) ----------
 def({
   name: 'covered_calls', mode: 'js', idType: 'text', summary: true,
-  description: "SUMMARY. The covered-call desk's drop alerts, newest first: a stock on Jake's watchlist that fell by his rule (down a set % in a day or under its recent high), when, why, and what his own rules picked then (the call to sell, the put to buy, the lots, income a day, the most one lot could lose). Cboe quotes, 15 minutes delayed. id = symbol:date (New York).",
-  fields: ['id', 'symbol', 'date', 'at', 'price', 'day_pct', 'from_high_pct', 'why', 'expiries_this_week', 'picked'],
-  search: ['symbol'], date: 'date', filters: [],
+  description: "SUMMARY. What the options desk's watcher has noted, newest first (lib/options/alerts.js, by Jake's own alert levels). kind: drop (a watched stock fell by his rule; why, and what his rules picked then: the call to sell, the put or put spread to buy, the lots, income a day, the most one lot could lose), move (a stock he holds or watches moved his % in a day), swing (a fast move on one he holds), call / put / spread (the price at or through a strike he's sold or holds; a put spread's far strike is where its protection ends), gamma, theta (a sold option's premium mostly earned), expiry, iv, earnings. level high or info; title and text are the note in words (text null on a drop). Stock prices live (Yahoo); option prices from MarketData.app, brought to the stock's price now by model when they're old.",
+  fields: ['id', 'kind', 'level', 'symbol', 'date', 'at', 'title', 'text', 'price', 'day_pct', 'from_high_pct', 'why', 'expiries_this_week', 'picked', 'note', 'data'],
+  search: ['symbol', 'kind'], date: 'date', filters: [],
   load: async () => {
     const { alerts } = await import('./options/desk.js');
-    return (await alerts()).map((a) => ({ id: `${a.symbol}:${a.date}`, ...a }));
+    return alerts();
   },
 });
 def({
   name: 'covered_call_positions', mode: 'js', idType: 'int', summary: true,
-  description: "SUMMARY. Jake's covered-call positions as he recorded them (Money Hub never trades): the stock, shares, cost, today's price, the stock's gain or loss, options cash so far (premium in, less puts and buy-backs), the legs he holds now and their max gain and loss to the nearest expiry. status planned, open or closed.",
-  fields: ['id', 'symbol', 'shares', 'cost', 'status', 'opened_on', 'closed_on', 'price', 'stock_pnl', 'premium_collected', 'total_pnl', 'legs', 'open_legs', 'figures', 'notes', 'source', 'synced_at'],
+  description: "SUMMARY. Jake's covered-call positions as he recorded them (Money Hub never trades): the stock, shares, cost, the price now and today's move (day), the stock's gain or loss, options cash so far (premium in, less puts and buy-backs), the legs he holds now (each with what it's worth now) and the figures: max gain and loss, breakevens, money a trading day (per_day_by_role: calls, insurance, income_spreads), put_spreads (kind insurance: bought strike above the sold one, pays for a fall between them, protection_ends at the sold strike; kind income: sold above bought, a credit, max_loss below the bought strike). greeks: delta in share-equivalents, gamma (share-equivalents per US$1), theta (US$ a day, + coming in), vega (US$ a volatility point), and each leg's. signals: what's worth knowing right now by his alert levels. status planned, open or closed.",
+  fields: ['id', 'symbol', 'shares', 'cost', 'status', 'opened_on', 'closed_on', 'price', 'day', 'stock_pnl', 'premium_collected', 'total_pnl', 'legs', 'open_legs', 'figures', 'greeks', 'signals', 'option_prices', 'earnings', 'notes', 'source', 'synced_at'],
   search: ['symbol', 'status'], date: 'opened_on', filters: [],
   load: async () => {
     const { positions } = await import('./options/desk.js');
-    return (await positions()).map(({ days_held, ...p }) => p);
+    // Without the chart's points (the day's bars, the payoff curve): they're for the page.
+    return (await positions()).map(({ days_held, bars, figures, ...p }) => ({ ...p, figures: figures && (({ curve, ...f }) => f)(figures) }));
   },
 });
 
